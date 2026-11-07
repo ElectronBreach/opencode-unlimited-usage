@@ -262,6 +262,7 @@ esac
 
 echo ""
 ok "DONE. close & reopen your terminal, then just run:  opencode"
+say "first launch: opencode sets up its device identity — if it asks to login, do it once (free)"
 echo ""
 say "wall hits while you work? zen-guard rotates in ~10s — just re-send your message."
 say "health check any time:  ${BRAND}-doctor   ·   fresh identity now:  ${BRAND}-hop"

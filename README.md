@@ -28,6 +28,9 @@ No parallel VPN circus, no proxy juggling. One WARP tunnel, rotated identities. 
 - `sudo` access for the install
 - python3 (usually already there)
 
+Install method per distro: apt (tested here), dnf/pacman (supported, uses
+cloudflare's rpm / AUR package — say hi if one misbehaves).
+
 ## Install (one command)
 
 ```bash
