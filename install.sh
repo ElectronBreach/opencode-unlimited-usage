@@ -36,7 +36,8 @@ systemd-run --user --scope true >/dev/null 2>&1 || die "user systemd not running
 # stdin fallback for people who download the script first and pipe the
 # password in.
 if ! sudo -n true 2>/dev/null; then
-  if sudo -v </dev/tty >/dev/null 2>&1; then
+  # subshell so the /dev/tty open error (headless envs) stays silent
+  if bash -c 'sudo -v </dev/tty' 2>/dev/null; then
     ok "sudo authenticated"
   elif [ ! -t 0 ]; then
     sudo -S -v >/dev/null 2>&1 || die "sudo failed — password came wrong from stdin"
