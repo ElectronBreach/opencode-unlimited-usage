@@ -36,11 +36,12 @@ echo "$ST" | grep -q Connected \
   && ok "warp tunnel: connected" \
   || bad "warp not connected — sudo systemctl restart ${BRAND}-keeper"
 
-# ---- kill-switch chains
-sudo -n iptables  -nL OUC_LEAKGUARD >/dev/null 2>&1 \
+# ---- kill-switch chains (exact read-only commands — they're in the
+# sudoers entry the installer wrote, so this works without blanket sudo)
+sudo -n /usr/sbin/iptables  -nL OUC_LEAKGUARD >/dev/null 2>&1 \
   && ok "kill-switch v4 installed" \
   || bad "kill-switch v4 gone — keeper reinstalls it every 45s, or restart it"
-sudo -n ip6tables -nL OUC_LEAKGUARD >/dev/null 2>&1 \
+sudo -n /usr/sbin/ip6tables -nL OUC_LEAKGUARD >/dev/null 2>&1 \
   && ok "kill-switch v6 installed" \
   || bad "kill-switch v6 gone — keeper reinstalls it every 45s, or restart it"
 
@@ -48,8 +49,10 @@ sudo -n ip6tables -nL OUC_LEAKGUARD >/dev/null 2>&1 \
 V6=$(timeout 12 curl -s -m 10 https://api64.ipify.org 2>/dev/null)
 if [ -n "$V6" ]; then
   FIRST=$(echo "$V6" | cut -d: -f1-4)
-  # warp assigns from 2606:4700:: (cloudflare) — your own v6 would be your ISP's
-  case "$V6" in 2606:*) ok "egress is cloudflare (warp): ${FIRST}::/64" ;;
+  # warp hands out both 2606:4700:: (cloudflare) and 2a09:bac5:: (client
+  # range). your own v6 would be your ISP's — that's the leak case.
+  case "$V6" in
+    2606:*|2a09:*) ok "egress is cloudflare (warp): ${FIRST}::/64" ;;
     *) bad "egress is NOT warp ($V6) — tunnel is lying, restart keeper" ;;
   esac
 else

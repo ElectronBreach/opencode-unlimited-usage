@@ -159,11 +159,18 @@ ln -sf "$DEST/scripts/zen-hop.sh" "$HOME/.local/bin/${BRAND}-hop"
 ln -sf "$DEST/scripts/doctor.sh"  "$HOME/.local/bin/${BRAND}-doctor"
 ok "scripts in $DEST"
 
-# ---------------------------------------------------------------- sudoers (warp-cli only, for the unattended guard)
-if ! sw status; then
-  say "adding sudoers entry: $USER can run warp-cli without a password"
-  echo "$USER ALL=(root) NOPASSWD: $WARP" | sudo tee "$SUDOERS_FILE" >/dev/null
+# ---------------------------------------------------------------- sudoers (warp-cli for the unattended guard, read-only iptables
+# verification for the doctor). the iptables entries are exact-args matches —
+# list-only, sudoers will not accept anything else from that rule.
+SUDOERS_NEED="$USER ALL=(root) NOPASSWD: $WARP
+/usr/sbin/iptables -nL OUC_LEAKGUARD
+/usr/sbin/ip6tables -nL OUC_LEAKGUARD"
+SUDOERS_NOW="$(sudo -n cat "$SUDOERS_FILE" 2>/dev/null || echo '')"
+if [ "$SUDOERS_NOW" != "$SUDOERS_NEED" ]; then
+  say "sudoers: passwordless warp-cli + read-only kill-switch verify"
+  printf '%s\n' "$SUDOERS_NEED" | sudo tee "$SUDOERS_FILE" >/dev/null
   sudo chmod 440 "$SUDOERS_FILE"
+  sudo visudo -c >/dev/null 2>&1 || { sudo rm -f "$SUDOERS_FILE"; die "sudoers rejected — this should never happen"; }
 fi
 sw status || die "passwordless warp-cli did not work — check $SUDOERS_FILE"
 ok "passwordless warp-cli works"
