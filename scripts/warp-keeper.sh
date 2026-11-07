@@ -13,26 +13,36 @@
 # instead of leaking from your home IP. that's the whole point.
 set -u
 
-WARP="$(command -v warp-cli || echo /usr/bin/warp-cli)"
-[ -x "$WARP" ] || WARP="$HOME/.local/bin/warp-cli"
-[ -x "$WARP" ] || { echo "warp-cli not found"; exit 1; }
+# warp binary: service env (installer sets it) → PATH → common fallbacks.
+# we probe with --accept-tos and without: some boxes shim warp-cli with the
+# flag already inside, and passing it twice kills the CLI with an arg error.
+WARP="${OUC_WARP_BIN:-}"
+if [ -z "$WARP" ]; then
+  if command -v warp-cli >/dev/null 2>&1; then WARP="$(command -v warp-cli)"
+  elif [ -x /usr/bin/warp-cli ]; then WARP=/usr/bin/warp-cli
+  elif [ -x "$HOME/.local/bin/warp-cli" ]; then WARP="$HOME/.local/bin/warp-cli"
+  fi
+fi
+[ -n "$WARP" ] || { echo "warp-cli not found"; exit 1; }
+
+w(){  "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; "$WARP" "$@" >/dev/null 2>&1; }
+wo(){ "$WARP" --accept-tos "$@" 2>/dev/null && return 0; "$WARP" "$@" 2>/dev/null; }
 
 IFACE=CloudflareWARP
 TICK=45
-W="sudo -n $WARP --accept-tos"
 
 ensure_connected(){
-  $W status 2>/dev/null | head -1 | grep -q Connected && return 0
-  $W connect >/dev/null 2>&1; sleep 4
-  $W status 2>/dev/null | head -1 | grep -q Connected && return 0
+  wo status | head -1 | grep -q Connected && return 0
+  w connect; sleep 4
+  wo status | head -1 | grep -q Connected && return 0
   # old registration is probably dead — burn it and make a new one
-  $W disconnect        >/dev/null 2>&1
-  $W registration delete >/dev/null 2>&1
-  $W registration new >/dev/null 2>&1 || return 1
-  $W mode warp        >/dev/null 2>&1
-  $W connect          >/dev/null 2>&1
+  w disconnect
+  w registration delete
+  w registration new || return 1
+  w mode warp
+  w connect
   sleep 5
-  $W status 2>/dev/null | head -1 | grep -q Connected
+  wo status | head -1 | grep -q Connected
 }
 
 ensure_guard(){
@@ -64,12 +74,12 @@ ensure_guard(){
 
 # on very first boot the unit may start before network is up — be patient
 for i in 1 2 3 4 5 6; do
-  $W status >/dev/null 2>&1 && break
+  w status >/dev/null 2>&1 && break
   sleep 10
 done
 
 while true; do
-  $W mode warp >/dev/null 2>&1
+  w mode warp
   ensure_connected || true
   ensure_guard
   sleep $TICK

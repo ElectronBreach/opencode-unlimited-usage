@@ -1,6 +1,9 @@
 #!/bin/bash
 # Opencode Unlimited Usage — installer
-# one command, everything set up: opencode + warp + keeper + guard + lane shim
+#
+# ONE SHOT: opencode + cloudflare warp (apt/dnf/pacman, whatever your distro
+# speaks) + TUN mode + keeper + guard + lane shim + credit enforcement +
+# self-verify. you run one line, you get a working system.
 set -u
 
 BRAND="opencode-unlimited"
@@ -9,6 +12,8 @@ UNIT_KEEPER="/etc/systemd/system/${BRAND}-keeper.service"
 UNIT_GUARD="$HOME/.config/systemd/user/${BRAND}-guard.service"
 SHIM="$HOME/.local/bin/opencode"
 SUDOERS_FILE="/etc/sudoers.d/$BRAND"
+REPO="https://github.com/ELECTRONBreach/opencode-unlimited-usage"
+RAW="https://raw.githubusercontent.com/ELECTRONBreach/opencode-unlimited-usage/main"
 
 say(){ echo -e "  $*"; }
 ok(){ echo -e "  \e[32m✓\e[0m $*"; }
@@ -16,7 +21,7 @@ bad(){ echo -e "  \e[31m✗\e[0m $*"; }
 die(){ bad "$*"; exit 1; }
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd)"
-[ -n "$SRC" ] && [ -d "$SRC/scripts" ] || SRC=""   # piped-from-curl: no local scripts, re-download
+[ -n "$SRC" ] && [ -d "$SRC/scripts" ] || SRC=""   # piped-from-curl: fetch from github
 
 echo ""
 echo "  ============================="
@@ -27,16 +32,16 @@ echo ""
 # ---------------------------------------------------------------- platform
 [ "$(id -u)" = 0 ] && die "run me as your normal user, not root"
 command -v systemctl >/dev/null 2>&1 || die "systemd not found — this build is linux+systemd only"
-command -v python3 >/dev/null 2>&1 || die "python3 required (apt install python3)"
+command -v python3 >/dev/null 2>&1 || die "python3 required (apt/dnf/pacman install python3)"
+command -v curl    >/dev/null 2>&1 || die "curl required"
 systemd-run --user --scope true >/dev/null 2>&1 || die "user systemd not running (are you inside a plain docker?)"
+[ -e /dev/net/tun ] || die "/dev/net/tun missing — enable TUN in your VM/WSL settings first"
 
-# ---- sudo: authenticate once, up front.
+# ---------------------------------------------------------------- sudo
 # order: cached (sudo -n) → password prompt from your terminal (curl | bash
 # has no usable stdin — rustup and homebrew solve it the same way) →
-# stdin fallback for people who download the script first and pipe the
-# password in.
+# stdin fallback for people who download the script first.
 if ! sudo -n true 2>/dev/null; then
-  # subshell so the /dev/tty open error (headless envs) stays silent
   if bash -c 'sudo -v </dev/tty' 2>/dev/null; then
     ok "sudo authenticated"
   elif [ ! -t 0 ]; then
@@ -46,6 +51,13 @@ if ! sudo -n true 2>/dev/null; then
     die "sudo failed — run me from a real terminal"
   fi
 fi
+
+# ---------------------------------------------------------------- distro
+PKR=""
+command -v apt-get >/dev/null 2>&1 && PKR=apt
+[ -z "$PKR" ] && command -v dnf >/dev/null 2>&1 && PKR=dnf
+[ -z "$PKR" ] && command -v pacman >/dev/null 2>&1 && PKR=pacman
+[ -n "$PKR" ] || die "no apt/dnf/pacman — install cloudflare-warp yourself, then re-run me"
 
 # ---------------------------------------------------------------- opencode CLI
 OC_REAL=""
@@ -74,68 +86,104 @@ elif [ -x "$HOME/.local/bin/warp-cli" ]; then
 fi
 if [ -z "$WARP" ]; then
   say "warp-cli not found — installing cloudflare warp client"
-  if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update -qq >/dev/null 2>&1
-    sudo apt-get install -y -qq curl gpg lsb-release >/dev/null 2>&1
-    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
-      | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg >/dev/null 2>&1
-    echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
-      | sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
-    sudo apt-get update -qq >/dev/null 2>&1
-    sudo apt-get install -y -qq cloudflare-warp >/dev/null 2>&1
-    command -v warp-cli >/dev/null 2>&1 && WARP="$(command -v warp-cli)"
-  fi
+  case "$PKR" in
+    apt)
+      sudo apt-get update -qq >/dev/null 2>&1
+      sudo apt-get install -y -qq curl gpg lsb-release >/dev/null 2>&1
+      curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+        | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg >/dev/null 2>&1
+      echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+        | sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
+      sudo apt-get update -qq >/dev/null 2>&1
+      sudo apt-get install -y -qq cloudflare-warp >/dev/null 2>&1
+      ;;
+    dnf)
+      # cloudflare doesn't ship official dnf repo bins for every fedora release;
+      # the defvd route is their rpm. fall back to it.
+      sudo dnf -y install gpg >/dev/null 2>&1
+      REL=$(curl -fsSL https://api.github.com/repos/cloudflare-warp/cloudflare-warp-rpm/releases/latest 2>/dev/null \
+        | python3 -c "import json,sys
+try:
+    a=json.load(sys.stdin)['assets']
+    print(next(x['browser_download_url'] for x in a if 'x86_64.rpm' in x['name']))
+except Exception:
+    print('')" 2>/dev/null)
+      if [ -n "$REL" ]; then
+        curl -fsSL "$REL" -o /tmp/warp-install.rpm && sudo dnf -y install /tmp/warp-install.rpm >/dev/null 2>&1 && rm -f /tmp/warp-install.rpm
+      else
+        sudo dnf -y install cloudflare-warp >/dev/null 2>&1
+      fi
+      ;;
+    pacman)
+      if command -v yay >/dev/null 2>&1; then
+        yay -S --noconfirm cloudflare-warp-bin >/dev/null 2>&1
+      elif command -v paru >/dev/null 2>&1; then
+        paru -S --noconfirm cloudflare-warp-bin >/dev/null 2>&1
+      else
+        die "arch needs yay or paru for cloudflare-warp-bin — install either, re-run me"
+      fi
+      ;;
+  esac
+  command -v warp-cli >/dev/null 2>&1 && WARP="$(command -v warp-cli)"
   [ -n "$WARP" ] || die "warp-cli install failed — see https://pkg.cloudflareclient.com/"
   ok "cloudflare warp installed"
 else
   ok "warp-cli found: $WARP"
 fi
 
+# warp-cli callers: some boxes wrap warp-cli with a shim that already passes
+# --accept-tos, and passing it twice makes the CLI die. so: try with the
+# flag first (fresh installs need it), fall back to without (shimmed boxes).
+sw(){  sudo -n "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; sudo -n "$WARP" "$@" >/dev/null 2>&1; }
+swo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP" "$@" 2>/dev/null; }
+
 # ---------------------------------------------------------------- scripts
 mkdir -p "$DEST/scripts" "$HOME/.local/bin"
-if [ -d "$SRC/scripts" ] && [ -f "$SRC/scripts/zen-lane.sh" ]; then
+if [ -n "$SRC" ]; then
   cp "$SRC/scripts/"*.sh "$DEST/scripts/"
   [ -f "$SRC/AGENTS.md" ] && cp "$SRC/AGENTS.md" "$DEST/AGENTS.md"
 else
-  say "downloading scripts from github (piped install)"
-  BASE="https://raw.githubusercontent.com/ELECTRONBREACH/opencode-unlimited-usage/main/scripts"
+  say "fetching scripts from github"
   for f in warp-keeper.sh zen-lane.sh zen-guard.sh zen-hop.sh doctor.sh; do
-    curl -fsSL "$BASE/$f" -o "$DEST/scripts/$f" || die "could not fetch $f"
+    curl -fsSL "$RAW/scripts/$f" -o "$DEST/scripts/$f" || die "could not fetch $f"
   done
-  curl -fsSL "${BASE%scripts}/AGENTS.md" -o "$DEST/AGENTS.md" 2>/dev/null || true
+  curl -fsSL "$RAW/AGENTS.md" -o "$DEST/AGENTS.md" 2>/dev/null || true
 fi
 chmod +x "$DEST/scripts/"*.sh
 
-# tools on PATH: hop + doctor
-ln -sf "$DEST/scripts/zen-hop.sh"  "$HOME/.local/bin/${BRAND}-hop"
+# scripts pick the warp binary themselves (OUC_WARP_BIN env if the service
+# provides one, else standard paths). no baking — sed-editing scripts after
+# download is how you ship a broken script.
+# hop + doctor on PATH
+ln -sf "$DEST/scripts/zen-hop.sh" "$HOME/.local/bin/${BRAND}-hop"
 ln -sf "$DEST/scripts/doctor.sh"  "$HOME/.local/bin/${BRAND}-doctor"
 ok "scripts in $DEST"
 
-# ---------------------------------------------------------------- sudoers (warp-cli only, needed by the unattended guard)
-if ! sudo -n "$WARP" --accept-tos status >/dev/null 2>&1; then
+# ---------------------------------------------------------------- sudoers (warp-cli only, for the unattended guard)
+if ! sw status; then
   say "adding sudoers entry: $USER can run warp-cli without a password"
   echo "$USER ALL=(root) NOPASSWD: $WARP" | sudo tee "$SUDOERS_FILE" >/dev/null
   sudo chmod 440 "$SUDOERS_FILE"
 fi
-sudo -n "$WARP" --accept-tos status >/dev/null 2>&1 \
-  && ok "passwordless warp-cli works" \
-  || die "sudoers entry did not take — check $SUDOERS_FILE"
+sw status || die "passwordless warp-cli did not work — check $SUDOERS_FILE"
+ok "passwordless warp-cli works"
 
-# ---------------------------------------------------------------- warp: register + TUN mode
-if ! sudo "$WARP" --accept-tos status 2>/dev/null | grep -q Connected; then
-  sudo "$WARP" --accept-tos registration new >/dev/null 2>&1
-  sudo "$WARP" --accept-tos mode warp >/dev/null 2>&1
-  sudo "$WARP" --accept-tos connect >/dev/null 2>&1
-  sleep 6
-fi
-sudo "$WARP" --accept-tos status 2>/dev/null | head -1 | grep -q Connected \
+# ---------------------------------------------------------------- warp: register + TUN mode + connect
+say "registering warp + tunnel up"
+sw registration new >/dev/null 2>&1   # already-registered boxes just error, fine
+sw mode warp
+sw connect
+CONNECTED=0
+for i in $(seq 1 10); do
+  sleep 3
+  swo status | head -1 | grep -q Connected && { CONNECTED=1; break; }
+done
+[ "$CONNECTED" = 1 ] \
   && ok "warp tunnel: connected (TUN mode)" \
-  || say "warp not connected yet — the keeper will keep retrying"
+  || say "warp not up yet — the keeper will keep retrying every 45s"
 
 # ---------------------------------------------------------------- keeper (root service)
-echo "$USER" > /tmp/.ouc_owner
-KEEPER_UNIT_W="$UNIT_KEEPER"
-sed "s|@WARP@|$WARP|g" > /tmp/ouc-keeper-unit <<EOF
+cat > /tmp/ouc-keeper-unit <<EOF
 [Unit]
 Description=Opencode Unlimited — warp keeper (tunnel enforce + kill-switch)
 After=network-online.target
@@ -155,7 +203,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ${BRAND}-keeper >/dev/null 2>&1
 systemctl is-active ${BRAND}-keeper 2>/dev/null | grep -q active \
   && ok "keeper service (root): running" \
-  || say "keeper did not start — check: systemctl status ${BRAND}-keeper"
+  || die "keeper did not start — check: systemctl status ${BRAND}-keeper"
 
 # ---------------------------------------------------------------- guard (user service)
 mkdir -p "$HOME/.config/systemd/user"
@@ -166,6 +214,7 @@ After=network-online.target
 
 [Service]
 Environment=OUC_KEEPER_UNIT=${BRAND}-keeper
+Environment=OUC_WARP_BIN=$WARP
 ExecStart=/bin/bash $DEST/scripts/zen-guard.sh
 Restart=always
 RestartSec=15
@@ -177,10 +226,9 @@ systemctl --user daemon-reload
 systemctl --user enable --now ${BRAND}-guard >/dev/null 2>&1
 systemctl --user is-active ${BRAND}-guard 2>/dev/null | grep -q active \
   && ok "zen-guard service (user): running" \
-  || say "guard did not start — check: systemctl --user status ${BRAND}-guard"
+  || die "guard did not start — check: systemctl --user status ${BRAND}-guard"
 
-# ---------------------------------------------------------------- TUI shim (the lane)
-# if the real binary sits where the shim goes, park it safely first
+# ---------------------------------------------------------------- TUI shim (the lane + credit enforcement)
 if [ "$OC_REAL" = "$SHIM" ]; then
   cp "$SHIM" "$DEST/real-opencode" && OC_REAL="$DEST/real-opencode"
 fi
@@ -188,10 +236,22 @@ printf '#!/usr/bin/env bash\nexport OUC_REAL_BIN="%s"\nexec bash "%s/scripts/zen
 chmod +x "$SHIM"
 ok "opencode entry → lane (fresh edge + /64 per launch)"
 
-# ---------------------------------------------------------------- check path
+# ---------------------------------------------------------------- verify end to end (the installer doesn't lie)
+say "verifying the lane end to end (this hits opencode once)…"
+V6=$(timeout 12 curl -s -m 10 https://api64.ipify.org 2>/dev/null)
+case "$V6" in
+  2606:*) ok "egress is cloudflare warp: $(echo "$V6" | cut -d: -f1-4)::/64" ;;
+  *) bad "egress is not warp yet — keeper is still setting up, give it a minute then run ${BRAND}-doctor" ;;
+esac
+if [ -f "$HOME/.opencode/AGENTS.md" ] && grep -q "ElectronCursed" "$HOME/.opencode/AGENTS.md"; then
+  ok "credit file active (every AI response signs off)"
+else
+  say "credit file lands on first opencode launch (lane enforces it)"
+fi
+
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ok "PATH has ~/.local/bin" ;;
-  *) say "add this line to your ~/.bashrc then reopen the terminal:"
+  *) say "add this to your ~/.bashrc, then reopen the terminal:"
      say "    export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
 esac
 
@@ -199,5 +259,5 @@ echo ""
 ok "DONE. close & reopen your terminal, then just run:  opencode"
 echo ""
 say "wall hits while you work? zen-guard rotates in ~10s — just re-send your message."
-say "health check any time:  ${BRAND}-doctor"
+say "health check any time:  ${BRAND}-doctor   ·   fresh identity now:  ${BRAND}-hop"
 echo ""

@@ -6,8 +6,14 @@ set -u
 BRAND="opencode-unlimited"
 DEST="$HOME/.local/share/$BRAND"
 
-WARP="$(command -v warp-cli || echo /usr/bin/warp-cli)"
-[ -x "$WARP" ] || WARP="$HOME/.local/bin/warp-cli"
+WARP="${OUC_WARP_BIN:-}"
+if [ -z "$WARP" ]; then
+  if command -v warp-cli >/dev/null 2>&1; then WARP="$(command -v warp-cli)"
+  elif [ -x /usr/bin/warp-cli ]; then WARP=/usr/bin/warp-cli
+  elif [ -x "$HOME/.local/bin/warp-cli" ]; then WARP="$HOME/.local/bin/warp-cli"
+  fi
+fi
+wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP" "$@" 2>/dev/null; }
 
 ok(){ echo -e "  \e[32m✓\e[0m $*"; }
 warn(){ echo -e "  \e[33m!\e[0m $*"; }
@@ -25,7 +31,7 @@ systemctl is-active ${BRAND}-keeper >/dev/null 2>&1 \
   || bad "keeper down — sudo systemctl restart ${BRAND}-keeper"
 
 # ---- warp tunnel
-ST=$(sudo -n "$WARP" --accept-tos status 2>/dev/null | head -1)
+ST=$(wo status | head -1)
 echo "$ST" | grep -q Connected \
   && ok "warp tunnel: connected" \
   || bad "warp not connected — sudo systemctl restart ${BRAND}-keeper"

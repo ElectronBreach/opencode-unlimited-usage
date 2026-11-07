@@ -19,8 +19,16 @@ STATE_DIR="$HOME/.local/share/opencode-unlimited/guard"
 STATE="$STATE_DIR/state.json"
 GUARD_LOG="$STATE_DIR/guard.log"
 
-WARP="$(command -v warp-cli || echo /usr/bin/warp-cli)"
-[ -x "$WARP" ] || WARP="$HOME/.local/bin/warp-cli"
+# warp binary: service env → PATH → common fallbacks. probe with/without
+# --accept-tos (shimmed boxes pass it twice = dead CLI).
+WARP="${OUC_WARP_BIN:-}"
+if [ -z "$WARP" ]; then
+  if command -v warp-cli >/dev/null 2>&1; then WARP="$(command -v warp-cli)"
+  elif [ -x /usr/bin/warp-cli ]; then WARP=/usr/bin/warp-cli
+  elif [ -x "$HOME/.local/bin/warp-cli" ]; then WARP="$HOME/.local/bin/warp-cli"
+  fi
+fi
+[ -n "$WARP" ] || { echo "warp-cli not found"; exit 1; }
 KEEPER="${OUC_KEEPER_UNIT:-opencode-unlimited-keeper}"
 
 COOLDOWN=75        # seconds between rotations (a rotation takes ~15s)
@@ -28,8 +36,10 @@ MAX_HOP_TRIES=8
 BLACKLIST_MAX=200  # lifetime blacklist cap — burnt /64s never come back
 
 mkdir -p "$STATE_DIR"
-W="sudo -n $WARP --accept-tos"
-$W status >/dev/null 2>&1 || W="sudo $WARP --accept-tos"
+
+svc(){ sudo -n systemctl "$@" >/dev/null 2>&1 || sudo systemctl "$@" >/dev/null 2>&1; }
+w(){  sudo -n "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; sudo -n "$WARP" "$@" >/dev/null 2>&1; }
+wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP" "$@" 2>/dev/null; }
 
 glog(){ echo "$(date '+%m-%d %H:%M:%S') $*" >> "$GUARD_LOG"; }
 
@@ -78,17 +88,17 @@ PY
 
 hop_once(){
   # one keeper-safe registration cycle. prints the new /64 or empty.
-  sudo -n systemctl stop "$KEEPER" >/dev/null 2>&1 || sudo systemctl stop "$KEEPER" >/dev/null 2>&1
-  $W disconnect         >/dev/null 2>&1
-  $W registration delete >/dev/null 2>&1
+  svc stop "$KEEPER"
+  w disconnect
+  w registration delete
   local ok=0 i
   for i in 1 2 3; do
-    $W registration new >/dev/null 2>&1 && { ok=1; break; }
+    w registration new && { ok=1; break; }
     sleep 6
   done
-  $W mode warp >/dev/null 2>&1
-  $W connect   >/dev/null 2>&1
-  sudo -n systemctl start "$KEEPER" >/dev/null 2>&1 || sudo systemctl start "$KEEPER" >/dev/null 2>&1
+  w mode warp
+  w connect
+  svc start "$KEEPER"
   [ "$ok" = 1 ] || { echo ""; return; }
   local V=""
   for i in $(seq 1 12); do
