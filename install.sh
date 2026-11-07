@@ -30,14 +30,20 @@ command -v systemctl >/dev/null 2>&1 || die "systemd not found — this build is
 command -v python3 >/dev/null 2>&1 || die "python3 required (apt install python3)"
 systemd-run --user --scope true >/dev/null 2>&1 || die "user systemd not running (are you inside a plain docker?)"
 
-# ---- sudo: authenticate up front from the real terminal.
-# piped installs (curl | bash) have no usable stdin for password prompts —
-# this is exactly how rustup/homebrew handle it. after this, cached sudo
-# covers the rest of the install.
+# ---- sudo: authenticate once, up front.
+# order: cached (sudo -n) → password prompt from your terminal (curl | bash
+# has no usable stdin — rustup and homebrew solve it the same way) →
+# stdin fallback for people who download the script first and pipe the
+# password in.
 if ! sudo -n true 2>/dev/null; then
-  say "sudo password needed (once, for the system bits):"
-  sudo -v </dev/tty >/dev/null 2>&1 || die "sudo failed — run me from a real terminal" 
-  ok "sudo authenticated"
+  if sudo -v </dev/tty >/dev/null 2>&1; then
+    ok "sudo authenticated"
+  elif [ ! -t 0 ]; then
+    sudo -S -v >/dev/null 2>&1 || die "sudo failed — password came wrong from stdin"
+    ok "sudo authenticated (from stdin)"
+  else
+    die "sudo failed — run me from a real terminal"
+  fi
 fi
 
 # ---------------------------------------------------------------- opencode CLI
