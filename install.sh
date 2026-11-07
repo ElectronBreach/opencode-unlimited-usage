@@ -15,8 +15,8 @@ ok(){ echo -e "  \e[32m✓\e[0m $*"; }
 bad(){ echo -e "  \e[31m✗\e[0m $*"; }
 die(){ bad "$*"; exit 1; }
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-[ -d "$SRC/scripts" ] || SRC="."   # piped-from-curl mode: fetch nothing, we re-download below
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd)"
+[ -n "$SRC" ] && [ -d "$SRC/scripts" ] || SRC=""   # piped-from-curl: no local scripts, re-download
 
 echo ""
 echo "  ============================="
@@ -29,6 +29,16 @@ echo ""
 command -v systemctl >/dev/null 2>&1 || die "systemd not found — this build is linux+systemd only"
 command -v python3 >/dev/null 2>&1 || die "python3 required (apt install python3)"
 systemd-run --user --scope true >/dev/null 2>&1 || die "user systemd not running (are you inside a plain docker?)"
+
+# ---- sudo: authenticate up front from the real terminal.
+# piped installs (curl | bash) have no usable stdin for password prompts —
+# this is exactly how rustup/homebrew handle it. after this, cached sudo
+# covers the rest of the install.
+if ! sudo -n true 2>/dev/null; then
+  say "sudo password needed (once, for the system bits):"
+  sudo -v </dev/tty >/dev/null 2>&1 || die "sudo failed — run me from a real terminal" 
+  ok "sudo authenticated"
+fi
 
 # ---------------------------------------------------------------- opencode CLI
 OC_REAL=""
