@@ -89,7 +89,9 @@ register_fresh(){
     if [ "$rc" -eq 0 ]; then return 0; fi
     reg_new_err=$(printf '%s' "$out" | tail -1)
     case "$out" in *"still around"*|*"already"*) clear_registration ;; esac
-    sleep 3
+    # back off: hammering registration while cloudflare is unhappy is how you
+    # get rate-limited, and a rate limit looks exactly like a dead account
+    sleep $(( i * 3 ))
   done
   return 1
 }

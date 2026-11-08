@@ -232,8 +232,10 @@ while true; do
 
   [ "$WALL" = 1 ] || continue
 
-  if [ "$AGE" -lt "$COOLDOWN" ]; then
-    glog "wall seen but in cooldown (${AGE}s < ${COOLDOWN}s) — waiting"
+  # jitter the cooldown so repeated walls do not align to the same tick
+  COOLDOWN_J=$(( COOLDOWN + (RANDOM % 20) ))
+  if [ "$AGE" -lt "$COOLDOWN_J" ]; then
+    glog "wall seen but in cooldown (${AGE}s < ${COOLDOWN_J}s) — waiting"
     continue
   fi
 
@@ -284,7 +286,18 @@ while true; do
     if [ -n "$V" ] && is_warp_ip "$V"; then NEW="$V"; fi
   fi
   if [ -z "$NEW" ]; then
-    glog "rotation failed — wall is likely account-side, not ip-side; keeping the tunnel"
+    FAILS=$(( $(state_get fails 2>/dev/null || echo 0) + 1 ))
+    case "$FAILS" in ''|*[!0-9]*) FAILS=1 ;; esac
+    state_set fails "$FAILS"
+    if [ "$FAILS" -ge 3 ]; then
+      glog "three rotations failed in a row — cooling down for 10 minutes (account-side wall)"
+      state_set last_hop "$((NOW + 600))"
+      state_set fails 0
+    else
+      glog "rotation failed ($FAILS/3) — wall is likely account-side, not ip-side; keeping the tunnel"
+    fi
+  else
+    state_set fails 0
   fi
 
   if [ -n "$NEW" ]; then

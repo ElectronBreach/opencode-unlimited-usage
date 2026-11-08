@@ -332,6 +332,8 @@ done
 
 klog "keeper up (macOS / launchd, tick ${TICK}s, leakguard=${LEAKGUARD}, warp=$WARP)"
 bad_ticks=0
+last_failopen=0
+last_reconnect=0
 dns_fixes=0
 last_dns_fix=0
 loops=0
@@ -354,6 +356,16 @@ while true; do
     fi
   fi
 
+  # a dropped tunnel used to wait for the 45s slow tick. repair it here, but
+  # never more than once every 15s so a flapping edge cannot become a storm.
+  if ! connected; then
+    now=$(date +%s)
+    if [ $((now - ${last_reconnect:-0})) -ge 15 ]; then
+      w connect >/dev/null 2>&1 || true
+      last_reconnect=$now
+    fi
+  fi
+
   if connected && ! egress_ok; then
     bad_ticks=$((bad_ticks + 1))
   elif connected && ! dns_ok; then
@@ -362,12 +374,21 @@ while true; do
     bad_ticks=0
   fi
 
-  # 3 consecutive bad checks (~15s) while "connected" = the tunnel is lying
+  # 3 consecutive bad checks (~15s) while "connected" = the tunnel is lying.
+  # but a freshly reconnected tunnel is slow to route, and disconnecting it
+  # every 15s turns one bad minute into a flap loop. once we fail open, stay
+  # open for a while and let the slow path reconnect cleanly.
+  now=$(date +%s)
   if [ "$bad_ticks" -ge 3 ]; then
-    klog "tunnel reports connected but dns/egress dead — disconnecting warp (fail-open)"
-    disarm_guard
-    w disconnect >/dev/null 2>&1 || true
-    restore_dns
+    if [ $((now - ${last_failopen:-0})) -ge 120 ]; then
+      klog "tunnel reports connected but dns/egress dead — disconnecting warp (fail-open, 120s backoff)"
+      disarm_guard
+      w disconnect >/dev/null 2>&1 || true
+      restore_dns
+      last_failopen=$now
+    else
+      klog "tunnel still unhealthy — fail-open already applied $((now - last_failopen))s ago, holding"
+    fi
     bad_ticks=0
   fi
 
