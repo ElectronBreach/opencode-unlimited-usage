@@ -547,17 +547,27 @@ $("btnClear").addEventListener("click", () => { $("logBody").innerHTML = ""; });
 $("btnDock").addEventListener("click", () => bridge("dock"));
 $("btnMin").addEventListener("click", () => bridge("collapse"));
 $("btnClose").addEventListener("click", () => bridge("close"));
-$("bubble").addEventListener("click", () => bridge("expand"));
+$("bubble").addEventListener("click", () => {
+  // a drag that ends on the circle is not a click — don't swallow it in expand
+  if (dragMoved) { dragMoved = false; return; }
+  bridge("expand");
+});
 $("bubble").addEventListener("dblclick", () => bridge("hop"));
 $("lastSession").addEventListener("click", () => bridge("copy"));
 
 /* drag: native timer owns the motion, js only says start/stop */
-let dragging = false;
+let dragging = false, dragMoved = false, dragOrigin = { x: 0, y: 0 };
 function startDrag(e){
   if (e.button !== 0) return;
   dragging = true;
+  dragMoved = false;
+  dragOrigin = { x: e.clientX, y: e.clientY };
   bridge("dragStart");
 }
+document.addEventListener("pointermove", (e) => {
+  if (!dragging) return;
+  if (Math.abs(e.clientX - dragOrigin.x) > 3 || Math.abs(e.clientY - dragOrigin.y) > 3) dragMoved = true;
+});
 function stopDrag(){
   if (!dragging) return;
   dragging = false;

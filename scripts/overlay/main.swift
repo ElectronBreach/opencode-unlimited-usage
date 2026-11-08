@@ -29,8 +29,23 @@ final class Panel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+// plain container. it used to return nil from hitTest to "let drags through",
+// which also told AppKit the whole content view was untouchable — the web view
+// inside it never received a single mouseDown, so every button was dead while
+// the UI still rendered. dragging is driven from js (dragStart/dragEnd), not
+// from the container swallowing events.
 final class DragView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override var mouseDownCanMoveWindow: Bool { false }
+    // accessory app, never active: without this AppKit spends the first click
+    // of every interaction on activation and the button underneath never fires.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+// the hit target is the web view, not the container, so it needs the same
+// first-mouse pass-through — otherwise buttons only work on the second click,
+// and there is never a first click because nothing activates the app.
+final class Web: WKWebView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
@@ -111,6 +126,20 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         }
     }
 
+    // dump where the web view thinks its controls are. used to prove the panel
+    // is hit-testing again: a real click at these coordinates must change state.
+    func measureControls() {
+        let js = "JSON.stringify(Array.from(document.querySelectorAll('button,#bubble,#drag')).map(e=>{const r=e.getBoundingClientRect();return {id:e.id,x:r.x,y:r.y,w:r.width,h:r.height}}))"
+        web.evaluateJavaScript(js) { res, err in
+            var body: [String: Any] = ["frame": NSStringFromRect(self.window.frame)]
+            if let s = res as? String { body["controls"] = s }
+            if let e = err { body["error"] = String(describing: e) }
+            if let d = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted]) {
+                try? d.write(to: guardDir.appendingPathComponent("overlay-rect.json"))
+            }
+        }
+    }
+
     func writeContext(dir: String) {
         try? fm.createDirectory(at: guardDir, withIntermediateDirectories: true)
         let body: [String: Any] = ["dir": dir, "ts": Int(Date().timeIntervalSince1970)]
@@ -125,6 +154,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                        styleMask: [.borderless, .nonactivatingPanel],
                        backing: .buffered, defer: false)
         window.isFloatingPanel = true
+        window.becomesKeyOnlyIfNeeded = true
         window.level = .statusBar
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         window.isOpaque = false
@@ -174,7 +204,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         cfg.userContentController = ucc
         cfg.suppressesIncrementalRendering = false
 
-        web = WKWebView(frame: window.contentView!.bounds, configuration: cfg)
+        web = Web(frame: window.contentView!.bounds, configuration: cfg)
         web.autoresizingMask = [.width, .height]
         web.setValue(false, forKey: "drawsBackground")
         web.navigationDelegate = self
@@ -320,6 +350,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             window.orderFrontRegardless()
         case "dock": dockSide()
         case "state": dumpState()
+        case "rect": measureControls()
         case "close": NSApp.terminate(nil)
         case "refresh": refresh(force: true)
         case "copy": copySummary()
@@ -456,6 +487,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "hop": runCommand("hop")
         case "doctor": runCommand("doctor")
         case "dock": dockSide()
+        case "state": dumpState()
+        case "rect": measureControls()
         case "snapshot": snapshot(to: cmdFile.deletingLastPathComponent().appendingPathComponent("overlay-snapshot.png"))
         case "probe":
             web.evaluateJavaScript("JSON.stringify({title:document.title,nodes:document.querySelectorAll('*').length,txt:document.body.innerText.slice(0,200)})") { v, e in
