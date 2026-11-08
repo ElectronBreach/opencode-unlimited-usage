@@ -1,32 +1,64 @@
 #!/bin/bash
-# clean removal — services, firewall chain, sudoers entry, wrapper, credit
-# file. your opencode data/sessions/auth are untouched.
+# clean removal (macOS) — launchd units, pf anchor, sudoers entry, wrapper,
+# credit file. your opencode data/sessions/auth are untouched.
 set -u
 
 BRAND="opencode-unlimited"
 DEST="$HOME/.local/share/$BRAND"
-WARP="$(command -v warp-cli || echo /usr/bin/warp-cli)"
-[ -x "$WARP" ] || WARP="$HOME/.local/bin/warp-cli"
+GUARD_DIR="$DEST/guard"
+DAEMON_LABEL="com.opencode-unlimited.keeper"
+AGENT_LABEL="com.opencode-unlimited.guard"
+DAEMON_PLIST="/Library/LaunchDaemons/$DAEMON_LABEL.plist"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
+ANCHOR_NAME="OUC_LEAKGUARD"
+ANCHOR="/etc/pf.anchors/$ANCHOR_NAME"
+PF_CONF="/etc/pf.conf"
 
 ok(){ echo -e "  \e[32m✓\e[0m $*"; }
+warn(){ echo -e "  \e[33m!\e[0m $*"; }
 
 echo ""
-echo "  removing Opencode Unlimited Usage…"
+echo "  removing Opencode Unlimited Usage (macOS)…"
 echo ""
 
 # stop services first
-systemctl --user disable --now ${BRAND}-guard.service >/dev/null 2>&1 && ok "zen-guard stopped"
-rm -f "$HOME/.config/systemd/user/${BRAND}-guard.service"
-systemctl --user daemon-reload >/dev/null 2>&1
+launchctl bootout "gui/$(id -u)/$AGENT_LABEL" >/dev/null 2>&1 && ok "zen-guard stopped"
+rm -f "$AGENT_PLIST"
 
-sudo systemctl disable --now ${BRAND}-keeper.service >/dev/null 2>&1 && ok "keeper stopped"
-sudo rm -f "/etc/systemd/system/${BRAND}-keeper.service" "/usr/local/bin/${BRAND}-keeper"
-sudo systemctl daemon-reload >/dev/null 2>&1
+sudo launchctl bootout system/"$DAEMON_LABEL" >/dev/null 2>&1 && ok "keeper stopped"
+sudo rm -f "$DAEMON_PLIST"
 
-# firewall chains — allow traffic out normally again
-sudo iptables  -D OUTPUT -j OUC_LEAKGUARD 2>/dev/null; sudo iptables  -F OUC_LEAKGUARD 2>/dev/null; sudo iptables  -X OUC_LEAKGUARD 2>/dev/null
-sudo ip6tables -D OUTPUT -j OUC_LEAKGUARD 2>/dev/null; sudo ip6tables -F OUC_LEAKGUARD 2>/dev/null; sudo ip6tables -X OUC_LEAKGUARD 2>/dev/null
-ok "kill-switch removed"
+# DNS back to the captured baseline BEFORE the state dir goes away
+if [ -f "$GUARD_DIR/dns-baseline.txt" ]; then
+  while IFS=$'\t' read -r svc servers; do
+    [ -n "$svc" ] || continue
+    networksetup -listallnetworkservices 2>/dev/null | grep -qx "$svc" || continue
+    if [ -z "$servers" ] || [ "$servers" = "Empty" ]; then
+      networksetup -setdnsservers "$svc" Empty >/dev/null 2>&1 || true
+    else
+      # shellcheck disable=SC2086
+      networksetup -setdnsservers "$svc" $servers >/dev/null 2>&1 || true
+    fi
+  done < "$GUARD_DIR/dns-baseline.txt"
+  ok "dns restored to baseline"
+fi
+dscacheutil -flushcache >/dev/null 2>&1 || true
+killall -HUP mDNSResponder >/dev/null 2>&1 || true
+
+# leak guard — flush first so traffic is free immediately, then remove refs
+sudo /sbin/pfctl -a "$ANCHOR_NAME" -F all >/dev/null 2>&1
+if [ -f "$PF_CONF" ]; then
+  python3 - "$PF_CONF" "$ANCHOR_NAME" <<'PY' 2>/dev/null
+import sys
+path, name = sys.argv[1:3]
+lines = open(path).read().splitlines()
+drop = {f'anchor "{name}"', f'load anchor "{name}" from "/etc/pf.anchors/{name}"'}
+open(path, "w").write("\n".join(l for l in lines if l.strip() not in drop) + "\n")
+PY
+  sudo /sbin/pfctl -f "$PF_CONF" >/dev/null 2>&1
+fi
+sudo rm -f "$ANCHOR" "$PF_CONF.ouc.bak"
+ok "leak guard removed (pf back to stock)"
 
 # sudoers entry
 sudo rm -f "/etc/sudoers.d/$BRAND" && ok "sudoers entry removed"
@@ -36,6 +68,13 @@ if [ -x "$HOME/.opencode/bin/opencode" ]; then
   printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$HOME/.opencode/bin/opencode" > "$HOME/.local/bin/opencode"
   chmod +x "$HOME/.local/bin/opencode"
   ok "opencode entry → back to stock binary"
+elif [ -f "$DEST/real-opencode" ]; then
+  cp "$DEST/real-opencode" "$HOME/.local/bin/opencode"
+  chmod +x "$HOME/.local/bin/opencode"
+  ok "opencode entry → back to saved real binary"
+else
+  rm -f "$HOME/.local/bin/opencode"
+  warn "opencode entry removed (no real binary found to restore)"
 fi
 
 # credit file (ours only — if the user added their own rules, those stay)
@@ -47,12 +86,13 @@ fi
 # PATH tools
 rm -f "$HOME/.local/bin/${BRAND}-hop" "$HOME/.local/bin/${BRAND}-doctor"
 
-# the scripts + state. leave warp itself installed (it's a normal system
-# package now) — disconnect the tunnel so traffic goes back to your real IP.
+# scripts + state. leave warp itself installed (it's a normal app now) —
+# disconnect the tunnel so traffic goes back to your real IP.
 rm -rf "$DEST" && ok "scripts + guard state removed"
-if command -v "$WARP" >/dev/null 2>&1; then
-  sudo "$WARP" --accept-tos disconnect >/dev/null 2>&1 && ok "warp tunnel disconnected (package left installed)"
+if command -v warp-cli >/dev/null 2>&1; then
+  sudo warp-cli --accept-tos disconnect >/dev/null 2>&1 && ok "warp tunnel disconnected (app left installed)"
 fi
+dscacheutil -flushcache >/dev/null 2>&1 || true
 
 echo ""
 ok "gone. opencode itself + your sessions are untouched."
