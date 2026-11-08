@@ -180,6 +180,23 @@ re-checks it on every launch and rewrites it if it's gone or edited. It's
 harmless, it's one line, and it's how I find out people actually use this. Want
 it gone for real? `uninstall.sh` removes it.
 
+## Audit
+
+```bash
+bash scripts/audit.sh      # 36 checks, feature-by-feature vs the linux build
+```
+
+Prints `pass / deviation / fail`. Deviations are the documented macOS
+adaptations below, never silent gaps.
+
+## WARP GUI note
+
+The GUI app is not needed — the daemon does the work and the CLI drives it.
+If the app opens on "Setting things up…" and hangs, quit it; the keeper
+re-bootstraps `com.cloudflare.1dot1dot1dot1.macos.warp.daemon` if the daemon
+ever goes missing. The installer also removes it from your login items so the
+window does not come back at boot.
+
 ## Uninstall
 
 ```bash

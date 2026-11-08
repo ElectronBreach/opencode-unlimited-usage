@@ -119,6 +119,20 @@ ensure_mode(){
   w mode "$WANT_MODE" >/dev/null 2>&1 || true
 }
 
+CF_DAEMON_LABEL="com.cloudflare.1dot1dot1dot1.macos.warp.daemon"
+CF_DAEMON_PLIST="/Library/LaunchDaemons/$CF_DAEMON_LABEL.plist"
+
+daemon_up(){ wo status >/dev/null 2>&1; }
+
+ensure_daemon(){
+  daemon_up && return 0
+  [ -f "$CF_DAEMON_PLIST" ] || return 1
+  launchctl print "system/$CF_DAEMON_LABEL" >/dev/null 2>&1 \
+    || launchctl bootstrap system "$CF_DAEMON_PLIST" >/dev/null 2>&1
+  sleep 5
+  daemon_up
+}
+
 ensure_connected(){
   connected && return 0
   w connect; sleep 4
@@ -264,20 +278,29 @@ while true; do
   [ "$loops" -ge 9 ] || continue
   loops=0
 
+  ensure_mode
+
+  if ! daemon_up && ! ensure_daemon; then
+    klog "warp daemon unreachable — flushing guard, keeping direct egress"
+    flatten
+    dns_ok || restore_dns
+    continue
+  fi
+
   if ensure_connected; then
     if [ "$LEAKGUARD" = "1" ] && dns_ok && egress_ok; then
-      if ! grep -q "load anchor \"$ANCHOR_NAME\"" "$PF_CONF" 2>/dev/null; then
+      if ! guard_live; then
         arm_guard && klog "leak guard armed (opt-in, tunnel healthy)"
       fi
     elif [ "$LEAKGUARD" != "1" ]; then
       # opt-in is off — make sure nothing is left armed from a past run
-      if grep -q "load anchor \"$ANCHOR_NAME\"" "$PF_CONF" 2>/dev/null; then
+      if guard_live || pfconf_armed; then
         klog "leak guard is OFF by config — removing leftover rules"
         flatten
       fi
     fi
   else
-    if grep -q "load anchor \"$ANCHOR_NAME\"" "$PF_CONF" 2>/dev/null; then
+    if guard_live || pfconf_armed; then
       klog "tunnel down — flushing leak guard (fail-open)"
       flatten
     fi
