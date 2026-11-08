@@ -159,8 +159,9 @@ header:active{cursor:grabbing}
 /* ---------- spark ---------- */
 .spark{margin-top:8px;position:relative;z-index:2;border-radius:9px;border:1px solid rgba(255,255,255,.05);
   background:rgba(255,255,255,.015);padding:5px 7px 2px}
-.spark-top{display:flex;justify-content:space-between;font-size:8px;letter-spacing:.16em;color:var(--mut)}
-.spark canvas{display:block;width:100%;height:34px}
+.spark-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;white-space:nowrap;font-size:8px;letter-spacing:.16em;color:var(--mut);margin-bottom:3px}
+.spark-top b{font-weight:600;color:rgba(244,114,182,.85);letter-spacing:0;white-space:nowrap}
+.spark canvas{display:block;width:100%;height:44px}
 
 /* ---------- actions ---------- */
 .actions{display:flex;gap:7px;margin-top:9px;position:relative;z-index:2}
@@ -395,7 +396,7 @@ body.collapsed #bubble{display:grid}
       <span class="klive"><i id="keyDot"></i><span id="keyActive" title="">no key</span></span>
     </div>
     <div class="kb">
-      <input id="keyInput" placeholder="oc_sk_… paste a key, then ADD" autocomplete="off" spellcheck="false">
+      <input id="keyInput" placeholder="paste oc_sk_… key" autocomplete="off" spellcheck="false">
       <button class="act mini" id="btnKeyAdd">ADD</button>
     </div>
     <div class="kr">
@@ -414,7 +415,7 @@ body.collapsed #bubble{display:grid}
   <section class="health" id="health"></section>
 
   <section class="spark">
-    <div class="spark-top"><span>SESSION BURN</span><span id="lastAge">—</span></div>
+    <div class="spark-top"><span>SESSION BURN · <b id="sparkN">—</b></span><span id="lastAge">—</span></div>
     <canvas id="spark" width="680" height="68"></canvas>
   </section>
 
@@ -531,7 +532,10 @@ function render(d){
   }
 
   // sparkline
-  drawSpark((t.recent || []).slice().reverse());
+  const burn = (t.recent || []).slice().reverse()
+    .filter(r => (r.tokens || 0) > 0).slice(-24);
+  drawSpark(burn);
+  $("sparkN").textContent = burn.length ? burn.length + " sessions" : "no burn yet";
 
   // last session
   const last = t.last;
@@ -564,19 +568,27 @@ function drawSpark(rows){
   const ctx = c.getContext("2d");
   const W = c.width, H = c.height;
   ctx.clearRect(0, 0, W, H);
-  if (!rows.length) return;
+  if (!rows.length) {
+    ctx.strokeStyle = "rgba(255,255,255,.07)";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, H - 1.5); ctx.lineTo(W, H - 1.5); ctx.stroke();
+    return;
+  }
   const max = Math.sqrt(Math.max.apply(null, rows.map(r => r.tokens || 0).concat([1])));
   const n = rows.length;
   const bw = W / n;
   rows.forEach((r, i) => {
-    const h = Math.max(4, (Math.sqrt(r.tokens || 0) / max) * (H - 10));
+    // a quiet session still gets a visible stub; without a floor the chart
+    // reads as a row of ticks and the shape is lost.
+    const rel = Math.sqrt(r.tokens || 0) / max;
+    const h = Math.max(4, (0.14 + 0.86 * rel) * (H - 10));
     const x = i * bw;
     const g = ctx.createLinearGradient(0, H - h, 0, H);
     g.addColorStop(0, "rgba(34,211,238,.95)");
     g.addColorStop(1, "rgba(34,211,238,.10)");
     ctx.fillStyle = g;
     ctx.beginPath();
-    const w = Math.max(2, bw * 0.55);
+    const w = Math.max(3, bw * 0.62);
     const cx = x + (bw - w) / 2;
     ctx.roundRect(cx, H - h, w, h, 1.5);
     ctx.fill();
