@@ -137,7 +137,11 @@ Set `OUC_OVERLAY=0` before launching opencode if you want it to stay shut.
 **It is a separate floating window, not a pane inside the terminal.** It sits
 above your terminal at the right edge of the screen (or wherever you drag it),
 non-activating, so typing in the terminal never loses focus. It follows you
-across Spaces and stays on top of a fullscreen terminal.
+across Spaces and stays on top of a fullscreen terminal, and it is not tied to
+opencode at all — it floats over Finder, the browser, a fullscreen video, any
+app you switch to. It also starts at login (`~/Library/LaunchAgents/
+com.opencode-unlimited.overlay.plist`), so it is there before the first session
+and after a reboot.
 
 Not seeing it?
 

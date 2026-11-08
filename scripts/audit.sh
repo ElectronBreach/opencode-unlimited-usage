@@ -150,6 +150,14 @@ pgrep -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" >/dev/n
 [ -x "$HOME/.local/bin/${BRAND}-overlay" ] && ok "overlay CLI" "opencode-unlimited-overlay" || bad "overlay CLI" "missing"
 grep -q "OpencodeOverlay" "$DEST/scripts/zen-lane.sh" 2>/dev/null \
   && ok "lane raises the HUD" "on every opencode launch" || bad "lane HUD hook" "missing"
+HUD_PLIST="$HOME/Library/LaunchAgents/com.opencode-unlimited.overlay.plist"
+if [ -f "$HUD_PLIST" ]; then
+  launchctl print "gui/$(id -u)/com.opencode-unlimited.overlay" >/dev/null 2>&1 \
+    && ok "overlay agent (login)" "starts with the session, survives a reboot" \
+    || dv "overlay agent (login)" "plist present, not bootstrapped"
+else
+  dv "overlay agent (login)" "missing — HUD only appears when a session raises it"
+fi
 STATUS="$("$DEST/scripts/status.sh" 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);t=d.get("tokens") or {};print("%s sessions / %s tokens" % (t.get("sessions"), (t.get("input") or 0)+(t.get("output") or 0)))' 2>/dev/null)"
 [ -n "$STATUS" ] && ok "status probe emits json" "$STATUS" || bad "status probe" "no json"
 

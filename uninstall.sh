@@ -145,6 +145,12 @@ fi
 
 # disconnect the tunnel so traffic goes back to your real IP.
 # overlay HUD (its app bundle lives outside $DEST, in Application Support)
+HUD_LABEL="com.opencode-unlimited.overlay"
+HUD_PLIST="$HOME/Library/LaunchAgents/$HUD_LABEL.plist"
+if [ -f "$HUD_PLIST" ]; then
+  launchctl bootout "gui/$(id -u)" "$HUD_PLIST" >/dev/null 2>&1 || true
+  rm -f "$HUD_PLIST"
+fi
 pkill -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" >/dev/null 2>&1 || true
 rm -rf "$HOME/Library/Application Support/$BRAND/OpencodeOverlay.app"
 defaults delete com.opencode-unlimited.overlay >/dev/null 2>&1 || true

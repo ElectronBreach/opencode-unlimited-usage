@@ -62,6 +62,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     var cmdWatch: Timer?
     var lastCmdStamp: TimeInterval = 0
     var lastCmdText: String = ""
+    var reassertWork: DispatchWorkItem?
     var lastStatus: String = "{}"
 
     // ---------------------------------------------------------------- boot
@@ -86,6 +87,17 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         // and `open -g` never activates us. orderFrontRegardless is the only
         // call that puts a non-activating panel in front without stealing focus.
         window.orderFrontRegardless()
+
+        // every space switch and every app activation is a chance for the window
+        // server to leave a panel behind. re-order it front, without activating.
+        let ws = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.activeSpaceDidChangeNotification,
+                     NSWorkspace.didActivateApplicationNotification,
+                     NSWorkspace.didWakeNotification] {
+            ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.reassertSoon()
+            }
+        }
 
         poll = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
             self.refresh(force: false)
@@ -156,7 +168,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         window.isFloatingPanel = true
         window.becomesKeyOnlyIfNeeded = true
         window.level = .statusBar
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
@@ -266,6 +278,19 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         defaults.set(collapsed, forKey: "collapsed")
         defaults.set(NSStringFromRect(f), forKey: "frame")
         push("window", ["collapsed": collapsed])
+    }
+
+    // coalesce a burst of space/activation notifications into one order call
+    func reassertSoon() {
+        reassertWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self = self, self.window != nil else { return }
+            if !self.window.isVisible { self.window.orderFrontRegardless() }
+            self.window.orderFrontRegardless()
+            self.dumpState()
+        }
+        reassertWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
     }
 
     func setCollapsed(_ v: Bool, animate: Bool) {
