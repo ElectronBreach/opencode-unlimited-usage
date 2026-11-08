@@ -5,6 +5,17 @@
 # works interactively (terminal password) and headless (SUDO_ASKPASS, or
 # `printf 'pw\n' | bash uninstall.sh`).
 set -u
+# piped installs (curl | bash) have no file to read a payload from, and a
+# script read from stdin cannot also feed sudo. capture ourselves to a real
+# file and re-exec with stdin detached before anything else runs.
+if [ -z "${OUC_SELF:-}" ] && [ ! -t 0 ] && [ -z "${BASH_SOURCE[0]:-}" ]; then
+  OUC_SELF=$(mktemp /tmp/ouc-self.XXXXXX 2>/dev/null) || OUC_SELF=""
+  if [ -n "$OUC_SELF" ]; then
+    cat > "$OUC_SELF"
+    chmod +x "$OUC_SELF"
+    OUC_SELF="$OUC_SELF" exec bash "$OUC_SELF" "$@" < /dev/null
+  fi
+fi
 
 BRAND="opencode-unlimited"
 DEST="$HOME/.local/share/$BRAND"
@@ -25,6 +36,7 @@ s(){
   if sudo -n true 2>/dev/null; then sudo "$@"
   elif [ -n "${SUDO_ASKPASS:-}" ] && sudo -A true 2>/dev/null; then sudo -A "$@"
   elif [ -t 0 ]; then sudo "$@"
+  elif [ -c /dev/tty ] && sudo -v < /dev/tty >/dev/null 2>&1; then sudo "$@" < /dev/tty
   else sudo -S "$@"
   fi
 }

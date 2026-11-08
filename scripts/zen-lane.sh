@@ -118,6 +118,8 @@ strip_block(){
 LANE_PID="$HOME/.local/share/opencode-unlimited/guard/lane.pid"
 
 restore_hosts(){
+  # cleanup must run even when nothing was pinned
+  [ -n "${MACHINE_DIR:-}" ] && rm -rf "$MACHINE_DIR" 2>/dev/null
   [ "$PINNED" = "1" ] || return 0
   local tmp cur
   # a second lane may have replaced our block while we were running. only
@@ -132,6 +134,7 @@ restore_hosts(){
   sudo -n /bin/cp "$tmp" /etc/hosts 2>/dev/null
   rm -f "$tmp"
   [ "$(cat "$LANE_PID" 2>/dev/null)" = "$$" ] && rm -f "$LANE_PID" 2>/dev/null
+  [ -n "${MACHINE_DIR:-}" ] && rm -rf "$MACHINE_DIR" 2>/dev/null
   release_lock
   PINNED=0
 }
@@ -184,8 +187,36 @@ fi
 release_lock
 
 # ---- fresh machine identity per launch
+#
+# upstream bind-mounts /etc/machine-id inside a namespace. macOS has no such
+# file: opencode's darwin path shells out to
+#   ioreg -rd1 -c "IOPlatformExpertDevice"
+# and takes IOPlatformUUID from it. so the Mac way is to put a fake ioreg
+# first on PATH for this launch only — the hardware UUID the process sees is
+# ours, and the real one is never touched.
 MID=$(python3 -c 'import secrets;print(secrets.token_hex(16))' 2>/dev/null)
 [ -n "$MID" ] && export MACHINE_ID="$MID" OUC_MACHINE_ID="$MID"
+
+MACHINE_DIR="$HOME/.local/share/opencode-unlimited/guard/lane-bin.$$"
+rm -rf "$MACHINE_DIR" 2>/dev/null
+if mkdir -p "$MACHINE_DIR" 2>/dev/null; then
+  FAKE_UUID=$(python3 -c 'import uuid;print(str(uuid.uuid4()).upper())' 2>/dev/null)
+  if [ -n "$FAKE_UUID" ]; then
+    {
+      printf '#!/bin/bash\n'
+      printf 'case "$*" in *IOPlatformExpertDevice*)\n'
+      printf 'printf "%%s\\n" %q %q %q %q %q\n' \
+        '+-o IOPlatformExpertDevice  <class IOPlatformExpertDevice, id 0x100000100, registered, matched, active, busy 0 (0 ms), retain 5>' \
+        '  {' \
+        "    \"IOPlatformUUID\" = \"$FAKE_UUID\"" \
+        '  }'
+      printf 'exit 0;; esac\n'
+      printf 'exec /usr/sbin/ioreg "$@"\n'
+    } > "$MACHINE_DIR/ioreg" 2>/dev/null
+    chmod +x "$MACHINE_DIR/ioreg" 2>/dev/null
+    [ -x "$MACHINE_DIR/ioreg" ] && export PATH="$MACHINE_DIR:$PATH"
+  fi
+fi
 
 # ---- launch the real binary
 #

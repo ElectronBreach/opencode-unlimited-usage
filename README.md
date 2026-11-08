@@ -180,6 +180,18 @@ re-checks it on every launch and rewrites it if it's gone or edited. It's
 harmless, it's one line, and it's how I find out people actually use this. Want
 it gone for real? `uninstall.sh` removes it.
 
+## One-file install
+
+`install.sh` carries the macOS scripts inside itself. A piped install works
+with no checkout and no published branch:
+
+```bash
+cat install.sh | bash
+```
+
+A local checkout still installs from its own files. The payload is regenerated
+with `bash tools/embed.sh` after any script change.
+
 ## Audit
 
 ```bash

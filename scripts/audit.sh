@@ -67,6 +67,10 @@ grep -q "zen-lane" "$SHIM" 2>/dev/null && ok "opencode shim → lane" || bad "op
 [ -x "$HOME/.local/bin/opencode-unlimited-doctor" ] && ok "PATH tool: doctor" || bad "PATH tool: doctor" "missing"
 
 grep -q "ensure_credit" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: credit enforcement" || bad "lane: credit" "missing"
+grep -q "IOPlatformExpertDevice" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: machine-id via ioreg shim (per launch)" || dv "lane: machine-id" "env only"
+grep -q "OUC_PAYLOAD" "$DEST/install.sh" 2>/dev/null && ok "installer: standalone payload (no branch needed)" || dv "installer" "needs a checkout or published branch"
+grep -q "lane_live" "$DEST/scripts/warp-keeper.sh" 2>/dev/null && ok "keeper: pid-owned lane pin sweep" || bad "keeper: lane sweep" "missing"
+grep -q "hop_with_timeout" "$DEST/scripts/zen-guard.sh" 2>/dev/null && ok "guard: bounded rotation (180s cap)" || dv "guard: rotation cap" "unbounded"
 grep -q "MACHINE_ID" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: random machine-id" "env (linux: /etc/machine-id bind)" || bad "lane: machine-id" "missing"
 grep -q "edge_ok4" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: edge pin" "v4-first, validated, falls back to v6" || bad "lane: edge pin" "unvalidated"
 grep -q "remove each launch\|restore_hosts\|MARK_BEGIN" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: hosts pin restorable" || bad "lane: hosts restore" "missing"
