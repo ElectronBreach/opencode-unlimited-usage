@@ -19,7 +19,27 @@ let scripts = dest.appendingPathComponent("scripts")
 let guardDir = dest.appendingPathComponent("guard")
 let ctxFile = guardDir.appendingPathComponent("overlay-context.json")
 let cmdFile = guardDir.appendingPathComponent("overlay-cmd")
-let defaults = UserDefaults(suiteName: "com.opencode-unlimited.overlay") ?? .standard
+// .standard resolves to this bundle's domain (com.opencode-unlimited.overlay),
+// which is the same one `defaults read com.opencode-unlimited.overlay` shows.
+// naming the suite explicitly is a no-op macOS warns about.
+let defaults = UserDefaults.standard
+
+// one append-only line per surprise. no crash reporter, no permission prompt —
+// just enough to know why the panel died the next time it does.
+let crashFile = guardDir.appendingPathComponent("overlay-crash.log")
+func crashLog(_ msg: String) {
+    let stamp = ISO8601DateFormatter().string(from: Date())
+    guard let data = "[\(stamp)] \(msg)\n".data(using: .utf8) else { return }
+    if let h = try? FileHandle(forWritingTo: crashFile) {
+        h.seekToEndOfFile()
+        h.write(data)
+        let end = h.offsetInFile
+        try? h.close()
+        if end > 256 * 1024 { try? FileManager.default.removeItem(at: crashFile) }
+    } else {
+        try? data.write(to: crashFile)
+    }
+}
 
 let EXPANDED = NSSize(width: 366, height: 596)
 let COLLAPSED = NSSize(width: 78, height: 78)
@@ -63,6 +83,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     var lastCmdStamp: TimeInterval = 0
     var lastCmdText: String = ""
     var reassertWork: DispatchWorkItem?
+    var blankTicks = 0
     var lastStatus: String = "{}"
 
     // ---------------------------------------------------------------- boot
@@ -80,6 +101,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             i += 1
         }
 
+        crashLog("launch pid=\(ProcessInfo.processInfo.processIdentifier)")
         buildWindow()
         buildWebView()
         restoreFrame()
@@ -102,7 +124,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         poll = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
             self.refresh(force: false)
             self.dumpState()
+            self.healthTick()
         }
+        seedCommandCursor()
         cmdWatch = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { _ in
             self.watchCommandFile()
         }
@@ -114,6 +138,10 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
+
+    func applicationWillTerminate(_ n: Notification) {
+        crashLog("terminate (window visible=\(window?.isVisible ?? false))")
+    }
 
     // the app's own view of whether the panel is actually on screen. CGWindowList
     // cannot answer that without Screen Recording permission, and this can.
@@ -293,6 +321,38 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: w)
     }
 
+    // a stale command file must never fire on boot. the cursor starts at the
+    // file's current contents, so only a *new* write is acted on.
+    func seedCommandCursor() {
+        guard let attrs = try? fm.attributesOfItem(atPath: cmdFile.path),
+              let stamp = attrs[.modificationDate] as? Date else { return }
+        lastCmdStamp = stamp.timeIntervalSince1970
+        lastCmdText = (try? String(contentsOf: cmdFile, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    // cheap liveness: a web process that died leaves an empty page, and a
+    // window that was ordered out never comes back on its own.
+    func healthTick() {
+        if !window.isVisible { window.orderFrontRegardless() }
+        if web.url == nil && !web.isLoading {
+            blankTicks += 1
+            if blankTicks >= 3 { blankTicks = 0; reloadPage() }
+        } else {
+            blankTicks = 0
+        }
+    }
+
+    func reloadPage() {
+        web.stopLoading()
+        web.loadFileURL(pageURL(), allowingReadAccessTo: pageURL().deletingLastPathComponent())
+    }
+
+    func pageURL() -> URL {
+        if let html = Bundle.main.url(forResource: "overlay", withExtension: "html") { return html }
+        return URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("overlay.html")
+    }
+
     func setCollapsed(_ v: Bool, animate: Bool) {
         if collapsed == v {
             window.orderFrontRegardless()
@@ -375,6 +435,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             window.orderFrontRegardless()
         case "dock": dockSide()
         case "state": dumpState()
+        case "reload": reloadPage()
         case "rect": measureControls()
         case "close": NSApp.terminate(nil)
         case "refresh": refresh(force: true)
@@ -404,8 +465,19 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 DispatchQueue.main.async { self.statusBusy = false }
                 return
             }
+            // a status probe that hangs (dead network, wedged sqlite) would
+            // hold statusBusy forever and freeze the HUD. kill it after 12s.
+            let watchdog = DispatchWorkItem {
+                guard p.isRunning else { return }
+                p.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+                    if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 12, execute: watchdog)
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             p.waitUntilExit()
+            watchdog.cancel()
             let out = String(data: data, encoding: .utf8) ?? "{}"
             DispatchQueue.main.async {
                 self.statusBusy = false
@@ -514,6 +586,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "dock": dockSide()
         case "state": dumpState()
         case "rect": measureControls()
+        case "reload": reloadPage()
         case "snapshot": snapshot(to: cmdFile.deletingLastPathComponent().appendingPathComponent("overlay-snapshot.png"))
         case "probe":
             web.evaluateJavaScript("JSON.stringify({title:document.title,nodes:document.querySelectorAll('*').length,txt:document.body.innerText.slice(0,200)})") { v, e in
@@ -554,8 +627,19 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
 
     func webView(_ webView: WKWebView, didFail n: WKNavigation!, withError e: Error) {
-        NSLog("overlay load failed: \(e)")
+        crashLog("web load failed: \(e.localizedDescription)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.reloadPage()
+        }
     }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        self.webView(webView, didFail: navigation, withError: error)
+    }
+}
+
+NSSetUncaughtExceptionHandler { ex in
+    crashLog("EXCEPTION \(ex.name.rawValue): \(ex.reason ?? "")\n\(ex.callStackSymbols.joined(separator: "\n"))")
 }
 
 let app = NSApplication.shared

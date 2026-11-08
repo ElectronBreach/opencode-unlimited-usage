@@ -546,7 +546,10 @@ $("btnDoctor").addEventListener("click", () => bridge("doctor"));
 $("btnClear").addEventListener("click", () => { $("logBody").innerHTML = ""; });
 $("btnDock").addEventListener("click", () => bridge("dock"));
 $("btnMin").addEventListener("click", () => bridge("collapse"));
-$("btnClose").addEventListener("click", () => bridge("close"));
+// the close button folds the HUD into the bubble. an always-on overlay that
+// vanishes on a stray click is the bug, not the feature — `opencode-unlimited-
+// overlay close` is the real quit.
+$("btnClose").addEventListener("click", () => bridge("collapse"));
 $("bubble").addEventListener("click", () => {
   // a drag that ends on the circle is not a click — don't swallow it in expand
   if (dragMoved) { dragMoved = false; return; }

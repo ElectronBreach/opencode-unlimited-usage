@@ -143,6 +143,10 @@ app you switch to. It also starts at login (`~/Library/LaunchAgents/
 com.opencode-unlimited.overlay.plist`), so it is there before the first session
 and after a reboot.
 
+The **×** button folds it into the bubble — it never quits the HUD. The real
+quit is `opencode-unlimited-overlay close`, or a crash will bring it straight
+back (the login agent restarts on a non-zero exit).
+
 Not seeing it?
 
 ```bash

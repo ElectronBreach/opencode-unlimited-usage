@@ -132,10 +132,19 @@ fi
 # ---- overlay HUD (hop + doctor + live token ledger, one window)
 APP="$HOME/Library/Application Support/opencode-unlimited/OpencodeOverlay.app"
 if [ -x "$APP/Contents/MacOS/opencode-unlimited-overlay" ]; then
-  if pgrep -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" >/dev/null 2>&1; then
-    ok "overlay HUD running (auto-raised by every opencode launch)"
+  hud_up(){ pgrep -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" >/dev/null 2>&1; }
+  if hud_up; then
+    ok "overlay HUD running (pid $(pgrep -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" | head -1))"
   else
-    warn "overlay HUD built but not running — opencode-unlimited-overlay"
+    # the HUD is meant to be always up. if it is not, start it here rather than
+    # reporting a warning the user has to go and fix by hand.
+    open -g "$APP" >/dev/null 2>&1
+    for _ in 1 2 3 4 5; do sleep 1; hud_up && break; done
+    if hud_up; then
+      ok "overlay HUD was down — restarted it now"
+    else
+      warn "overlay HUD will not start — bash $DEST/scripts/overlay/build.sh"
+    fi
   fi
 else
   warn "overlay HUD not built — bash $DEST/scripts/overlay/build.sh"
