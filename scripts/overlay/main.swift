@@ -533,6 +533,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:\(home.path)/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["TERM"] = "dumb"
         env["OUC_OVERLAY"] = "1"
+        // the doctor is usually run *from* the HUD. tell it who we are, so its
+        // liveness check cannot report the panel we are drawing on as missing.
+        env["OUC_OVERLAY_PID"] = String(getpid())
         p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe

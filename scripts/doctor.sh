@@ -133,13 +133,16 @@ fi
 APP="$HOME/Library/Application Support/opencode-unlimited/OpencodeOverlay.app"
 if [ -x "$APP/Contents/MacOS/opencode-unlimited-overlay" ]; then
   hud_up(){ pgrep -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" >/dev/null 2>&1; }
-  if hud_up; then
+  if [ -n "${OUC_OVERLAY_PID:-}" ] && kill -0 "$OUC_OVERLAY_PID" 2>/dev/null; then
+    # running from inside the HUD: it is up by definition
+    ok "overlay HUD running (pid $OUC_OVERLAY_PID — this console)"
+  elif hud_up; then
     ok "overlay HUD running (pid $(pgrep -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" | head -1))"
   else
     # the HUD is meant to be always up. if it is not, start it here rather than
     # reporting a warning the user has to go and fix by hand.
     open -g "$APP" >/dev/null 2>&1
-    for _ in 1 2 3 4 5; do sleep 1; hud_up && break; done
+    for _ in $(seq 1 10); do sleep 1; hud_up && break; done
     if hud_up; then
       ok "overlay HUD was down — restarted it now"
     else
