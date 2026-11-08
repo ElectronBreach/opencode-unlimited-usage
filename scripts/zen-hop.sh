@@ -35,7 +35,11 @@ cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }
 # and the "new" address is your own ISP — never report that as a rotation.
 is_warp_ip(){ case "${1:-}" in 104.28.*|162.159.*|172.64.*|188.114.*|2a09:*|2606:*) return 0;; *) return 1;; esac; }
 warp_prefix(){
-  ifconfig 2>/dev/null | awk '/^utun/{i=$1} /inet6 26[0-9a-f]*:/{print $2}' \
+  # only the warp tunnel carries 2606:4700::/32. any other utun with a global
+  # v6 (a second VPN, a corporate tunnel) would otherwise be mistaken for the
+  # quota key and blacklist the wrong block forever.
+  ifconfig 2>/dev/null \
+    | awk '/^utun/{i=$1} /inet6 2606:4700:/{print $2}' \
     | head -1 | cut -d/ -f1 | awk -F: '{print $1":"$2":"$3":"$4}'
 }
 
