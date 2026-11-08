@@ -360,6 +360,7 @@ klog "keeper up (macOS / launchd, tick ${TICK}s, leakguard=${LEAKGUARD}, warp=$W
 bad_ticks=0
 last_failopen=0
 last_reconnect=0
+good_streak=0
 dns_fixes=0
 last_dns_fix=0
 loops=0
@@ -392,12 +393,16 @@ while true; do
     fi
   fi
 
+  # a flapping tunnel passes one check and fails the next. resetting the
+  # counter on a single success let a half-dead tunnel look healthy forever
+  # while DNS died in the user's face. only a run of clean checks clears it.
   if connected && ! egress_ok; then
-    bad_ticks=$((bad_ticks + 1))
+    bad_ticks=$((bad_ticks + 1)); good_streak=0
   elif connected && ! dns_ok; then
-    bad_ticks=$((bad_ticks + 1))
+    bad_ticks=$((bad_ticks + 1)); good_streak=0
   else
-    bad_ticks=0
+    good_streak=$(( ${good_streak:-0} + 1 ))
+    [ "$good_streak" -ge 3 ] && bad_ticks=0
   fi
 
   # 3 consecutive bad checks (~15s) while "connected" = the tunnel is lying.
