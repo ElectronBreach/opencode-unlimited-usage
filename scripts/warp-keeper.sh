@@ -127,6 +127,22 @@ ensure_mode(){
   want=$(printf '%s' "$WANT_MODE" | tr '[:upper:]' '[:lower:]' | tr -d '_-')
   [ "$m" = "$want" ] && return 0
   w mode "$WANT_MODE" >/dev/null 2>&1 || true
+  # changing mode mid-tunnel makes warp reconnect on its own, and that
+  # reconnect can come back Connected with no working route — the DNS kill
+  # this whole build exists to prevent. bounce it deliberately and prove it
+  # carries traffic before trusting it.
+  klog "mode was ${m} — applied ${WANT_MODE}; bouncing the tunnel to take the route"
+  w disconnect >/dev/null 2>&1 || true
+  sleep 2
+  w connect >/dev/null 2>&1 || true
+  sleep 4
+  if connected && ! egress_ok; then
+    klog "tunnel is up but carries no traffic after the mode change — keeping direct egress"
+    w disconnect >/dev/null 2>&1 || true
+    restore_dns
+    return 0
+  fi
+  klog "tunnel healthy after the mode change"
 }
 
 CF_DAEMON_LABEL="com.cloudflare.1dot1dot1dot1.macos.warp.daemon"
