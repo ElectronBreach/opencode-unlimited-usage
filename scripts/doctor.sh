@@ -42,16 +42,16 @@ echo "$ST" | grep -q Connected \
   && ok "warp tunnel: connected" \
   || bad "warp not connected — keeper repairs within ~45s (or restart it)"
 
-# ---- leak guard (read-only pf check, allowed by the installer's sudoers)
-if sudo -n /sbin/pfctl -a "$ANCHOR_NAME" -s rules >/dev/null 2>&1; then
-  RULES=$(sudo -n /sbin/pfctl -a "$ANCHOR_NAME" -s rules 2>/dev/null | grep -c . )
+# ---- leak guard (opt-in)
+if [ -f /etc/pf.anchors/OUC_LEAKGUARD ]; then
+  RULES=$(sudo -n /sbin/pfctl -a OUC_LEAKGUARD -s rules 2>/dev/null | grep -c . )
   if [ "${RULES:-0}" -gt 0 ]; then
     ok "leak guard armed ($RULES rules, drops non-tunnel egress)"
   else
-    warn "leak guard present but empty (tunnel down = fail-open, this is correct)"
+    warn "leak guard installed but empty (fail-open while the tunnel is down)"
   fi
 else
-  warn "leak guard not readable/armed (tunnel down = fail-open, this is correct)"
+  ok "leak guard off (opt-in default, zero pf risk)"
 fi
 
 # ---- egress
