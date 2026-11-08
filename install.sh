@@ -192,9 +192,10 @@ ok "passwordless warp-cli works"
 # ---------------------------------------------------------------- warp: register + connect (with a DNS leash)
 say "registering warp + tunnel up"
 w registration new >/dev/null 2>&1   # already-registered boxes just error, fine
-# plain warp mode only. DoH mode is what leaves macOS with a resolver it
-# cannot reach once the tunnel drops.
-w mode warp >/dev/null 2>&1 || true
+# tunnel_only: traffic rides WARP, DNS stays on the system resolver. DoH /
+# warp+doh is what left this Mac with a resolver it could not reach once the
+# tunnel dropped. override with OUC_WARP_MODE=warp if you want WARP's DNS.
+w mode "${OUC_WARP_MODE:-tunnel_only}" >/dev/null 2>&1 || true
 w connect >/dev/null 2>&1
 
 CONNECTED=0

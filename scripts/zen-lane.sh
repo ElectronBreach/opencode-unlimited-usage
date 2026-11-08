@@ -66,7 +66,25 @@ print('\n'.join({i[4][0] for i in socket.getaddrinfo('opencode.ai',443,socket.AF
 [ -z "$AAAA_POOL" ] && AAAA_POOL="2606:4700:10::ac42:ad95
 2606:4700:10::ac42:ad96
 2606:4700:10::6814:2011"
-AAAA=$(echo "$AAAA_POOL" | awk 'BEGIN{srand();}{a[NR]=$0}END{if(NR)print a[int(rand()*NR)+1]}')
+# ---- pick a random edge from the live AAAA pool, but ONLY if IPv6 to it
+# actually works. a pin to an unreachable AAAA is a self-inflicted DNS
+# outage for opencode.ai — that is exactly the failure this port must never
+# reproduce, so the pin is validated before it is applied.
+v6_ok(){
+  local ip="$1"
+  curl -6 -sS -o /dev/null --connect-timeout 2 --max-time 3 \
+    --resolve "opencode.ai:443:[$ip]" https://opencode.ai >/dev/null 2>&1
+}
+
+pick_edge(){
+  local ip
+  for ip in $(printf '%s\n' "$AAAA_POOL" | awk 'BEGIN{srand();}{print rand(),$0}' | sort -n | cut -d' ' -f2 | head -6); do
+    v6_ok "$ip" && { printf '%s' "$ip"; return 0; }
+  done
+  return 1
+}
+
+AAAA="$(pick_edge || true)"
 
 # ---- /etc/hosts pin (marked block, always restored)
 MARK_BEGIN="# >>> opencode-unlimited lane >>>"

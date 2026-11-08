@@ -28,8 +28,8 @@ fi
 [ -n "$WARP" ] || { echo "warp-cli not found"; exit 1; }
 
 COOLDOWN=75
-MAX_HOP_TRIES=8
-WALL_RE="QuotaExceeded|Free usage limit reached|usage limit reached"
+MAX_HOP_TRIES=3
+WALL_RE="QuotaExceeded|Free usage limit reached|usage limit reached|FreeUsageLimitError|FreeUsageLimit|rate limit exceeded|too many requests"
 
 mkdir -p "$STATE_DIR"
 
@@ -53,6 +53,7 @@ import json,sys
 try: d=json.load(open('$STATE'))
 except: d={'blacklist':[],'offset':0,'last_hop':0,'hops':0,'current':''}
 v=sys.argv[1]
+v=v.strip()
 d['$1']=int(v) if v.isdigit() else v
 json.dump(d,open('$STATE','w'))" "$2" 2>/dev/null; }
 
@@ -127,7 +128,6 @@ hop_once(){
     w registration new && { ok=1; break; }
     sleep 6
   done
-  w mode warp
   w connect
   resume_keeper
   [ "$ok" = 1 ] || { echo ""; return; }
@@ -152,14 +152,14 @@ while true; do
   sleep 20
 
   [ -f "$LOGF" ] || continue
-  SIZE=$(wc -c < "$LOGF" 2>/dev/null || echo 0)
+  SIZE=$(wc -c < "$LOGF" 2>/dev/null | tr -d ' ' || echo 0); SIZE=${SIZE:-0}
   OFF=$(state_get offset); OFF=${OFF:-0}
   case "$OFF" in ''|*[!0-9]*) OFF=0 ;; esac
   [ "$SIZE" -lt "$OFF" ] && OFF=0
   NEWBYTES=$((SIZE - OFF))
   WALL=0
   if [ "$NEWBYTES" -gt 0 ] && [ "$NEWBYTES" -lt 50000000 ]; then
-    if tail -c +"$((OFF + 1))" "$LOGF" 2>/dev/null | grep -aqE "$WALL_RE"; then WALL=1; fi
+    if tail -c +"$((OFF + 1))" "$LOGF" 2>/dev/null | grep -aqiE "$WALL_RE"; then WALL=1; fi
   fi
   state_set offset "$SIZE"
 
@@ -197,9 +197,7 @@ while true; do
   done
 
   if [ -z "$NEW" ]; then
-    glog "everything blacklisted — recycling oldest block"
-    V=$(hop_once)
-    [ -n "$V" ] && NEW="$V"
+    glog "no fresh block left in cloudflare's pool — wall is account-side, not ip-side; keeping the tunnel"
   fi
 
   if [ -n "$NEW" ]; then

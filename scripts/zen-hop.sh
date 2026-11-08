@@ -48,7 +48,6 @@ if [ "$NEW" != 1 ]; then
   resume_keeper
   exit 1
 fi
-w mode warp
 w connect
 
 for i in $(seq 1 20); do

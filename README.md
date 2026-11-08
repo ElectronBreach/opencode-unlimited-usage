@@ -113,6 +113,10 @@ opencode-unlimited-doctor
   a fresh `MACHINE_ID`, and restores `/etc/hosts` on exit. `trap` covers EXIT,
   INT, TERM and HUP. If passwordless sudo is unavailable the pin is skipped and
   the lane still runs.
+- **Wall detection** matches the strings opencode actually writes, taken from
+  a real log: `Free usage limit reached`, `FreeUsageLimitError`,
+  `QuotaExceeded`, `usage limit reached`, `rate limit exceeded`,
+  `too many requests` — case-insensitive.
 - **zen-guard** tails opencode's own error log
   (`~/.local/share/opencode/log/opencode.log`) with an offset, so it only reads
   new bytes. Sees the quota error → pauses the keeper via a marker file (they'd
@@ -121,8 +125,13 @@ opencode-unlimited-doctor
   to 8 times if Cloudflare hands back a burned block. Blacklist is lifetime; if
   everything comes back burned it recycles the oldest (these reset around
   midnight anyway).
-- **warp-keeper** runs as a root LaunchDaemon. Every 5s it checks egress while
-  the guard is armed; every 45s it enforces connection state. Tunnel up → it
+- **warp-keeper** runs as a root LaunchDaemon in **tunnel_only** mode: traffic
+  rides WARP, DNS stays on the system resolver (8.8.8.8 in this install). The
+  tunnel can never take the resolver down with it. It sets the mode **once** —
+  calling `warp-cli mode` on a timer makes the daemon disconnect and reconnect
+  every tick (`Disconnecting before reconnect reason=PolicyAlignment`), which
+  is what looked like "it stops by itself after 2-3 minutes". Every 5s it
+  checks egress while the guard is armed; every 45s it enforces connection state. Tunnel up → it
   writes the `OUC_LEAKGUARD` pf anchor (loopback, LAN, DHCP, Cloudflare control
   ranges, the WARP utun interfaces, everything else dropped), validates
   `/etc/pf.conf`, loads it. Tunnel down or egress gone → it flushes the anchor
@@ -206,6 +215,8 @@ scripts/
 | `/etc/machine-id` bind | `MACHINE_ID` env, fresh per launch |
 | apt/dnf/pacman | Homebrew cask |
 | IPv6 `/64` blacklist | block blacklist (`/64` for v6, full address for v4) |
+| `mode warp` / DoH DNS | `mode tunnel_only` — DNS never depends on the tunnel |
+| `mode` enforced every tick | `mode` set once (no reconnect flaps) |
 
 MIT license. Use it, fork it, just don't sell it to your grandma.
 

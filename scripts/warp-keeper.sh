@@ -103,6 +103,22 @@ w(){  "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; "$WARP" "$@" >/dev/
 wo(){ "$WARP" --accept-tos "$@" 2>/dev/null && return 0; "$WARP" "$@" 2>/dev/null; }
 connected(){ wo status 2>/dev/null | head -1 | grep -q Connected; }
 
+WANT_MODE="${OUC_WARP_MODE:-tunnel_only}"
+
+cur_mode(){
+  wo settings 2>/dev/null | awk -F'Mode: ' '/Mode:/ {print $2; exit}' \
+    | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | tr -d '_-'
+}
+
+ensure_mode(){
+  local m want
+  m=$(cur_mode)
+  [ -n "$m" ] || return 0
+  want=$(printf '%s' "$WANT_MODE" | tr '[:upper:]' '[:lower:]' | tr -d '_-')
+  [ "$m" = "$want" ] && return 0
+  w mode "$WANT_MODE" >/dev/null 2>&1 || true
+}
+
 ensure_connected(){
   connected && return 0
   w connect; sleep 4
@@ -110,7 +126,6 @@ ensure_connected(){
   w disconnect
   w registration delete
   w registration new || return 1
-  w mode warp
   w connect
   sleep 5
   connected
@@ -248,8 +263,6 @@ while true; do
   loops=$((loops + 1))
   [ "$loops" -ge 9 ] || continue
   loops=0
-
-  w mode warp >/dev/null 2>&1 || true
 
   if ensure_connected; then
     if [ "$LEAKGUARD" = "1" ] && dns_ok && egress_ok; then
