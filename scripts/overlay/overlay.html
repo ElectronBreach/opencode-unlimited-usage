@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>opencode unlimited</title>
+<style>
+/* ============================================================
+   opencode unlimited — HUD
+   dark glass · cyan/magenta · cyber grid · collapsible bubble
+   ============================================================ */
+:root{
+  --bg:#04070c;
+  --bg2:#070d15;
+  --cy:#22d3ee;
+  --cy-dim:rgba(34,211,238,.35);
+  --mag:#f472b6;
+  --vio:#a78bfa;
+  --ok:#34d399;
+  --warn:#fbbf24;
+  --bad:#fb7185;
+  --txt:#d7e6f2;
+  --mut:#5d7488;
+  --line:rgba(34,211,238,.14);
+  --glass:rgba(7,14,22,.82);
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;-webkit-user-select:none;user-select:none;margin:0;padding:0}
+html,body{height:100%;background:transparent;overflow:hidden}
+body{font:12px/1.45 var(--mono);color:var(--txt);-webkit-font-smoothing:antialiased}
+
+/* ---------- shell ---------- */
+#app{
+  position:relative;height:100%;width:100%;
+  background:
+    radial-gradient(120px 180px at 100% 0%,rgba(244,114,182,.10),transparent 70%),
+    radial-gradient(180px 200px at 0% 100%,rgba(34,211,238,.10),transparent 70%),
+    linear-gradient(165deg,var(--bg2),var(--bg) 60%);
+  border-radius:18px;
+  display:flex;flex-direction:column;
+  padding:11px 13px 10px;
+  opacity:1;transform:scale(1);
+  transition:opacity .16s ease,transform .16s ease;
+}
+#app::before{ /* grid */
+  content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;
+  background-image:
+    linear-gradient(var(--line) 1px,transparent 1px),
+    linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:26px 26px;
+  mask-image:radial-gradient(120% 90% at 50% 0%,#000 30%,transparent 85%);
+  opacity:.55;
+}
+#app::after{ /* scanlines + vignette */
+  content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.022) 0 1px,transparent 1px 3px);
+  box-shadow:inset 0 0 42px rgba(0,0,0,.55),inset 0 0 0 1px rgba(34,211,238,.06);
+}
+.corner{position:absolute;width:10px;height:10px;border:1px solid var(--cy);opacity:.5;pointer-events:none}
+.corner.tl{top:6px;left:6px;border-right:0;border-bottom:0}
+.corner.tr{top:6px;right:6px;border-left:0;border-bottom:0}
+.corner.bl{bottom:6px;left:6px;border-right:0;border-top:0}
+.corner.br{bottom:6px;right:6px;border-left:0;border-top:0}
+
+/* ---------- header ---------- */
+header{display:flex;align-items:center;gap:8px;cursor:grab;position:relative;z-index:2;padding-bottom:2px}
+header:active{cursor:grabbing}
+.brand{display:flex;align-items:center;gap:7px;font-weight:700;letter-spacing:.14em;font-size:10.5px;color:#eaf6ff}
+.brand .glyph{
+  width:16px;height:16px;display:grid;place-items:center;border-radius:4px;
+  background:linear-gradient(140deg,rgba(34,211,238,.25),rgba(167,139,250,.25));
+  border:1px solid rgba(34,211,238,.5);
+  box-shadow:0 0 10px rgba(34,211,238,.35);
+  font-size:9px;color:var(--cy);
+}
+.brand .dim{color:var(--mut);font-weight:400}
+.hdr-spacer{flex:1}
+.hbtn{
+  width:20px;height:20px;display:grid;place-items:center;border-radius:5px;
+  background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);
+  color:var(--mut);font-size:11px;cursor:pointer;transition:all .14s;
+}
+.hbtn:hover{color:var(--cy);border-color:var(--cy-dim);background:rgba(34,211,238,.08);box-shadow:0 0 9px rgba(34,211,238,.25)}
+.hbtn.close:hover{color:var(--bad);border-color:rgba(251,113,133,.5);background:rgba(251,113,133,.08);box-shadow:0 0 9px rgba(251,113,133,.25)}
+
+/* ---------- project ---------- */
+.project{
+  margin-top:5px;display:flex;align-items:center;gap:6px;
+  font-size:10px;color:var(--mut);letter-spacing:.03em;position:relative;z-index:2;
+}
+.project .pdot{width:5px;height:5px;border-radius:50%;background:var(--cy);box-shadow:0 0 7px var(--cy);flex:none}
+.project .pname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9fb6c8}
+
+/* ---------- hero ---------- */
+.hero{position:relative;z-index:2;margin-top:9px;padding:10px 11px 9px;border-radius:12px;
+  background:linear-gradient(160deg,rgba(34,211,238,.055),rgba(167,139,250,.03) 55%,transparent);
+  border:1px solid rgba(34,211,238,.16);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 0 22px rgba(34,211,238,.06);
+}
+.hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.label{font-size:8.5px;letter-spacing:.22em;color:var(--mut)}
+.big{
+  font-size:29px;line-height:1.05;font-weight:700;letter-spacing:-.01em;margin-top:3px;
+  color:#f2fbff;text-shadow:0 0 18px rgba(34,211,238,.45);
+  font-variant-numeric:tabular-nums;
+}
+.big .unit{font-size:12px;color:var(--cy);margin-left:2px;text-shadow:none}
+.hero-sub{display:flex;gap:10px;margin-top:5px;font-size:10px;color:var(--mut);align-items:center}
+.hero-sub b{color:#b9d4e4;font-weight:500}
+.hero-sub .cost{color:var(--ok)}
+
+/* ring */
+.ring{position:relative;width:52px;height:52px;flex:none}
+.ring svg{transform:rotate(-90deg)}
+.ring .track{stroke:rgba(255,255,255,.07)}
+.ring .fill{stroke:url(#rg);stroke-linecap:round;transition:stroke-dashoffset .5s ease}
+.ring span{position:absolute;inset:0;display:grid;place-items:center;font-size:9px;color:var(--cy);letter-spacing:.02em}
+
+/* bars */
+.bars{display:flex;gap:4px;margin-top:9px;height:4px}
+.bars .seg{flex:1;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden;position:relative}
+.bars .seg i{position:absolute;inset:0;width:0;border-radius:2px;transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.bars .in i{background:linear-gradient(90deg,var(--cy),#67e8f9);box-shadow:0 0 8px rgba(34,211,238,.7)}
+.bars .out i{background:linear-gradient(90deg,var(--vio),var(--mag));box-shadow:0 0 8px rgba(244,114,182,.6)}
+.bars .hit i{background:linear-gradient(90deg,var(--ok),#6ee7b7);box-shadow:0 0 8px rgba(52,211,153,.55)}
+.legend{display:flex;gap:9px;margin-top:5px;font-size:8.5px;letter-spacing:.08em;color:var(--mut)}
+.legend s{text-decoration:none;width:5px;height:5px;border-radius:1px;display:inline-block;margin-right:3px;vertical-align:middle}
+
+/* ---------- cards ---------- */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px;position:relative;z-index:2}
+.card{
+  position:relative;padding:7px 8px;border-radius:9px;overflow:hidden;
+  background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.06);
+  transition:border-color .18s,background .18s;
+}
+.card:hover{border-color:rgba(34,211,238,.28);background:rgba(34,211,238,.035)}
+.card b{display:block;font-size:11.5px;font-weight:600;color:#dff2ff;letter-spacing:.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card span{display:block;font-size:8px;letter-spacing:.16em;color:var(--mut);margin-top:2px}
+.card.cy b{color:#a5f3fc}
+.card.vi b{color:#c4b5fd}
+
+/* ---------- health ---------- */
+.health{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;position:relative;z-index:2}
+.chip{
+  display:flex;align-items:center;gap:4px;padding:3px 6px;border-radius:20px;
+  font-size:8.5px;letter-spacing:.09em;color:var(--mut);
+  background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.06);
+}
+.chip i{width:5px;height:5px;border-radius:50%;background:var(--mut);flex:none}
+.chip.ok{color:#a7f3d0;border-color:rgba(52,211,153,.25);background:rgba(52,211,153,.06)}
+.chip.ok i{background:var(--ok);box-shadow:0 0 7px var(--ok);animation:pulse 2.4s infinite}
+.chip.bad{color:#fecdd3;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.07)}
+.chip.bad i{background:var(--bad);box-shadow:0 0 7px var(--bad)}
+.chip.warn{color:#fde68a;border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.06)}
+.chip.warn i{background:var(--warn);box-shadow:0 0 7px var(--warn)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ---------- spark ---------- */
+.spark{margin-top:8px;position:relative;z-index:2;border-radius:9px;border:1px solid rgba(255,255,255,.05);
+  background:rgba(255,255,255,.015);padding:5px 7px 2px}
+.spark-top{display:flex;justify-content:space-between;font-size:8px;letter-spacing:.16em;color:var(--mut)}
+.spark canvas{display:block;width:100%;height:34px}
+
+/* ---------- actions ---------- */
+.actions{display:flex;gap:7px;margin-top:9px;position:relative;z-index:2}
+button.act{
+  position:relative;flex:1;height:34px;border:0;cursor:pointer;font-family:var(--mono);
+  font-size:10.5px;font-weight:700;letter-spacing:.18em;color:#031018;
+  background:linear-gradient(135deg,#22d3ee,#67e8f9);
+  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);
+  display:flex;align-items:center;justify-content:center;gap:7px;
+  transition:filter .16s,transform .06s,box-shadow .16s;
+  box-shadow:0 0 16px rgba(34,211,238,.3);
+}
+button.act:hover{filter:brightness(1.12);box-shadow:0 0 24px rgba(34,211,238,.5)}
+button.act:active{transform:translateY(1px)}
+button.act:disabled{filter:grayscale(.7) brightness(.6);cursor:default;box-shadow:none}
+button.act .dot{width:6px;height:6px;border-radius:50%;background:#031018;opacity:.7}
+button.act.ghost{
+  flex:0 0 96px;color:var(--cy);background:rgba(34,211,238,.07);
+  border:1px solid rgba(34,211,238,.35);box-shadow:none;
+}
+button.act.ghost:hover{background:rgba(34,211,238,.14);box-shadow:0 0 16px rgba(34,211,238,.2)}
+button.act.ghost:disabled{color:var(--mut);border-color:rgba(255,255,255,.08);background:transparent}
+.spin{width:11px;height:11px;border-radius:50%;border:1.5px solid rgba(3,16,24,.3);border-top-color:#031018;
+  animation:sp .7s linear infinite;display:none}
+button.act.busy .spin{display:block}
+button.act.busy .dot{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ---------- log ---------- */
+.log{
+  margin-top:8px;flex:1;min-height:0;display:flex;flex-direction:column;
+  border-radius:9px;border:1px solid rgba(255,255,255,.06);background:rgba(2,6,10,.66);
+  position:relative;z-index:2;overflow:hidden;
+  transition:border-color .2s;
+}
+.log.live{border-color:rgba(34,211,238,.3);box-shadow:inset 0 0 26px rgba(34,211,238,.05)}
+.log-head{display:flex;align-items:center;justify-content:space-between;padding:4px 8px;
+  border-bottom:1px solid rgba(255,255,255,.05);font-size:8px;letter-spacing:.18em;color:var(--mut)}
+.log-head button{background:none;border:0;color:var(--mut);font:inherit;letter-spacing:.1em;cursor:pointer;font-size:8px}
+.log-head button:hover{color:var(--cy)}
+#logBody{
+  flex:1;overflow-y:auto;padding:5px 8px 6px;font-size:9.5px;line-height:1.5;
+  color:#9db4c6;white-space:pre-wrap;word-break:break-word;
+  -webkit-user-select:text;user-select:text;
+}
+#logBody::-webkit-scrollbar{width:4px}
+#logBody::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
+#logBody .ok{color:var(--ok)}
+#logBody .bad{color:var(--bad)}
+#logBody .warn{color:var(--warn)}
+#logBody .cy{color:var(--cy)}
+.log-foot{display:flex;justify-content:space-between;padding:3px 8px;border-top:1px solid rgba(255,255,255,.04);
+  font-size:8px;letter-spacing:.1em;color:var(--mut)}
+#lastSession{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px}
+
+/* ---------- toast ---------- */
+#toast{
+  position:absolute;left:50%;bottom:14px;transform:translate(-50%,10px);
+  padding:5px 11px;border-radius:20px;font-size:9px;letter-spacing:.12em;
+  background:rgba(34,211,238,.14);border:1px solid rgba(34,211,238,.4);color:#c8f7ff;
+  opacity:0;pointer-events:none;transition:all .22s;z-index:6;white-space:nowrap;
+  box-shadow:0 0 18px rgba(34,211,238,.25);
+}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+
+/* ============================================================
+   collapsed — one circular bubble
+   ============================================================ */
+#bubble{
+  position:fixed;inset:0;border-radius:50%;cursor:pointer;
+  display:none;place-items:center;
+  background:radial-gradient(circle at 32% 26%,#0d1a26,#05090f 72%);
+  border:1px solid rgba(34,211,238,.45);
+  box-shadow:0 0 22px rgba(34,211,238,.35),inset 0 0 18px rgba(34,211,238,.10);
+  transition:transform .15s,box-shadow .2s,opacity .16s;
+}
+#bubble:hover{transform:scale(1.05);box-shadow:0 0 30px rgba(34,211,238,.55),inset 0 0 20px rgba(34,211,238,.16)}
+#bubble:active{transform:scale(.97)}
+#bubble .core{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;pointer-events:none}
+#bubble .cnt{font-size:13px;font-weight:700;color:#eafcff;letter-spacing:-.02em;text-shadow:0 0 12px rgba(34,211,238,.7)}
+#bubble .lbl{font-size:6.5px;letter-spacing:.2em;color:var(--mut)}
+#bubble .ringwrap{position:absolute;inset:0;pointer-events:none}
+#bubble svg{width:100%;height:100%;transform:rotate(-90deg)}
+#bubble .btrack{stroke:rgba(255,255,255,.07)}
+#bubble .bfill{stroke:var(--cy);stroke-width:2;stroke-linecap:round;filter:drop-shadow(0 0 4px rgba(34,211,238,.8));transition:stroke-dashoffset .6s}
+#bubble .bdot{
+  position:absolute;right:7px;top:8px;width:7px;height:7px;border-radius:50%;
+  background:var(--ok);box-shadow:0 0 8px var(--ok);border:1px solid #05090f;
+}
+#bubble .bdot.bad{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+#bubble .bdot.warn{background:var(--warn);box-shadow:0 0 8px var(--warn)}
+#bubble .spin2{width:14px;height:14px;border-radius:50%;border:2px solid rgba(34,211,238,.2);border-top-color:var(--cy);
+  animation:sp .8s linear infinite;display:none}
+#bubble.busy .spin2{display:block}
+#bubble.busy .cnt,#bubble.busy .lbl{display:none}
+
+body.collapsed{background:#04070c;border-radius:50%}
+body.collapsed #app{opacity:0;transform:scale(.94);pointer-events:none}
+body.collapsed #bubble{display:grid}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="corner tl"></div><div class="corner tr"></div>
+  <div class="corner bl"></div><div class="corner br"></div>
+
+  <header id="drag">
+    <div class="brand"><span class="glyph">◈</span>OLLIE<span class="dim">//</span>UNLTD</div>
+    <div class="hdr-spacer"></div>
+    <button class="hbtn" id="btnDock" title="dock to other side">⇄</button>
+    <button class="hbtn" id="btnMin" title="collapse">−</button>
+    <button class="hbtn close" id="btnClose" title="close">✕</button>
+  </header>
+
+  <div class="project"><i class="pdot"></i><span class="pname" id="project">idle — no session</span></div>
+
+  <section class="hero">
+    <div class="hero-top">
+      <div>
+        <div class="label">TOKENS · ALL TIME</div>
+        <div class="big"><span id="tokTotal">0</span><span class="unit" id="tokUnit"></span></div>
+        <div class="hero-sub">
+          <span>↑<b id="tokIn">0</b></span>
+          <span>↓<b id="tokOut">0</b></span>
+          <span class="cost" id="tokCost">$0</span>
+        </div>
+      </div>
+      <div class="ring">
+        <svg width="52" height="52">
+          <defs><linearGradient id="rg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a78bfa"/>
+          </linearGradient></defs>
+          <circle class="track" cx="26" cy="26" r="22" fill="none" stroke-width="3"/>
+          <circle class="fill" id="ringFill" cx="26" cy="26" r="22" fill="none" stroke-width="3"
+                  stroke-dasharray="138.2" stroke-dashoffset="138.2"/>
+        </svg>
+        <span id="ringPct">0%</span>
+      </div>
+    </div>
+    <div class="bars">
+      <div class="seg in"><i id="barIn"></i></div>
+      <div class="seg out"><i id="barOut"></i></div>
+      <div class="seg hit"><i id="barHit"></i></div>
+    </div>
+    <div class="legend">
+      <span><s style="background:#22d3ee"></s>IN</span>
+      <span><s style="background:#a78bfa"></s>OUT</span>
+      <span><s style="background:#34d399"></s>CACHE HIT</span>
+      <span style="margin-left:auto" id="sessCount">0 sessions</span>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card cy"><b id="egress">—</b><span>EGRESS · v4</span></div>
+    <div class="card vi"><b id="prefix">—</b><span>QUOTA /64</span></div>
+    <div class="card"><b id="hops">0</b><span>ROTATIONS</span></div>
+    <div class="card"><b id="device">—</b><span>DEVICE</span></div>
+  </section>
+
+  <section class="health" id="health"></section>
+
+  <section class="spark">
+    <div class="spark-top"><span>SESSION BURN</span><span id="lastAge">—</span></div>
+    <canvas id="spark" width="680" height="68"></canvas>
+  </section>
+
+  <section class="actions">
+    <button class="act" id="btnHop"><span class="dot"></span><span class="spin"></span>HOP</button>
+    <button class="act ghost" id="btnDoctor">DOCTOR</button>
+  </section>
+
+  <section class="log" id="logPanel">
+    <div class="log-head"><span>CONSOLE</span><button id="btnClear">CLEAR</button></div>
+    <pre id="logBody"></pre>
+    <div class="log-foot"><span id="lastSession">no session yet</span><span id="clock">--:--:--</span></div>
+  </section>
+</div>
+
+<div id="bubble" title="opencode unlimited — click to expand">
+  <div class="ringwrap">
+    <svg viewBox="0 0 78 78">
+      <circle class="btrack" cx="39" cy="39" r="35" fill="none" stroke-width="2"/>
+      <circle class="bfill" id="bubbleRing" cx="39" cy="39" r="35" fill="none" stroke-width="2"
+              stroke-dasharray="219.9" stroke-dashoffset="219.9"/>
+    </svg>
+  </div>
+  <div class="core"><div class="spin2"></div><div class="cnt" id="bubbleTok">0</div><div class="lbl">TOK</div></div>
+  <i class="bdot" id="bubbleDot"></i>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const bridge = (cmd, extra) => {
+  try { window.webkit.messageHandlers.ouc.postMessage(Object.assign({cmd}, extra || {})); } catch (e) {}
+};
+
+/* ---------- formatting ---------- */
+function compact(n){
+  n = Number(n) || 0;
+  if (n >= 1e9) return [ (n/1e9).toFixed(n/1e9 >= 10 ? 0 : 1), "B" ];
+  if (n >= 1e6) return [ (n/1e6).toFixed(n/1e6 >= 10 ? 1 : 2), "M" ];
+  if (n >= 1e3) return [ (n/1e3).toFixed(n/1e3 >= 10 ? 0 : 1), "K" ];
+  return [ String(Math.round(n)), "" ];
+}
+const fmt = (n) => { const [v,u] = compact(n); return v + u; };
+const money = (c) => "$" + (Number(c)||0).toFixed(2);
+const age = (s) => {
+  if (s < 0) return "—";
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s/60) + "m ago";
+  if (s < 86400) return Math.floor(s/3600) + "h ago";
+  return Math.floor(s/86400) + "d ago";
+};
+
+/* ---------- state ---------- */
+let S = {};
+
+function healthChip(label, state, hint){
+  const cls = state === true ? "ok" : state === "warn" ? "warn" : "bad";
+  return `<span class="chip ${cls}" title="${hint||""}"><i></i>${label}</span>`;
+}
+
+function render(d){
+  S = d;
+  const t = d.tokens || {};
+  const id = d.identity || {};
+  const w = d.warp || {};
+
+  const [tv, tu] = compact((t.input || 0) + (t.output || 0));
+  $("tokTotal").textContent = tv;
+  $("tokUnit").textContent = tu;
+  $("tokIn").textContent = fmt(t.input);
+  $("tokOut").textContent = fmt(t.output);
+  $("tokCost").textContent = money(t.cost);
+  $("sessCount").textContent = (t.sessions || 0) + " sessions";
+
+  const cache = t.cacheRead || 0, inTok = t.input || 0;
+  const hit = cache + inTok > 0 ? cache / (cache + inTok) : 0;
+  const pct = Math.round(hit * 100);
+  const circ = 2 * Math.PI * 22;
+  $("ringFill").style.strokeDashoffset = String(circ * (1 - hit));
+  $("ringPct").textContent = pct + "%";
+
+  const totalAll = (t.input||0) + (t.output||0) + cache;
+  const wIn = totalAll ? (inTok / totalAll) * 100 : 0;
+  const wOut = totalAll ? ((t.output||0) / totalAll) * 100 : 0;
+  const wHit = totalAll ? (cache / totalAll) * 100 : 0;
+  $("barIn").style.width = Math.max(1.5, wIn) + "%";
+  $("barOut").style.width = Math.max(1.5, wOut) + "%";
+  $("barHit").style.width = Math.max(1.5, wHit) + "%";
+
+  $("egress").textContent = d.egress4 || "—";
+  $("prefix").textContent = id.prefix || "—";
+  $("hops").textContent = id.hops || 0;
+  $("device").textContent = id.device ? id.device + "…" : "—";
+
+  const chips = [
+    healthChip("WARP", w.connected ? true : false, w.mode || ""),
+    healthChip("DNS", !!d.dns, "opencode.ai resolution"),
+    healthChip("KEEPER", !!d.keeper, "root launchd"),
+    healthChip("GUARD", !!d.guard, "user launchagent"),
+    healthChip("CREDIT", !!d.credit, "~/.opencode/AGENTS.md"),
+    healthChip("LEAK", /armed/.test(d.leakguard || "") ? true : (d.leakguard === "off" ? "warn" : "warn"), d.leakguard)
+  ];
+  $("health").innerHTML = chips.join("");
+
+  // project
+  const p = d.context || {};
+  if (p.dir) {
+    const name = p.dir.replace(/\/+$/, "").split("/").pop() || p.dir;
+    $("project").textContent = name + (p.age >= 0 ? " · " + age(p.age) : "");
+    $("project").title = p.dir;
+  }
+
+  // sparkline
+  drawSpark((t.recent || []).slice().reverse());
+
+  // last session
+  const last = t.last;
+  if (last) {
+    $("lastSession").textContent = last.title + " · " + fmt(last.tokens) + " tok";
+    $("lastSession").title = last.title + " · " + last.model;
+    $("lastAge").textContent = age(last.age);
+  }
+
+  // bubble
+  const bcirc = 2 * Math.PI * 35;
+  $("bubbleRing").style.strokeDashoffset = String(bcirc * (1 - hit));
+  $("bubbleTok").textContent = fmt((t.input || 0) + (t.output || 0));
+}
+
+function drawSpark(rows){
+  const c = $("spark");
+  const ctx = c.getContext("2d");
+  const W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!rows.length) return;
+  const max = Math.sqrt(Math.max.apply(null, rows.map(r => r.tokens || 0).concat([1])));
+  const n = rows.length;
+  const bw = W / n;
+  rows.forEach((r, i) => {
+    const h = Math.max(4, (Math.sqrt(r.tokens || 0) / max) * (H - 10));
+    const x = i * bw;
+    const g = ctx.createLinearGradient(0, H - h, 0, H);
+    g.addColorStop(0, "rgba(34,211,238,.95)");
+    g.addColorStop(1, "rgba(34,211,238,.10)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    const w = Math.max(2, bw * 0.55);
+    const cx = x + (bw - w) / 2;
+    ctx.roundRect(cx, H - h, w, h, 1.5);
+    ctx.fill();
+    if (i === n - 1) {
+      ctx.fillStyle = "#f472b6";
+      ctx.beginPath();
+      ctx.arc(cx + w / 2, H - h - 2, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+}
+
+/* ---------- logs ---------- */
+function logLine(line){
+  const el = $("logBody");
+  const s = document.createElement("span");
+  let cls = "";
+  if (/^\s*(✓|==|.*FRESH IDENTITY)/.test(line) || /connected|rotated|ok\b/i.test(line)) cls = "ok";
+  else if (/^\s*(✗|error|failed|not found)/i.test(line)) cls = "bad";
+  else if (/^\s*(!|warn)/i.test(line) || /retry|unchanged/i.test(line)) cls = "warn";
+  else if (/old egress|new egress|wall detected/i.test(line)) cls = "cy";
+  if (cls) s.className = cls;
+  s.textContent = line + "\n";
+  el.appendChild(s);
+  el.scrollTop = el.scrollHeight;
+  while (el.childNodes.length > 300) el.removeChild(el.firstChild);
+}
+
+function toast(msg){
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("on");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("on"), 1600);
+}
+
+function setBusy(cmd, on){
+  const hop = $("btnHop"), doc = $("btnDoctor");
+  hop.disabled = on && cmd !== "hop" ? true : on;
+  doc.disabled = on;
+  if (cmd === "hop") hop.classList.toggle("busy", on);
+  if (cmd === "doctor") { doc.classList.toggle("busy", on); }
+  $("logPanel").classList.toggle("live", on);
+  $("bubble").classList.toggle("busy", on);
+  if (on) { $("btnHop").textContent = ""; }
+  // keep label markup intact
+  hop.innerHTML = on && cmd === "hop"
+    ? '<span class="spin" style="display:block"></span>ROTATING'
+    : '<span class="dot"></span>HOP';
+  doc.innerHTML = on && cmd === "doctor"
+    ? '<span class="spin" style="display:block"></span>SCANNING'
+    : 'DOCTOR';
+}
+
+/* ---------- native events ---------- */
+window.ouc = function(ev){
+  if (!ev || !ev.type) return;
+  if (ev.type === "log") logLine(ev.payload.line || "");
+  else if (ev.type === "busy") setBusy(ev.payload.cmd, ev.payload.on);
+  else if (ev.type === "toast") toast(ev.payload.text || "");
+  else if (ev.type === "window") {
+    document.body.classList.toggle("collapsed", !!ev.payload.collapsed);
+  }
+};
+window.oucUpdate = function(d){ try { render(d); } catch (e) { console.log(e); } };
+
+/* ---------- controls ---------- */
+$("btnHop").addEventListener("click", () => bridge("hop"));
+$("btnDoctor").addEventListener("click", () => bridge("doctor"));
+$("btnClear").addEventListener("click", () => { $("logBody").innerHTML = ""; });
+$("btnDock").addEventListener("click", () => bridge("dock"));
+$("btnMin").addEventListener("click", () => bridge("collapse"));
+$("btnClose").addEventListener("click", () => bridge("close"));
+$("bubble").addEventListener("click", () => bridge("expand"));
+$("bubble").addEventListener("dblclick", () => bridge("hop"));
+$("lastSession").addEventListener("click", () => bridge("copy"));
+
+/* drag: native timer owns the motion, js only says start/stop */
+let dragging = false;
+function startDrag(e){
+  if (e.button !== 0) return;
+  dragging = true;
+  bridge("dragStart");
+}
+function stopDrag(){
+  if (!dragging) return;
+  dragging = false;
+  bridge("dragEnd");
+}
+["drag"].forEach(id => {
+  const el = $(id);
+  el.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button")) return;
+    startDrag(e);
+  });
+});
+document.addEventListener("pointerup", stopDrag);
+document.addEventListener("pointercancel", stopDrag);
+$("bubble").addEventListener("pointerdown", (e) => { startDrag(e); });
+
+/* clock */
+setInterval(() => {
+  const d = new Date();
+  $("clock").textContent = [d.getHours(), d.getMinutes(), d.getSeconds()]
+    .map(x => String(x).padStart(2, "0")).join(":");
+}, 1000);
+
+/* expand on load */
+document.body.classList.remove("collapsed");
+bridge("refresh");
+</script>
+</body>
+</html>

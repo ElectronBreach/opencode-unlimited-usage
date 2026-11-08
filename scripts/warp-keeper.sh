@@ -41,6 +41,16 @@ LEAKGUARD="${OUC_LEAKGUARD:-0}"
 
 mkdir -p "$GUARD_DIR"
 klog(){ echo "$(date '+%m-%d %H:%M:%S') $*" >> "$LOG"; }
+# these logs run for months on a laptop. a 500 KB ceiling keeps a year of
+# rotations without giving the disk a slow leak.
+trim_log(){
+  local f="$1" sz
+  [ -f "$f" ] || return 0
+  sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ' || echo 0)
+  case "$sz" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$sz" -gt 524288 ] || return 0
+  tail -n 400 "$f" > "$f.trim" 2>/dev/null && mv "$f.trim" "$f" 2>/dev/null
+}
 
 # ---------------------------------------------------------------- cleanup ----
 # Always leave the box in a state where internet works. Called on start and
@@ -361,6 +371,8 @@ bad_ticks=0
 last_failopen=0
 last_reconnect=0
 good_streak=0
+egress_ticks=0
+last_soft=0
 dns_fixes=0
 last_dns_fix=0
 loops=0
@@ -371,7 +383,14 @@ while true; do
   sweep_hosts
 
   # ---- health: DNS first, then egress -------------------------------------
-  if raw_ok; then
+  # probing every 5s put ~35k requests/day through the tunnel and made a
+  # single slow lookup look like a dead link. 15s while healthy, every tick
+  # the moment a probe fails.
+  tickn=$(( ${tickn:-0} + 1 ))
+  if [ $((tickn % 3)) -eq 0 ] || [ "${probe_ok:-0}" != "1" ]; then
+    if egress_ok; then probe_ok=1; else probe_ok=0; fi
+  fi
+  if [ $((tickn % 3)) -eq 0 ] && raw_ok; then
     if ! dns_ok; then
       now=$(date +%s)
       if [ $((now - last_dns_fix)) -ge 30 ]; then
@@ -393,26 +412,37 @@ while true; do
     fi
   fi
 
-  # a flapping tunnel passes one check and fails the next. resetting the
-  # counter on a single success let a half-dead tunnel look healthy forever
-  # while DNS died in the user's face. only a run of clean checks clears it.
-  if connected && ! egress_ok; then
-    bad_ticks=$((bad_ticks + 1)); good_streak=0
-  elif connected && ! dns_ok; then
-    bad_ticks=$((bad_ticks + 1)); good_streak=0
-  else
+  # three states, because they need different medicine:
+  #   good        egress and dns both answer
+  #   egress_down dns answers but the data plane is stalled — WARP brownouts
+  #               like this last ~20s on macOS while an edge migrates. do NOT
+  #               fail open for it; a disconnect here costs the user 120s of
+  #               direct egress for a hiccup that heals itself.
+  #   dead        both down while status says connected — the real lockout risk.
+  # a flapping tunnel passes one check and fails the next, so the counter only
+  # clears after a run of clean checks.
+  if ! connected; then
+    bad_ticks=0; egress_ticks=0
+  elif [ "${probe_ok:-0}" = "1" ]; then
     good_streak=$(( ${good_streak:-0} + 1 ))
-    [ "$good_streak" -ge 3 ] && bad_ticks=0
+    if [ "$good_streak" -ge 3 ]; then bad_ticks=0; egress_ticks=0; fi
+  elif dns_ok; then
+    good_streak=0
+    egress_ticks=$(( ${egress_ticks:-0} + 1 ))
+    bad_ticks=0
+  else
+    good_streak=0
+    egress_ticks=0
+    bad_ticks=$((bad_ticks + 1))
   fi
 
-  # 3 consecutive bad checks (~15s) while "connected" = the tunnel is lying.
-  # but a freshly reconnected tunnel is slow to route, and disconnecting it
-  # every 15s turns one bad minute into a flap loop. once we fail open, stay
-  # open for a while and let the slow path reconnect cleanly.
   now=$(date +%s)
-  if [ "$bad_ticks" -ge 4 ]; then
+
+  # dns dead while connected → fail open, that is the lockout this build exists
+  # to prevent. 30s of confirmed deadness, then direct egress for 120s.
+  if [ "$bad_ticks" -ge 6 ]; then
     if [ $((now - ${last_failopen:-0})) -ge 120 ]; then
-      klog "tunnel reports connected but dns/egress dead — disconnecting warp (fail-open, 120s backoff)"
+      klog "tunnel reports connected but dns is dead — disconnecting warp (fail-open, 120s backoff)"
       disarm_guard
       w disconnect >/dev/null 2>&1 || true
       restore_dns
@@ -423,6 +453,23 @@ while true; do
     bad_ticks=0
   fi
 
+  # data plane stalled but dns fine → one clean reconnect, never a fail-open.
+  # 45s of patience, and no more than one bounce every 120s, so a long edge
+  # migration cannot become a disconnect loop.
+  if [ "$egress_ticks" -ge 9 ]; then
+    if [ $((now - ${last_soft:-0})) -ge 120 ]; then
+      klog "tunnel up, dns fine, egress stalled ${egress_ticks} ticks — clean reconnect"
+      w disconnect >/dev/null 2>&1 || true
+      for i in 1 2 3 4 5; do
+        connected || break
+        sleep 1
+      done
+      w connect >/dev/null 2>&1 || true
+      last_soft=$now
+    fi
+    egress_ticks=0
+  fi
+
   sleep "$FAST"
 
   # ---- slow path: connection + optional guard (every ~45s) ----------------
@@ -430,6 +477,7 @@ while true; do
   [ "$loops" -ge 9 ] || continue
   loops=0
 
+  trim_log "$LOG"
   ensure_mode
   ensure_guard
 

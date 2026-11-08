@@ -27,9 +27,29 @@ wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP"
 
 pause_keeper(){ mkdir -p "$GUARD_DIR"; printf '%s' "$$" > "$PAUSE" 2>/dev/null; }
 resume_keeper(){ rm -f "$PAUSE" 2>/dev/null; }
-trap resume_keeper EXIT INT TERM HUP
+
+ROT_LOCK="$GUARD_DIR/rotate.lock"
+rot_acquire(){
+  local i age
+  for i in $(seq 1 150); do
+    mkdir "$ROT_LOCK" 2>/dev/null && return 0
+    age=$(( $(date +%s) - $(stat -f %m "$ROT_LOCK" 2>/dev/null || echo 0) ))
+    [ "$age" -gt 300 ] && rm -rf "$ROT_LOCK" 2>/dev/null
+    sleep 2
+  done
+  return 1
+}
+rot_release(){ rmdir "$ROT_LOCK" 2>/dev/null; }
+cleanup(){ resume_keeper; rot_release; }
+trap cleanup EXIT INT TERM HUP
 
 cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }
+# the utun address (2606:4700:110::) is the tunnel's inside leg. what the
+# server sees is cloudflare's egress (2a09:bac5:...::/64), and that is the
+# value the quota is keyed on. measure the real one.
+seen4(){ curl -4 -sS -m 8 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | awk -F= '/^ip=/{print $2; exit}'; }
+seen6(){ curl -6 -sS -m 8 'https://[2606:4700:4700::1111]/cdn-cgi/trace' 2>/dev/null | awk -F= '/^ip=/{print $2; exit}'; }
+seen6_prefix(){ local a; a=$(seen6); [ -n "$a" ] || return 1; printf '%s' "$a" | awk -F: '{print $1":"$2":"$3":"$4}'; }
 
 # warp hands out cloudflare ranges. anything else means the tunnel is not up
 # and the "new" address is your own ISP — never report that as a rotation.
@@ -48,7 +68,9 @@ cur_device(){ wo registration show 2>/dev/null | awk '/^ID:/{print $2; exit}'; }
 
 OLD=$(cur_ip)
 OLD_DEV=$(cur_device)
-OLD_PFX=$(warp_prefix)
+OLD_PFX=$(seen6_prefix 2>/dev/null || true)
+[ -n "$OLD_PFX" ] || OLD_PFX=$(warp_prefix)
+OLD_SEEN4=$(seen4 2>/dev/null || true)
 echo "old egress: ${OLD:-?}  /64 ${OLD_PFX:-none}"
 
 # a plain `registration delete` then `registration new` is a race: the daemon
@@ -70,7 +92,7 @@ clear_registration(){
   local i
   for i in 1 2 3 4 5; do
     w registration delete
-    sleep 2
+    sleep 1
     reg_present || return 0
   done
   return 1
@@ -100,8 +122,8 @@ register_fresh(){
 # real address, and give the tunnel one clean second chance before failing.
 wait_egress(){
   local i ip
-  for i in $(seq 1 30); do
-    sleep 3
+  for i in $(seq 1 20); do
+    sleep 1
     wo status 2>/dev/null | head -1 | grep -q Connected || continue
     ip=$(cur_ip)
     [ -n "$ip" ] && { printf '%s' "$ip"; return 0; }
@@ -123,6 +145,10 @@ rotate_once(){
 }
 
 pause_keeper
+if ! rot_acquire; then
+  echo "another rotation has owned the tunnel for 5 minutes — not stacking a second one"
+  exit 1
+fi
 echo "-- rotating (keeper paused) --"
 if ! rotate_once; then
   echo "-- registration failed: ${reg_new_err:-unknown} --"
@@ -137,26 +163,18 @@ echo "new egress: ${NIP:-?}"
 # from is common. take one more swing when that happens: a fresh identity
 # either way, but a different address is what you actually asked for.
 FIRST_DEV=$(cur_device)
+FIRST_PFX=$(seen6_prefix 2>/dev/null || true)
+# a repeated v4 is only a problem when the /64 is also unchanged. cloudflare's
+# pool has four v4 addresses, so demanding a different one turned a fresh
+# identity into a second 12-second rotation 25% of the time.
 if [ -n "$NIP" ] && [ "$NIP" = "$OLD" ] && is_warp_ip "$OLD" \
-   && [ -n "$FIRST_DEV" ] && [ "$FIRST_DEV" != "$OLD_DEV" ]; then
-  echo "  same address as before — one more rotation"
+   && [ -n "$FIRST_DEV" ] && [ "$FIRST_DEV" != "$OLD_DEV" ] \
+   && { [ -z "$FIRST_PFX" ] || [ -z "$OLD_PFX" ] || [ "$FIRST_PFX" = "$OLD_PFX" ]; }; then
+  echo "  same address and same /64 as before — one more rotation"
   rotate_once || true
   echo "new egress: ${NIP:-?}"
 fi
 resume_keeper
-
-# record the new identity so doctor/guard state stays truthful
-if [ -n "$NIP" ] && [ -f "$GUARD_DIR/state.json" ]; then
-  python3 - "$GUARD_DIR/state.json" "$NIP" <<'PY' 2>/dev/null
-import json,sys
-p,v = sys.argv[1], sys.argv[2]
-try: d=json.load(open(p))
-except: d={}
-d["current"]=v
-d["last_hop"]=int(__import__("time").time())
-json.dump(d,open(p,"w"),separators=(",",":"))
-PY
-fi
 
 if [ -z "$NIP" ]; then
   echo "-- tunnel connected but no egress — disconnect + let keeper repair --"
@@ -173,7 +191,37 @@ NEW_DEV=$(cur_device)
 # (device id), not the address, so a repeated ip with a new device id is still
 # a fresh identity.
 if [ -n "$NEW_DEV" ] && [ "$NEW_DEV" != "$OLD_DEV" ]; then
-  echo "== FRESH IDENTITY ✓  device ${OLD_DEV:0:8}… → ${NEW_DEV:0:8}…  egress $NIP  /64 $(warp_prefix) =="
+  # record the whole identity. `current` alone left doctor and the guard
+  # showing a /64 and device that no longer existed, so a rotation looked
+  # like a no-op and the stale /64 was never blacklisted.
+  PFX_NOW=$(seen6_prefix 2>/dev/null || true)
+  [ -n "$PFX_NOW" ] || PFX_NOW=$(warp_prefix)
+  SEEN6_NOW=$(seen6 2>/dev/null || true)
+  SEEN4_NOW=$(seen4 2>/dev/null || true)
+  [ -n "$SEEN4_NOW" ] || SEEN4_NOW="$NIP"
+  if [ -f "$GUARD_DIR/state.json" ]; then
+    python3 - "$GUARD_DIR/state.json" "$SEEN4_NOW" "$PFX_NOW" "$NEW_DEV" "$SEEN6_NOW" <<'PY' 2>/dev/null
+import json,sys,os,time
+p,ip,pfx,dev,s6 = sys.argv[1:6]
+try: d=json.load(open(p))
+except: d={}
+d["current"]=ip
+d["prefix"]=pfx
+d["device"]=dev
+d["seen6"]=s6
+d["last_hop"]=int(time.time())
+try: h=int(d.get("hops") or 0)
+except: h=0
+d["hops"]=h+1
+t=p+".tmp"
+with open(t,"w") as f: json.dump(d,f,separators=(",",":"))
+os.replace(t,p)
+PY
+  fi
+  echo "== FRESH IDENTITY ✓  device ${OLD_DEV:0:8}… → ${NEW_DEV:0:8}…  egress $NIP  /64 $PFX_NOW =="
+  if [ -n "$OLD_PFX" ] && [ "$PFX_NOW" = "$OLD_PFX" ]; then
+    echo "   (egress /64 unchanged — the registration moved but the exit did not)"
+  fi
   echo "   re-send your message"
   exit 0
 fi

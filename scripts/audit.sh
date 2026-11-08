@@ -138,6 +138,21 @@ H=$(curl -4 -fsS -o /dev/null -w "%{http_code}" -m 8 https://api.github.com 2>/d
 [ -f "$DEST/scripts/zen-hop.sh" ] && [ -f "$DEST/scripts/doctor.sh" ] && ok "all scripts installed" || bad "scripts" "incomplete"
 [ -x "$DEST/scripts/zen-hop.sh" ] && ok "scripts executable" || bad "scripts" "not executable"
 
+# ---- 12. HUD ----------------------------------------------------------------
+APP="$HOME/Library/Application Support/$BRAND/OpencodeOverlay.app"
+if [ -d "$APP" ]; then
+  ok "overlay app built" "$([ -x "$APP/Contents/MacOS/opencode-unlimited-overlay" ] && echo bundle+bin || echo incomplete)"
+else
+  dv "overlay app" "not built (swiftc missing? re-run the installer)"
+fi
+pgrep -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" >/dev/null 2>&1 \
+  && ok "overlay running" "auto-raised by the lane" || dv "overlay running" "not up right now (opens with next session)"
+[ -x "$HOME/.local/bin/${BRAND}-overlay" ] && ok "overlay CLI" "opencode-unlimited-overlay" || bad "overlay CLI" "missing"
+grep -q "OpencodeOverlay" "$DEST/scripts/zen-lane.sh" 2>/dev/null \
+  && ok "lane raises the HUD" "on every opencode launch" || bad "lane HUD hook" "missing"
+STATUS="$("$DEST/scripts/status.sh" 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);t=d.get("tokens") or {};print("%s sessions / %s tokens" % (t.get("sessions"), (t.get("input") or 0)+(t.get("output") or 0)))' 2>/dev/null)"
+[ -n "$STATUS" ] && ok "status probe emits json" "$STATUS" || bad "status probe" "no json"
+
 echo ""
 echo "  pass=$pass  deviation=$dev  fail=$fail"
 if [ "$fail" -gt 0 ]; then echo "  ✗ something is broken — see the ✗ lines"; else echo "  ✓ no failures. ~ lines are documented macOS adaptations."; fi

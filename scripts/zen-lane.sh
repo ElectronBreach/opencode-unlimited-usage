@@ -136,6 +136,8 @@ restore_hosts(){
   strip_block /etc/hosts "$tmp"
   sudo -n /bin/cp "$tmp" /etc/hosts 2>/dev/null
   rm -f "$tmp"
+  dscacheutil -flushcache >/dev/null 2>&1 || true
+  sudo -n /usr/bin/killall -HUP mDNSResponder >/dev/null 2>&1 || true
   [ "$(cat "$LANE_PID" 2>/dev/null)" = "$$" ] && rm -f "$LANE_PID" 2>/dev/null
   [ -n "${MACHINE_DIR:-}" ] && rm -rf "$MACHINE_DIR" 2>/dev/null
   release_lock
@@ -182,6 +184,7 @@ if [ -n "$EDGE" ] && [ "$LOCKED" = "1" ]; then
       mkdir -p "$(dirname "$LANE_PID")" 2>/dev/null || true
       printf '%s\n' "$$" > "$LANE_PID" 2>/dev/null || true
       dscacheutil -flushcache >/dev/null 2>&1 || true
+      sudo -n /usr/bin/killall -HUP mDNSResponder >/dev/null 2>&1 || true
     fi
     rm -f "$tmp"
   fi
@@ -218,6 +221,20 @@ if mkdir -p "$MACHINE_DIR" 2>/dev/null; then
     } > "$MACHINE_DIR/ioreg" 2>/dev/null
     chmod +x "$MACHINE_DIR/ioreg" 2>/dev/null
     [ -x "$MACHINE_DIR/ioreg" ] && export PATH="$MACHINE_DIR:$PATH"
+  fi
+fi
+
+# ---- hud: show the overlay for this session
+#
+# the HUD is part of the launch, not a separate app you have to remember.
+# first launch of a session raises it (a second terminal just refreshes the
+# project label — `open -g` reuses the running instance). OUC_OVERLAY=0 skips.
+if [ "${OUC_OVERLAY:-1}" != "0" ]; then
+  HUD="$HOME/.local/bin/opencode-unlimited-overlay"
+  [ -x "$HUD" ] || HUD="$HOME/Library/Application Support/opencode-unlimited/OpencodeOverlay.app"
+  if [ -d "$HOME/Library/Application Support/opencode-unlimited/OpencodeOverlay.app" ] \
+     || [ -x "$HOME/.local/bin/opencode-unlimited-overlay" ]; then
+    OUC_SESSION_DIR="$PWD" "$HUD" show >/dev/null 2>&1 &
   fi
 fi
 

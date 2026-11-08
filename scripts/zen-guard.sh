@@ -27,7 +27,7 @@ if [ -z "$WARP" ] || [ ! -s "$WARP" ] || ! "$WARP" --version >/dev/null 2>&1; th
 fi
 [ -n "$WARP" ] || { echo "warp-cli not found"; exit 1; }
 
-COOLDOWN=75
+COOLDOWN=30
 MAX_HOP_TRIES=8
 WALL_RE="QuotaExceeded|Free usage limit reached|usage limit reached|FreeUsageLimitError|FreeUsageLimit|rate limit exceeded|too many requests"
 
@@ -39,6 +39,30 @@ wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP"
 glog(){ echo "$(date '+%m-%d %H:%M:%S') $*" >> "$GUARD_LOG"; }
 
 pause_keeper(){ mkdir -p "$STATE_DIR"; printf '%s' "$$" > "$PAUSE" 2>/dev/null; }
+
+# one rotation at a time across the guard AND the manual hop. two rotations
+# interleaving delete/register on the same daemon is how a tunnel ends up
+# "Connected" with no route.
+ROT_LOCK="$STATE_DIR/rotate.lock"
+rot_acquire(){
+  local i age
+  for i in $(seq 1 150); do
+    mkdir "$ROT_LOCK" 2>/dev/null && return 0
+    age=$(( $(date +%s) - $(stat -f %m "$ROT_LOCK" 2>/dev/null || echo 0) ))
+    [ "$age" -gt 300 ] && rm -rf "$ROT_LOCK" 2>/dev/null
+    sleep 2
+  done
+  return 1
+}
+rot_release(){ rmdir "$ROT_LOCK" 2>/dev/null; }
+trim_log(){
+  local f="$1" sz
+  [ -f "$f" ] || return 0
+  sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ' || echo 0)
+  case "$sz" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$sz" -gt 524288 ] || return 0
+  tail -n 400 "$f" > "$f.trim" 2>/dev/null && mv "$f.trim" "$f" 2>/dev/null
+}
 resume_keeper(){ rm -f "$PAUSE" 2>/dev/null; }
 trap resume_keeper EXIT INT TERM HUP
 
@@ -63,6 +87,9 @@ os.replace(t,p)" "$2" 2>/dev/null; }
 
 cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }
 cur_device(){ wo registration show 2>/dev/null | awk '/^ID:/{print $2; exit}'; }
+seen4(){ curl -4 -sS -m 8 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | awk -F= '/^ip=/{print $2; exit}'; }
+seen6(){ curl -6 -sS -m 8 'https://[2606:4700:4700::1111]/cdn-cgi/trace' 2>/dev/null | awk -F= '/^ip=/{print $2; exit}'; }
+seen6_prefix(){ local a; a=$(seen6); [ -n "$a" ] || return 1; printf '%s' "$a" | awk -F: '{print $1":"$2":"$3":"$4}'; }
 warp_prefix(){
   # only the warp tunnel carries 2606:4700::/32. any other utun with a global
   # v6 (a second VPN, a corporate tunnel) would otherwise be mistaken for the
@@ -141,7 +168,7 @@ clear_registration(){
   local i
   for i in 1 2 3 4 5; do
     w registration delete
-    sleep 2
+    sleep 1
     reg_present || return 0
   done
   return 1
@@ -176,14 +203,14 @@ hop_once(){
   for i in 1 2 3; do
     if ! reg_present && w registration new; then ok=1; break; fi
     clear_registration
-    sleep 4
+    sleep 2
   done
   w connect
   resume_keeper
   [ "$ok" = 1 ] || { echo ""; return; }
   local V=""
-  for i in $(seq 1 12); do
-    sleep 3
+  for i in $(seq 1 20); do
+    sleep 1
     V=$(cur_ip)
     [ -n "$V" ] && break
     V=""
@@ -199,7 +226,9 @@ fi
 glog "zen-guard up (cooldown ${COOLDOWN}s, macOS, warp=$WARP)"
 
 while true; do
-  sleep 20
+  rot_release
+  trim_log "$GUARD_LOG"
+  sleep 6
 
   [ -f "$LOGF" ] || continue
   SIZE=$(wc -c < "$LOGF" 2>/dev/null | tr -d ' ' || echo 0); SIZE=${SIZE:-0}
@@ -233,7 +262,7 @@ while true; do
   [ "$WALL" = 1 ] || continue
 
   # jitter the cooldown so repeated walls do not align to the same tick
-  COOLDOWN_J=$(( COOLDOWN + (RANDOM % 20) ))
+  COOLDOWN_J=$(( COOLDOWN + (RANDOM % 10) ))
   if [ "$AGE" -lt "$COOLDOWN_J" ]; then
     glog "wall seen but in cooldown (${AGE}s < ${COOLDOWN_J}s) — waiting"
     continue
@@ -247,8 +276,15 @@ while true; do
   fi
 
   OLD=$(cur_ip)
-  OLD_BLOCK=$(warp_prefix)
+  # the quota key is the address the server sees, not the tunnel's inside leg
+  OLD_BLOCK=$(seen6_prefix 2>/dev/null || true)
+  [ -n "$OLD_BLOCK" ] || OLD_BLOCK=$(warp_prefix)
   [ -n "$OLD_BLOCK" ] || OLD_BLOCK="$OLD"
+  OLD_SEEN4=$(seen4 2>/dev/null || true)
+  if ! rot_acquire; then
+    glog "wall seen but another rotation has owned the tunnel for 5 minutes — not stacking a second one"
+    continue
+  fi
   glog "wall detected — rotating (was: ${OLD:-?} /64 ${OLD_BLOCK:-?})"
   # the /64 is the bucket, exactly like the linux build. fall back to the v4
   # address only when the tunnel has no v6 address at all.
@@ -263,7 +299,14 @@ while true; do
     # the free pool is four addresses; the quota key is the registration.
     # a new device id with a repeated ip is a successful rotation.
     DEV_AFTER=$(cur_device)
+    NEWPFX=$(seen6_prefix 2>/dev/null || true)
+    NEWSEEN4=$(seen4 2>/dev/null || true)
     if [ -n "$DEV_AFTER" ] && [ "$DEV_AFTER" != "$DEV_BEFORE" ] && [ -n "$V" ] && is_warp_ip "$V"; then
+      # a new device id that lands on the same exit is not a new bucket.
+      if [ "$NEWPFX" = "$OLD_BLOCK" ] && [ -n "$NEWSEEN4" ] && [ "$NEWSEEN4" = "$OLD_SEEN4" ]; then
+        glog "try $TRY: new device but identical exit ($NEWPFX) — retrying"
+        continue
+      fi
       if is_burnt "$V"; then glog "try $TRY: new device on a known block ($V) — still a fresh identity"; fi
       NEW="$V"; break
     fi
@@ -303,8 +346,13 @@ while true; do
   if [ -n "$NEW" ]; then
     state_set last_hop "$NOW"
     state_set current "$NEW"
-    NPFX=$(warp_prefix)
+    NPFX=$(seen6_prefix 2>/dev/null || true)
+    [ -n "$NPFX" ] || NPFX=$(warp_prefix)
     [ -n "$NPFX" ] && state_set prefix "$NPFX"
+    NDEV=$(cur_device)
+    [ -n "$NDEV" ] && state_set device "$NDEV"
+    NS6=$(seen6 2>/dev/null || true)
+    [ -n "$NS6" ] && state_set seen6 "$NS6"
     H=$(state_get hops); H=${H:-0}; H=$((H + 1))
     state_set hops "$H"
     glog "rotated #$H: ${OLD:-?} → $NEW ✓"

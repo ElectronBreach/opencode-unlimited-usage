@@ -18,6 +18,9 @@ build_payload(){
   tmp=$(mktemp -d /tmp/ouc-embed.XXXXXX)
   mkdir -p "$tmp/payload/scripts"
   cp scripts/*.sh "$tmp/payload/scripts/"
+  if [ -d scripts/overlay ]; then
+    cp -R scripts/overlay "$tmp/payload/scripts/"
+  fi
   cp AGENTS.md "$tmp/payload/AGENTS.md"
   cp uninstall.sh "$tmp/payload/uninstall.sh"
   ( cd "$tmp/payload" && tar -czf "$tmp/payload.tgz" . )

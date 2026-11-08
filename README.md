@@ -79,6 +79,7 @@ just use `opencode` like always.
 | `warp-keeper` | root daemon — keeps WARP connected, arms/flushes the pf leak guard |
 | `zen-hop` | manual "give me a new identity right now" button |
 | `doctor` | health check — tells you what's alive and what's not |
+| `overlay` | always-on-top HUD: hop + doctor + live token ledger, collapses to a floating circle |
 
 ## Daily usage
 
@@ -102,6 +103,39 @@ And the health check:
 ```bash
 opencode-unlimited-doctor
 ```
+
+## The overlay HUD
+
+A small always-on-top window opens **by itself** every time `opencode` starts —
+any session, any project. It is not decoration: it runs the same scripts you
+would run by hand and reads the same database opencode writes.
+
+- **tokens** — all-time in/out/cache, cost, sessions, and a sparkline of the
+  last 12 sessions, straight out of `~/.local/share/opencode/opencode.db`
+- **identity** — egress address, the server-seen `/64` (the actual quota key),
+  device id, rotation count
+- **health** — warp / DNS / keeper / guard / credit / leak-guard, one dot each
+- **HOP** and **DOCTOR** — the two commands, running live, output streaming into
+  the console pane
+- **⇄** docks it to the other screen edge, **−** collapses it
+
+Collapsed it becomes a single circular badge that keeps floating on top of
+everything: token count, cache-hit ring, status dot. Click it to expand,
+double-click to fire a rotation. Drag it anywhere — it snaps to the screen
+edges.
+
+```bash
+opencode-unlimited-overlay            # show / raise
+opencode-unlimited-overlay toggle     # circle ⇄ panel
+opencode-unlimited-overlay hop        # rotate from the CLI
+opencode-unlimited-overlay collapse   # just the circle
+opencode-unlimited-overlay close
+```
+
+Set `OUC_OVERLAY=0` before launching opencode if you want it to stay shut.
+
+Reading tokens is read-only (`mode=ro` against the live WAL database) — the
+HUD never writes to opencode's data.
 
 ## How it works (for people who read code)
 
@@ -263,6 +297,9 @@ scripts/
   zen-guard.sh    — wall watcher + auto rotation
   zen-hop.sh      — manual identity rotation
   doctor.sh       — health check
+  status.sh       — machine-readable snapshot (JSON) for the HUD
+  overlay-ctl.sh  — show / toggle / drive the HUD
+  overlay/        — the AppKit + WKWebView HUD (main.swift, overlay.html, build.sh)
 ```
 
 ## Differences from the linux build

@@ -121,8 +121,8 @@ if [ -f "$HOME/.opencode/AGENTS.md" ] && grep -q "ElectronCursed" "$HOME/.openco
 fi
 
 # PATH tools
-rm -f "$HOME/.local/bin/${BRAND}-hop" "$HOME/.local/bin/${BRAND}-doctor"
-rm -f "$HOME/.opencode/bin/${BRAND}-hop" "$HOME/.opencode/bin/${BRAND}-doctor"
+rm -f "$HOME/.local/bin/${BRAND}-hop" "$HOME/.local/bin/${BRAND}-doctor" "$HOME/.local/bin/${BRAND}-overlay"
+rm -f "$HOME/.opencode/bin/${BRAND}-hop" "$HOME/.opencode/bin/${BRAND}-doctor" "$HOME/.opencode/bin/${BRAND}-overlay"
 rm -f "$HOME/.local/bin/${BRAND}-killswitch" "$HOME/.local/bin/${BRAND}-uninstall"
 rm -f "$HOME/.local/bin/${BRAND}-mac" 2>/dev/null || true
 rm -rf "$HOME/.local/share/${BRAND}-mac"
@@ -144,6 +144,12 @@ if grep -qF "# >>> opencode-unlimited lane >>>" /etc/hosts 2>/dev/null; then
 fi
 
 # disconnect the tunnel so traffic goes back to your real IP.
+# overlay HUD (its app bundle lives outside $DEST, in Application Support)
+pkill -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" >/dev/null 2>&1 || true
+rm -rf "$HOME/Library/Application Support/$BRAND/OpencodeOverlay.app"
+defaults delete com.opencode-unlimited.overlay >/dev/null 2>&1 || true
+ok "overlay HUD removed"
+
 rm -rf "$DEST" && ok "scripts + guard state removed"
 if command -v warp-cli >/dev/null 2>&1; then
   s warp-cli --accept-tos disconnect >/dev/null 2>&1 && ok "warp tunnel disconnected (app left installed)"

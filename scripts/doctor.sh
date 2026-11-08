@@ -59,7 +59,16 @@ case "$MODE" in
 esac
 
 PFX=$(ifconfig 2>/dev/null | awk '/^utun/{i=$1} /inet6 26[0-9a-f]*:/{print $2}' | head -1 | cut -d/ -f1 | awk -F: '{print $1":"$2":"$3":"$4}')
-if [ -n "$PFX" ]; then ok "warp ipv6 /64: $PFX (quota key)"; else warn "warp ipv6 /64: none — falling back to the 4 v4 addresses"; fi
+# the quota key is what the server sees (2a09:bac5:...::/64), not the tunnel's
+# inside leg (2606:4700:110:...::/64). prefer the recorded seen /64.
+SEENPFX=$(python3 -c "import json;print((json.load(open('$GUARD_DIR/state.json')).get('prefix') or ''))" 2>/dev/null)
+if [ -n "$SEENPFX" ]; then
+  ok "server-seen /64: $SEENPFX (quota key)"
+elif [ -n "$PFX" ]; then
+  warn "server-seen /64 unknown — tunnel /64 is $PFX (run a hop to record the real one)"
+else
+  warn "warp ipv6 /64: none — falling back to the 4 v4 addresses"
+fi
 
 # ---- leak guard (opt-in)
 if [ -f /etc/pf.anchors/OUC_LEAKGUARD ]; then
@@ -104,7 +113,10 @@ if [ -f "$GUARD_DIR/state.json" ]; then
 import json,sys
 try:
     d=json.load(open(sys.argv[1]))
-    print(f"    rotations so far: {d.get('hops',0)} · blacklisted blocks: {len([x for x in d.get('blacklist',[]) if x])} · current: {d.get('current') or '?'}")
+    print(f"    rotations so far: {d.get('hops',0)} · blacklisted blocks: {len([x for x in d.get('blacklist',[]) if x])}")
+    print(f"    identity: {d.get('current') or '?'} · egress /64 {d.get('prefix') or '?'} · device {(d.get('device') or '?')[:8]}…")
+    if d.get('seen6'):
+        print(f"    ipv6 exit: {d.get('seen6')}")
 except Exception as e:
     print(f"    guard state unreadable: {e}")
 PY
@@ -115,6 +127,18 @@ if [ -f "$HOME/.local/bin/opencode" ] && grep -q "zen-lane" "$HOME/.local/bin/op
   ok "opencode entry → lane"
 else
   warn "opencode entry doesn't point at the lane — reinstall or check ~/.local/bin/opencode"
+fi
+
+# ---- overlay HUD (hop + doctor + live token ledger, one window)
+APP="$HOME/Library/Application Support/opencode-unlimited/OpencodeOverlay.app"
+if [ -x "$APP/Contents/MacOS/opencode-unlimited-overlay" ]; then
+  if pgrep -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" >/dev/null 2>&1; then
+    ok "overlay HUD running (auto-raised by every opencode launch)"
+  else
+    warn "overlay HUD built but not running — opencode-unlimited-overlay"
+  fi
+else
+  warn "overlay HUD not built — bash $DEST/scripts/overlay/build.sh"
 fi
 
 # ---- credit system (AGENTS.md)
