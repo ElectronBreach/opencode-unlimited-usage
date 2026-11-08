@@ -60,6 +60,19 @@ NIP=$(cur_ip)
 echo "new egress: ${NIP:-?}"
 resume_keeper
 
+# record the new identity so doctor/guard state stays truthful
+if [ -n "$NIP" ] && [ -f "$GUARD_DIR/state.json" ]; then
+  python3 - "$GUARD_DIR/state.json" "$NIP" <<'PY' 2>/dev/null
+import json,sys
+p,v = sys.argv[1], sys.argv[2]
+try: d=json.load(open(p))
+except: d={}
+d["current"]=v
+d["last_hop"]=int(__import__("time").time())
+json.dump(d,open(p,"w"),separators=(",",":"))
+PY
+fi
+
 if [ -z "$NIP" ]; then
   echo "-- tunnel connected but no egress — disconnect + let keeper repair --"
   w disconnect

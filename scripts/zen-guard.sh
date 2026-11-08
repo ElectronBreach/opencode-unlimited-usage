@@ -52,7 +52,8 @@ state_set(){ python3 -c "
 import json,sys
 try: d=json.load(open('$STATE'))
 except: d={'blacklist':[],'offset':0,'last_hop':0,'hops':0,'current':''}
-d['$1']=sys.argv[1]
+v=sys.argv[1]
+d['$1']=int(v) if v.isdigit() else v
 json.dump(d,open('$STATE','w'))" "$2" 2>/dev/null; }
 
 cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }

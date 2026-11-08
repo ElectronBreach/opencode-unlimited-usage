@@ -90,7 +90,7 @@ restore_hosts(){
 }
 trap restore_hosts EXIT INT TERM HUP
 
-if [ -n "$AAAA" ] && sudo -n true 2>/dev/null; then
+if [ -n "$AAAA" ]; then
   tmp=$(mktemp /tmp/ouc-hosts.XXXXXX 2>/dev/null) || tmp=""
   if [ -n "$tmp" ]; then
     strip_block /etc/hosts "$tmp"
@@ -101,6 +101,8 @@ if [ -n "$AAAA" ] && sudo -n true 2>/dev/null; then
       printf '%s api.opencode.ai\n' "$AAAA"
       printf '%s\n' "$MARK_END"
     } >> "$tmp"
+    # the sudoers grant is for this exact cp — test the command itself, not
+    # `sudo -n true` (which is not in the grant and always fails)
     if sudo -n /bin/cp "$tmp" /etc/hosts 2>/dev/null; then
       PINNED=1
       dscacheutil -flushcache >/dev/null 2>&1 || true
