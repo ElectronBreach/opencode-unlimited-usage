@@ -206,5 +206,32 @@ if os.path.exists(db):
         tok["error"] = str(e)[:200]
 out["tokens"] = tok
 
+# ---- opencode console key pool (the same credential table `opencode auth
+# list` reads). one row is active; that is the key the CLI authenticates with.
+keys = {"count": 0, "cap": num(env("OUC_KEY_CAP"), 50), "active": None,
+        "activeMasked": None, "activeId": None, "keys": []}
+if os.path.exists(db):
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=3)
+        rows = con.execute("""SELECT id, label, value, COALESCE(active,0) a, time_created
+                              FROM credential WHERE integration_id='opencode'
+                              ORDER BY time_created ASC, id ASC""").fetchall()
+        for cid, label, value, active, created in rows:
+            try:
+                k = json.loads(value).get("key", "")
+            except Exception:
+                k = ""
+            masked = (k[:14] + "\u2026" + k[-4:]) if len(k) > 18 else (k[:4] + "\u2026" if k else "")
+            item = {"id": cid, "label": label, "masked": masked,
+                    "active": active == 1, "created": created or 0}
+            keys["keys"].append(item)
+            if item["active"]:
+                keys.update(active=label, activeMasked=masked, activeId=cid)
+        keys["count"] = len(keys["keys"])
+        con.close()
+    except Exception as e:
+        keys["error"] = str(e)[:200]
+out["apiKeys"] = keys
+
 print(json.dumps(out, separators=(",", ":")))
 PY

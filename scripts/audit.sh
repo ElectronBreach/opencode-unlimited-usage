@@ -122,14 +122,15 @@ grep -q "restore_dns" "$DEST/scripts/warp-keeper.sh" 2>/dev/null && ok "keeper: 
 grep -q "ensure_daemon" "$DEST/scripts/warp-keeper.sh" 2>/dev/null && ok "keeper: warp daemon self-heal" || dv "keeper: daemon heal" "missing"
 
 # ---- 10. live network -------------------------------------------------------
-IP=$(curl -4 -fsS -m 8 https://api64.ipify.org 2>/dev/null || true)
+IP=$(curl -4 -sS -m 8 https://api64.ipify.org 2>/dev/null | tr -d '\n' || true)
+case "$IP" in *[!0-9a-f:.]*|"") IP="" ;; esac
 case "$IP" in
   104.28.*|162.159.*|172.64.*|188.114.*|2a09:*|2606:*) ok "egress via cloudflare" "$IP" ;;
   "") bad "egress" "none" ;;
   *) dv "egress" "$IP — direct (tunnel down / fail-open)" ;;
 esac
 [ -n "$(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null)" ] && ok "dns resolves" "$(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null | head -1)" || bad "dns" "not resolving"
-H=$(curl -4 -fsS -o /dev/null -w "%{http_code}" -m 8 https://api.github.com 2>/dev/null || true)
+H=$(curl -4 -sS -o /dev/null -w "%{http_code}" -m 8 https://api.github.com 2>/dev/null || true)
 [ "$H" = 200 ] && ok "https reachable" "200" || bad "https" "$H"
 
 # ---- 11. install artifacts -------------------------------------------------
@@ -160,6 +161,36 @@ else
 fi
 STATUS="$("$DEST/scripts/status.sh" 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);t=d.get("tokens") or {};print("%s sessions / %s tokens" % (t.get("sessions"), (t.get("input") or 0)+(t.get("output") or 0)))' 2>/dev/null)"
 [ -n "$STATUS" ] && ok "status probe emits json" "$STATUS" || bad "status probe" "no json"
+
+# ---- 13. api key pool -------------------------------------------------------
+if [ -x "$DEST/scripts/api-keys.sh" ]; then
+  KC=$("$DEST/scripts/api-keys.sh" list 2>/dev/null | grep -cE '^[0-9]+ +[-*] +OpenCode' || true)
+  CUR=$("$DEST/scripts/api-keys.sh" current 2>/dev/null | cut -f1)
+  if [ -n "${CUR:-}" ]; then
+    ok "opencode console key live" "$CUR (${KC:-?} in pool)"
+  else
+    bad "opencode console key" "none active — auth section has no key"
+  fi
+  case "${KC:-0}" in
+    ''|*[!0-9]*) bad "key pool readable" "unexpected output" ;;
+    *) [ "$KC" -le 50 ] && ok "key pool within cap" "$KC / 50" || bad "key pool over cap" "$KC / 50" ;;
+  esac
+  DUP=$("$DEST/scripts/api-keys.sh" prune --dry-run 2>/dev/null | grep -E "pool is clean|removable" | tail -1)
+  case "$DUP" in
+    "pool is clean"*) ok "key pool clean" "$DUP" ;;
+    \{3,\}*)          dv "key pool needs a clean" "$DUP" ;;
+    *)                dv "key pool check" "${DUP:-no output}" ;;
+  esac
+  AUTH=$("$DEST/scripts/api-keys.sh" health 2>/dev/null | grep -c "DEAD" || true)
+  [ "${AUTH:-0}" = "0" ] && ok "no rejected keys" || dv "rejected keys present" "$AUTH — run api-keys prune"
+else
+  bad "api-keys.sh" "not installed"
+fi
+
+# ---- 14. keeper hardening --------------------------------------------------
+grep -q "http_alive" "$DEST/scripts/warp-keeper.sh" 2>/dev/null   && ok "keeper: no 429 false-positive" "status-agnostic probes" || dv "keeper probes" "still using -f"
+grep -q "opencode_busy" "$DEST/scripts/warp-keeper.sh" 2>/dev/null   && ok "keeper: never bounces a busy session" "idle-gated reconnects" || dv "keeper idle gate" "missing"
+grep -q "rescue_provider" "$DEST/scripts/zen-guard.sh" 2>/dev/null   && ok "guard: provider rescue" "on ModelUnavailableError" || dv "guard provider rescue" "missing"
 
 echo ""
 echo "  pass=$pass  deviation=$dev  fail=$fail"

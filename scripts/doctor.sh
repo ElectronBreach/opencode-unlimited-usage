@@ -83,21 +83,42 @@ else
 fi
 
 # ---- egress
-IP=$(curl -4 -s -m 10 https://api64.ipify.org 2>/dev/null)
+# probe a literal IP first. resolving first is how a DNS hiccup gets misread
+# as "no internet", which is the wrong diagnosis and the wrong advice.
+TRACE=$(curl -4 -s -m 8 https://1.1.1.1/cdn-cgi/trace 2>/dev/null)
+IP=$(printf '%s\n' "$TRACE" | awk -F= '/^ip=/{print $2; exit}')
+[ -n "$IP" ] || IP=$(curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null | tr -d '\n')
+case "$IP" in *[!0-9a-f:.]*) IP="" ;; esac
+
 if [ -n "$IP" ]; then
   case "$IP" in
     104.28.*|162.159.*|172.64.*|188.114.*|2a09:*|2606:*) ok "egress is cloudflare (warp): $IP" ;;
     *) warn "egress is NOT warp ($IP) — tunnel down or fail-open engaged" ;;
   esac
 else
-  bad "no egress at all — check Wi-Fi first, then the keeper"
+  # distinguish "no packets" from "name lookup is wedged". the browser cares
+  # about the second one, and it is repaired differently.
+  if curl -4 -s -o /dev/null -m 4 https://1.1.1.1 2>/dev/null; then
+    bad "egress answers on a literal IP but not by name — run: sudo killall -HUP mDNSResponder"
+  else
+    bad "no egress at all — check Wi-Fi first, then the keeper"
+  fi
 fi
 
 # ---- DNS (the thing that bit this machine last time)
-if dig +short +time=2 +tries=1 opencode.ai >/dev/null 2>&1 && [ -n "$(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null)" ]; then
-  ok "dns: opencode.ai resolves ($(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null | head -1))"
+A=$(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null | head -1)
+G=$(host -W 2 github.com 2>/dev/null | awk '/has address/{print $4; exit}')
+if [ -n "$A" ]; then
+  ok "dns: opencode.ai resolves ($A)$([ -n "$G" ] && echo " · github $G")"
 else
-  bad "dns: opencode.ai does not resolve — keeper restores the baseline automatically, or: sudo dscacheutil -flushcache"
+  bad "dns: opencode.ai does not resolve — keeper restores the baseline automatically, or: sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder"
+fi
+# getaddrinfo is the path every app (and curl) actually uses — dig answering is
+# not proof that a browser can resolve. check the real resolver too.
+if python3 -c "import socket,sys; socket.setdefaulttimeout(4); socket.getaddrinfo('github.com',443,socket.AF_INET)" >/dev/null 2>&1; then
+  ok "dns: system resolver healthy (getaddrinfo)" "github.com via getaddrinfo"
+else
+  bad "dns: system resolver wedged (dig ok, getaddrinfo fails) — sudo killall -HUP mDNSResponder"
 fi
 
 # ---- guard (user LaunchAgent)

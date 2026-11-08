@@ -41,7 +41,7 @@ func crashLog(_ msg: String) {
     }
 }
 
-let EXPANDED = NSSize(width: 366, height: 596)
+let EXPANDED = NSSize(width: 366, height: 700)
 let COLLAPSED = NSSize(width: 78, height: 78)
 
 final class Panel: NSPanel {
@@ -102,6 +102,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         }
 
         crashLog("launch pid=\(ProcessInfo.processInfo.processIdentifier)")
+        evictOlderInstances()
         buildWindow()
         buildWebView()
         restoreFrame()
@@ -168,6 +169,44 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
 
     // dump where the web view thinks its controls are. used to prove the panel
     // is hit-testing again: a real click at these coordinates must change state.
+    // asks the page what it is currently rendering. used to verify that the
+    // 2s status tick is reaching the DOM, not just the native side.
+    func probeDom() {
+        let js = """
+        JSON.stringify({
+          tok: (document.getElementById('tokTotal')||{}).textContent,
+          unit: (document.getElementById('tokUnit')||{}).textContent,
+          tin: (document.getElementById('tokIn')||{}).textContent,
+          tout: (document.getElementById('tokOut')||{}).textContent,
+          cost: (document.getElementById('tokCost')||{}).textContent,
+          sess: (document.getElementById('sessCount')||{}).textContent,
+          keyCount: (document.getElementById('keyCount')||{}).textContent,
+          keyActive: (document.getElementById('keyActive')||{}).textContent,
+          disabled: ['btnKeyAdd','btnKeyPrev','btnKeyNext','btnKeyList','btnKeyDel']
+            .filter(function(i){var e=document.getElementById(i);return e&&e.disabled;}),
+          updated: (window.oucLastUpdate||0),
+          heights: (function(){
+            var o = {};
+            ['app','hero','grid','keys','health','spark','actions','log','logPanel','logBody'].forEach(function(k){
+              var e = document.getElementById(k);
+              if (e) o[k] = Math.round(e.getBoundingClientRect().height);
+            });
+            o.docScroll = document.body.scrollHeight;
+            o.viewport = window.innerHeight;
+            return o;
+          })()
+        })
+        """
+        web.evaluateJavaScript(js) { res, err in
+            var body: [String: Any] = ["frame": NSStringFromRect(self.window.frame)]
+            if let str = res as? String { body["dom"] = str }
+            if let e = err { body["error"] = String(describing: e) }
+            if let d = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted]) {
+                try? d.write(to: guardDir.appendingPathComponent("overlay-dom.json"))
+            }
+        }
+    }
+
     func measureControls() {
         let js = "JSON.stringify(Array.from(document.querySelectorAll('button,#bubble,#drag')).map(e=>{const r=e.getBoundingClientRect();return {id:e.id,x:r.x,y:r.y,w:r.width,h:r.height}}))"
         web.evaluateJavaScript(js) { res, err in
@@ -224,16 +263,30 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
 
     func restoreFrame() {
-        if let s = defaults.string(forKey: "frame") {
-            let r = NSRectFromString(s)
+        // always come back as a full panel. a HUD that relaunches into the 78px
+        // bubble reads as "it disappeared", and the bubble is one click away
+        // anyway. --collapsed still forces it for anyone who wants that.
+        collapsed = false
+        defaults.set(false, forKey: "collapsed")
+        if let str = defaults.string(forKey: "frame") {
+            var r = NSRectFromString(str)
             if r.width > 40, r.height > 40, NSScreen.screens.contains(where: { $0.visibleFrame.intersects(r) }) {
+                // a frame saved by an older layout is too short for the current
+                // cards: the console pane gets squeezed to nothing. grow it.
+                if !collapsed, r.height < EXPANDED.height { r.size.height = EXPANDED.height }
+                if !collapsed, r.width < EXPANDED.width { r.size.width = EXPANDED.width }
+                if let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(r) }) {
+                    let vf = screen.visibleFrame
+                    if r.maxY > vf.maxY { r.origin.y = vf.maxY - r.height }
+                    if r.minY < vf.minY { r.origin.y = vf.minY }
+                    if r.maxX > vf.maxX { r.origin.x = vf.maxX - r.width }
+                    if r.minX < vf.minX { r.origin.x = vf.minX }
+                }
                 window.setFrame(r, display: false)
-                collapsed = defaults.bool(forKey: "collapsed")
                 applyShape(animate: false)
                 return
             }
         }
-        collapsed = defaults.bool(forKey: "collapsed")
         applyShape(animate: false)
     }
 
@@ -436,12 +489,29 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "dock": dockSide()
         case "state": dumpState()
         case "reload": reloadPage()
+        case "keyrotate": keyCmd(["rotate"])
+        case "keylist": keyCmd(["health"])
         case "rect": measureControls()
-        case "close": NSApp.terminate(nil)
+        case "dom": probeDom()
+        // never a real quit: folding to the bubble is the only close the HUD
+        // offers, so a stray click (or a stale command) cannot take it down.
+        case "close": setCollapsed(true, animate: true)
         case "refresh": refresh(force: true)
         case "copy": copySummary()
         case "hop": runCommand("hop")
         case "doctor": runCommand("doctor")
+        case "keyList": keyCmd(["health"])
+        case "keyPrune": keyCmd(["prune"])
+        case "keyCurrent": keyCmd(["current"])
+        case "keyRotate":
+            // forward and backward are first-class: a wall can be cleared by
+            // moving to the next key or by stepping back onto a healthy one.
+            let dir = (body["dir"] as? String) ?? "next"
+            keyCmd(["rotate", dir == "prev" ? "prev" : "next"])
+        case "keyRemove":
+            if let slot = body["slot"] as? String, !slot.isEmpty { keyCmd(["remove", slot]) }
+        case "keyAdd":
+            if let k = body["key"] as? String, !k.isEmpty { keyCmd(["add", k]) }
         default: break
         }
     }
@@ -489,6 +559,51 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                     self.pendingRefresh = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.refresh(force: true) }
                 }
+            }
+        }
+    }
+
+    // the key pool is deliberately driven by the same shell script a terminal
+    // uses, so what the HUD shows and what `api-keys.sh` does can never drift.
+    func keyCmd(_ args: [String]) {
+        push("keysBusy", ["on": true])
+        DispatchQueue.global(qos: .userInitiated).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/bash")
+            p.arguments = [scripts.appendingPathComponent("api-keys.sh").path] + args
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:\(home.path)/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            env["TERM"] = "dumb"
+            p.environment = env
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = pipe
+            do { try p.run() } catch {
+                DispatchQueue.main.async {
+                    self.push("keysBusy", ["on": false])
+                    self.push("toast", ["text": "api-keys.sh not installed"])
+                }
+                return
+            }
+            // a liveness probe can take 12s. cap it so a black-hole network
+            // does not leave the ADD/ROTATE buttons greyed out forever.
+            let watchdog = DispatchWorkItem {
+                guard p.isRunning else { return }
+                p.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                    if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 25, execute: watchdog)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            watchdog.cancel()
+            let out = (String(data: data, encoding: .utf8) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async {
+                self.push("keysBusy", ["on": false])
+                self.push("keysOut", ["text": out, "ok": p.terminationStatus == 0])
+                self.refresh(force: true)
             }
         }
     }
@@ -589,14 +704,20 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "dock": dockSide()
         case "state": dumpState()
         case "rect": measureControls()
+        case "dom": probeDom()
         case "reload": reloadPage()
+        case "keyrotate": keyCmd(["rotate"])
+        case "keylist": keyCmd(["health"])
+        case "keyprune": keyCmd(["prune"])
         case "snapshot": snapshot(to: cmdFile.deletingLastPathComponent().appendingPathComponent("overlay-snapshot.png"))
         case "probe":
             web.evaluateJavaScript("JSON.stringify({title:document.title,nodes:document.querySelectorAll('*').length,txt:document.body.innerText.slice(0,200)})") { v, e in
                 let s = (v as? String) ?? "err: \(String(describing: e))"
                 try? s.write(to: cmdFile.deletingLastPathComponent().appendingPathComponent("overlay-probe.txt"), atomically: true, encoding: .utf8)
             }
-        case "close": NSApp.terminate(nil)
+        // never a real quit: folding to the bubble is the only close the HUD
+        // offers, so a stray click (or a stale command) cannot take it down.
+        case "close": setCollapsed(true, animate: true)
         default: break
         }
     }
@@ -643,6 +764,24 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
 
 NSSetUncaughtExceptionHandler { ex in
     crashLog("EXCEPTION \(ex.name.rawValue): \(ex.reason ?? "")\n\(ex.callStackSymbols.joined(separator: "\n"))")
+}
+
+// exactly one HUD per login session, and it is always the freshest build:
+// a rebuild + relaunch must never leave an older binary holding the window.
+func evictOlderInstances() {
+    guard let id = Bundle.main.bundleIdentifier else { return }
+    let others = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+        .filter { $0.processIdentifier != getpid() }
+    guard !others.isEmpty else { return }
+    crashLog("evicting \(others.count) older instance(s): \(others.map { $0.processIdentifier })")
+    for o in others { o.terminate() }
+    let deadline = Date().addingTimeInterval(3)
+    while Date() < deadline && others.contains(where: { !$0.isTerminated }) {
+        usleep(100_000)
+    }
+    for o in others where !o.isTerminated {
+        kill(o.processIdentifier, SIGKILL)
+    }
 }
 
 let app = NSApplication.shared

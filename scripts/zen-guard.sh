@@ -63,6 +63,37 @@ trim_log(){
   [ "$sz" -gt 524288 ] || return 0
   tail -n 400 "$f" > "$f.trim" 2>/dev/null && mv "$f.trim" "$f" 2>/dev/null
 }
+# "Model unavailable" is the CLI's local verdict: its Console provider could
+# not fetch the model list for this credential. if the network is fine now —
+# which a 200 from the same endpoint proves — nudge opencode to reload its
+# config, which re-runs provider.updated and repopulates the model list.
+RESCUE_STAMP="$STATE_DIR/.provider-rescue"
+rescue_provider(){
+  local now last key code cfg
+  now=$(date +%s)
+  last=$(cat "$RESCUE_STAMP" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -ge 60 ] || return 0
+  printf '%s' "$now" > "$RESCUE_STAMP" 2>/dev/null
+  key=$(sqlite3 -readonly "$HOME/.local/share/opencode/opencode.db" \
+          "select value from credential where integration_id='opencode' and active=1 limit 1;" 2>/dev/null \
+        | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("key",""))
+except Exception: print("")' 2>/dev/null)
+  code=$(curl -s -o /dev/null --connect-timeout 4 --max-time 12 \
+          -H "Authorization: Bearer $key" -w '%{http_code}' \
+          https://opencode.ai/inference/openai/v1/models 2>/dev/null)
+  case "$code" in
+    2*) ;;
+    *) glog "model unavailable — console answered '${code:-nothing}', leaving it alone"; return 0 ;;
+  esac
+  cfg="$HOME/.config/opencode/opencode.json"
+  if [ -f "$cfg" ]; then
+    touch "$cfg" 2>/dev/null && glog "model unavailable while the console answers 200 — forced a provider reload"
+  fi
+  return 0
+}
+
 resume_keeper(){ rm -f "$PAUSE" 2>/dev/null; }
 trap resume_keeper EXIT INT TERM HUP
 
@@ -237,8 +268,10 @@ while true; do
   [ "$SIZE" -lt "$OFF" ] && OFF=0
   NEWBYTES=$((SIZE - OFF))
   WALL=0
+  MODELDOWN=0
   if [ "$NEWBYTES" -gt 0 ] && [ "$NEWBYTES" -lt 50000000 ]; then
     if tail -c +"$((OFF + 1))" "$LOGF" 2>/dev/null | grep -aqiE "$WALL_RE"; then WALL=1; fi
+    if tail -c +"$((OFF + 1))" "$LOGF" 2>/dev/null | head -c "$NEWBYTES" | grep -aq "ModelUnavailableError"; then MODELDOWN=1; fi
   fi
   # a rotation already owns the tunnel (manual hop or keeper surgery). do not
   # advance the offset: the wall is still ours to act on next tick.
@@ -253,6 +286,8 @@ while true; do
     fi
   fi
   state_set offset "$SIZE"
+
+  [ "$MODELDOWN" = 1 ] && rescue_provider
 
   NOW=$(date +%s)
   LASTHOP=$(state_get last_hop); LASTHOP=${LASTHOP:-0}

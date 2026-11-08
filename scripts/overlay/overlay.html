@@ -92,7 +92,7 @@ header:active{cursor:grabbing}
 .project .pname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9fb6c8}
 
 /* ---------- hero ---------- */
-.hero{position:relative;z-index:2;margin-top:9px;padding:10px 11px 9px;border-radius:12px;
+.hero{position:relative;z-index:2;margin-top:8px;padding:10px 11px 9px;border-radius:12px;
   background:linear-gradient(160deg,rgba(34,211,238,.055),rgba(167,139,250,.03) 55%,transparent);
   border:1px solid rgba(34,211,238,.16);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 0 22px rgba(34,211,238,.06);
@@ -127,7 +127,7 @@ header:active{cursor:grabbing}
 .legend s{text-decoration:none;width:5px;height:5px;border-radius:1px;display:inline-block;margin-right:3px;vertical-align:middle}
 
 /* ---------- cards ---------- */
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px;position:relative;z-index:2}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px;position:relative;z-index:2}
 .card{
   position:relative;padding:7px 8px;border-radius:9px;overflow:hidden;
   background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.06);
@@ -164,6 +164,71 @@ header:active{cursor:grabbing}
 
 /* ---------- actions ---------- */
 .actions{display:flex;gap:7px;margin-top:9px;position:relative;z-index:2}
+
+/* ---------- api key pool ---------- */
+.keys{
+  margin-top:8px;padding:6px 8px;border-radius:11px;
+  border:1px solid rgba(167,139,250,.18);background:rgba(7,14,22,.55);
+  position:relative;z-index:2;
+}
+.keys .kh{display:flex;align-items:center;gap:7px;font-size:8px;letter-spacing:.16em;color:var(--mut)}
+.keys .kh b{color:#a5f3fc;font-size:9.5px;letter-spacing:.06em}
+.keys .klive{
+  margin-left:auto;display:flex;align-items:center;gap:5px;min-width:0;
+  color:#c4b5fd;letter-spacing:.02em;font-size:9px;text-transform:none;
+}
+.keys .klive i{
+  width:5px;height:5px;border-radius:50%;flex:0 0 auto;
+  background:var(--ok);box-shadow:0 0 6px var(--ok);
+}
+.keys .klive i.bad{background:var(--bad);box-shadow:0 0 6px var(--bad)}
+.keys .klive i.warn{background:var(--warn);box-shadow:0 0 6px var(--warn)}
+.keys .klive span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.keys .kh .kt{color:#8fa7b9}
+
+/* one label style for every card group, so the panel reads top to bottom */
+.seclabel{
+  display:flex;align-items:center;gap:7px;margin:8px 0 4px;
+  font-size:7.5px;letter-spacing:.2em;color:#5d7486;font-weight:600;
+}
+.seclabel i{flex:1;height:1px;background:linear-gradient(90deg,rgba(93,116,134,.28),transparent)}
+.keys .kb{display:flex;gap:5px;margin-top:6px}
+.keys .kr{display:flex;gap:5px;margin-top:5px}
+.keys .kr .act{flex:1 1 0;min-width:0}
+.keys input{
+  flex:1;min-width:0;background:rgba(0,0,0,.35);border:1px solid var(--line);
+  border-radius:7px;color:var(--txt);font:9.5px var(--mono);padding:4px 6px;outline:none;
+  -webkit-user-select:text;user-select:text;
+}
+.keys input:focus{border-color:rgba(34,211,238,.45)}
+.keys input::placeholder{color:#3f5464}
+.act.mini{
+  height:22px;padding:0 9px;font-size:8px;letter-spacing:.09em;border-radius:7px;
+  flex:0 0 auto;clip-path:none;box-shadow:none;font-weight:700;white-space:nowrap;
+}
+.act.mini:hover{box-shadow:none}
+.act.mini.key{
+  background:rgba(167,139,250,.12);color:#c4b5fd;border:1px solid rgba(167,139,250,.38);
+}
+.act.mini.key:hover{background:rgba(167,139,250,.2);box-shadow:none}
+.act.mini.ghost2{
+  background:rgba(34,211,238,.06);color:#7dd3e8;border:1px solid rgba(34,211,238,.25);
+}
+.act.mini.ghost2:hover{background:rgba(34,211,238,.14);box-shadow:none}
+.act.mini.ghost3{
+  background:rgba(52,211,153,.07);color:#6ee7b7;border:1px solid rgba(52,211,153,.28);
+}
+.act.mini.ghost3:hover{background:rgba(52,211,153,.16);box-shadow:none}
+.act.mini.del{
+  background:rgba(248,113,113,.07);color:#fca5a5;border:1px solid rgba(248,113,113,.3);
+}
+.act.mini.del:hover{background:rgba(248,113,113,.16);box-shadow:none}
+.act.mini.del.armed{
+  background:rgba(248,113,113,.9);color:#1a0606;border-color:#fca5a5;
+  animation:armpulse .9s ease-in-out infinite alternate;
+}
+@keyframes armpulse{from{opacity:.85}to{opacity:1}}
+.act.mini:disabled{opacity:.4;filter:none}
 button.act{
   position:relative;flex:1;height:34px;border:0;cursor:pointer;font-family:var(--mono);
   font-size:10.5px;font-weight:700;letter-spacing:.18em;color:#031018;
@@ -191,7 +256,7 @@ button.act.busy .dot{display:none}
 
 /* ---------- log ---------- */
 .log{
-  margin-top:8px;flex:1;min-height:0;display:flex;flex-direction:column;
+  margin-top:8px;flex:1 1 auto;min-height:104px;display:flex;flex-direction:column;
   border-radius:9px;border:1px solid rgba(255,255,255,.06);background:rgba(2,6,10,.66);
   position:relative;z-index:2;overflow:hidden;
   transition:border-color .2s;
@@ -314,12 +379,37 @@ body.collapsed #bubble{display:grid}
     </div>
   </section>
 
+  <div class="seclabel"><span>IDENTITY</span><i></i></div>
+
   <section class="grid">
     <div class="card cy"><b id="egress">—</b><span>EGRESS · v4</span></div>
     <div class="card vi"><b id="prefix">—</b><span>QUOTA /64</span></div>
     <div class="card"><b id="hops">0</b><span>ROTATIONS</span></div>
     <div class="card"><b id="device">—</b><span>DEVICE</span></div>
   </section>
+
+  <section class="keys">
+    <div class="kh">
+      <span class="kt">API KEYS</span>
+      <b id="keyCount">0/50</b>
+      <span class="klive"><i id="keyDot"></i><span id="keyActive" title="">no key</span></span>
+    </div>
+    <div class="kb">
+      <input id="keyInput" placeholder="oc_sk_… paste a key, then ADD" autocomplete="off" spellcheck="false">
+      <button class="act mini" id="btnKeyAdd">ADD</button>
+    </div>
+    <div class="kr">
+      <button class="act mini key" id="btnKeyPrev" title="previous key">&#9664; PREV</button>
+      <button class="act mini key" id="btnKeyNext" title="next key">NEXT &#9654;</button>
+    </div>
+    <div class="kr">
+      <button class="act mini ghost2" id="btnKeyList" title="probe every key">CHECK</button>
+      <button class="act mini ghost3" id="btnKeyPrune" title="drop duplicates and dead keys">CLEAN</button>
+      <button class="act mini del" id="btnKeyDel" title="delete the active key">DEL</button>
+    </div>
+  </section>
+
+  <div class="seclabel"><span>STATUS</span><i></i></div>
 
   <section class="health" id="health"></section>
 
@@ -389,6 +479,7 @@ function healthChip(label, state, hint){
 
 function render(d){
   S = d;
+  window.oucLastUpdate = d.ts || 0;
   const t = d.tokens || {};
   const id = d.identity || {};
   const w = d.warp || {};
@@ -448,6 +539,18 @@ function render(d){
     $("lastSession").textContent = last.title + " · " + fmt(last.tokens) + " tok";
     $("lastSession").title = last.title + " · " + last.model;
     $("lastAge").textContent = age(last.age);
+  }
+
+  // api key pool
+  const kk = d.apiKeys;
+  if (kk) {
+    $("keyCount").textContent = (kk.count || 0) + "/" + (kk.cap || 50);
+    const act = $("keyActive");
+    const dot = $("keyDot");
+    act.textContent = kk.active || "no key";
+    act.title = kk.active ? kk.active + "  " + (kk.activeMasked || "") : "no active key";
+    dot.className = kk.active ? "" : "bad";
+    act.style.color = kk.active ? "#c4b5fd" : "var(--bad)";
   }
 
   // bubble
@@ -537,11 +640,73 @@ window.ouc = function(ev){
   else if (ev.type === "window") {
     document.body.classList.toggle("collapsed", !!ev.payload.collapsed);
   }
+  else if (ev.type === "keysOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "key pool updated" : "key command failed");
+  }
+  else if (ev.type === "keysBusy") {
+    const on = !!ev.payload.on;
+    ["btnKeyAdd", "btnKeyPrev", "btnKeyNext", "btnKeyList", "btnKeyDel"].forEach(id => { $(id).disabled = on; });
+    if (on && typeof disarmDel === "function") disarmDel();
+    clearTimeout(window.oucKeyUnlock);
+    // a dead native side must never leave the pool controls greyed out
+    if (on) window.oucKeyUnlock = setTimeout(() => {
+      ["btnKeyAdd", "btnKeyPrev", "btnKeyNext", "btnKeyList", "btnKeyDel"].forEach(id => { $(id).disabled = false; });
+    }, 30000);
+  }
 };
 window.oucUpdate = function(d){ try { render(d); } catch (e) { console.log(e); } };
 
 /* ---------- controls ---------- */
 $("btnHop").addEventListener("click", () => bridge("hop"));
+
+// api keys: add what is in the box, or rotate to the next live key. the native
+// side runs scripts/api-keys.sh, so the HUD never touches the db itself.
+$("btnKeyAdd").addEventListener("click", () => {
+  const v = $("keyInput").value.trim();
+  if (!v) { toast("paste a key first"); $("keyInput").focus(); return; }
+  $("keyInput").value = "";
+  toast("checking key…");
+  bridge("keyAdd", { key: v });
+});
+function keyRotate(dir){
+  toast(dir ? ("rotating " + dir + "…") : "rotating…");
+  bridge("keyRotate", { dir: dir || "next" });
+}
+$("btnKeyPrev").addEventListener("click", () => keyRotate("prev"));
+$("btnKeyNext").addEventListener("click", () => keyRotate("next"));
+$("btnKeyList").addEventListener("click", () => { toast("probing keys…"); bridge("keyList"); });
+$("btnKeyPrune").addEventListener("click", () => { toast("cleaning the pool…"); bridge("keyPrune"); });
+
+// deleting is the one irreversible verb in this card, so it arms first and
+// only fires on the second tap inside four seconds.
+let delTimer = null;
+function disarmDel(){
+  const b = $("btnKeyDel");
+  b.classList.remove("armed");
+  b.textContent = "DEL";
+  clearTimeout(delTimer);
+  delTimer = null;
+}
+$("btnKeyDel").addEventListener("click", () => {
+  const b = $("btnKeyDel");
+  if (!S.apiKeys || !S.apiKeys.activeId) { toast("no active key to delete"); return; }
+  if (!b.classList.contains("armed")) {
+    b.classList.add("armed");
+    b.textContent = "CONFIRM";
+    toast("tap again to delete " + (S.apiKeys.active || "the active key"));
+    delTimer = setTimeout(disarmDel, 4000);
+    return;
+  }
+  disarmDel();
+  toast("deleting " + (S.apiKeys.active || "key") + "…");
+  bridge("keyRemove", { slot: S.apiKeys.activeId });
+});
+$("keyInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("btnKeyAdd").click();
+  e.stopPropagation();
+});
 $("btnDoctor").addEventListener("click", () => bridge("doctor"));
 $("btnClear").addEventListener("click", () => { $("logBody").innerHTML = ""; });
 $("btnDock").addEventListener("click", () => bridge("dock"));

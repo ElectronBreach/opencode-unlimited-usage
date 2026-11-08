@@ -105,17 +105,45 @@ restore_dns(){
 }
 
 dns_ok(){ [ -n "$(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null)" ]; }
+# dig can answer while getaddrinfo is wedged, and getaddrinfo is what every app
+# (browser included) actually calls. this is the check that matches the user.
+resolver_ok(){
+  python3 -c "import socket; socket.setdefaulttimeout(4); socket.getaddrinfo('github.com',443,socket.AF_INET)" >/dev/null 2>&1
+}
 raw_ok(){ curl -k -fsS -o /dev/null --connect-timeout 3 --max-time 5 https://1.1.1.1 2>/dev/null; }
-# one slow lookup is not a dead tunnel. retry once before calling it bad — the
-# old single-shot check turned a 6s timeout into a fail-open disconnect.
+
+# any http status proves the data plane carries packets. -f turned a 429 from
+# ipify into "egress dead", bounced the tunnel every ~2 minutes, and that
+# window is exactly what killed in-flight model fetches ("Model unavailable").
+http_alive(){
+  local code
+  code=$(curl -s -o /dev/null --connect-timeout 3 --max-time "$2" -w '%{http_code}' "$1" 2>/dev/null)
+  case "$code" in ''|000) return 1 ;; *) return 0 ;; esac
+}
+
+# three independent targets, one pass, then a short second pass. cloudflare's
+# own trace endpoint first: it is the same network warp rides, and unlike a
+# public ip service it does not rate-limit a 15s poll.
 egress_ok(){
-  local i ip
+  local i u
   for i in 1 2; do
-    ip=$(curl -4 -fsS --connect-timeout 3 --max-time 5 https://api64.ipify.org 2>/dev/null)
-    [ -n "$ip" ] && return 0
-    sleep 2
+    for u in https://1.1.1.1/cdn-cgi/trace https://opencode.ai https://models.opencode.ai; do
+      http_alive "$u" 4 && return 0
+    done
+    [ "$i" = 1 ] && sleep 1
   done
   return 1
+}
+
+# is opencode mid-request? a session touched in the last 90s means cutting the
+# tunnel would fail whatever it is streaming. bounces wait for idle.
+opencode_busy(){
+  local db="$HOME/.local/share/opencode/opencode.db" ts now
+  [ -f "$db" ] || return 1
+  ts=$(sqlite3 -readonly "$db" "select max(time_updated) from session_v2;" 2>/dev/null | tr -d ' ')
+  case "$ts" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(( $(date +%s) * 1000 ))
+  [ $((now - ts)) -le 90000 ]
 }
 
 # ---------------------------------------------------------------- warp -------
@@ -375,6 +403,8 @@ egress_ticks=0
 last_soft=0
 dns_fixes=0
 last_dns_fix=0
+res_fixes=0
+last_res_fix=0
 loops=0
 
 while true; do
@@ -402,6 +432,22 @@ while true; do
     fi
   fi
 
+  # the resolver wedging is not a tunnel fault and no amount of reconnect fixes
+  # it. detect the exact symptom that breaks browsers — dig fine, getaddrinfo
+  # failing — and repair it in place. at most once every 2 minutes.
+  if connected && ! resolver_ok; then
+    if dns_ok; then
+      now_r=$(date +%s)
+      if [ $((now_r - last_res_fix)) -ge 120 ]; then
+        klog "system resolver wedged (dig ok, getaddrinfo failing) — flush + mDNSResponder HUP"
+        dscacheutil -flushcache >/dev/null 2>&1 || true
+        killall -HUP mDNSResponder >/dev/null 2>&1 || true
+        last_res_fix=$now_r
+        res_fixes=$((res_fixes + 1))
+      fi
+    fi
+  fi
+
   # a dropped tunnel used to wait for the 45s slow tick. repair it here, but
   # never more than once every 15s so a flapping edge cannot become a storm.
   if ! connected; then
@@ -425,7 +471,7 @@ while true; do
     bad_ticks=0; egress_ticks=0
   elif [ "${probe_ok:-0}" = "1" ]; then
     good_streak=$(( ${good_streak:-0} + 1 ))
-    if [ "$good_streak" -ge 3 ]; then bad_ticks=0; egress_ticks=0; fi
+    if [ "$good_streak" -ge 3 ]; then bad_ticks=0; egress_ticks=0; soft_wait=120; fi
   elif dns_ok; then
     good_streak=0
     egress_ticks=$(( ${egress_ticks:-0} + 1 ))
@@ -457,8 +503,13 @@ while true; do
   # 45s of patience, and no more than one bounce every 120s, so a long edge
   # migration cannot become a disconnect loop.
   if [ "$egress_ticks" -ge 9 ]; then
-    if [ $((now - ${last_soft:-0})) -ge 120 ]; then
-      klog "tunnel up, dns fine, egress stalled ${egress_ticks} ticks — clean reconnect"
+    if opencode_busy; then
+      # the probe says stalled, but opencode is actively talking to the
+      # network. bouncing the tunnel here is what produced the intermittent
+      # "Model unavailable". hold the tunnel and re-test when it goes idle.
+      soft_wait=${soft_wait:-120}
+    elif [ $((now - ${last_soft:-0})) -ge "${soft_wait:-120}" ]; then
+      klog "tunnel up, dns fine, egress stalled ${egress_ticks} ticks — clean reconnect (next wait ${soft_wait:-120}s+)"
       w disconnect >/dev/null 2>&1 || true
       for i in 1 2 3 4 5; do
         connected || break
@@ -466,8 +517,16 @@ while true; do
       done
       w connect >/dev/null 2>&1 || true
       last_soft=$now
+      # a repeat offender gets a longer leash: 2m -> 5m -> 10m -> 20m
+      case "${soft_wait:-120}" in
+        120) soft_wait=300 ;;
+        300) soft_wait=600 ;;
+        *)   soft_wait=1200 ;;
+      esac
+      egress_ticks=0
+    else
+      egress_ticks=0
     fi
-    egress_ticks=0
   fi
 
   sleep "$FAST"
