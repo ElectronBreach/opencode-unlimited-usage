@@ -55,36 +55,36 @@ if [ ! -x "$REAL" ] || grep -qI "zen-lane\|scripts/lane.sh" "$REAL" 2>/dev/null;
 fi
 [ -x "$REAL" ] || { echo "opencode binary not found — set OUC_REAL_BIN or reinstall"; exit 1; }
 
-# ---- pick a random edge from the live AAAA pool
-# note: strict hex-colon regex on dig output — dig's error lines also contain
-# colons and will happily poison the pool if you're lazy about the grep
-AAAA_POOL=$(dig +short AAAA opencode.ai @1.1.1.1 2>/dev/null | grep -E '^[0-9A-Fa-f:]+$' | sort -u)
-[ -z "$AAAA_POOL" ] && AAAA_POOL=$(python3 -c "
-import socket
-print('\n'.join({i[4][0] for i in socket.getaddrinfo('opencode.ai',443,socket.AF_INET6)}))" 2>/dev/null)
-# last resort: known cloudflare literals (verified working at time of writing)
-[ -z "$AAAA_POOL" ] && AAAA_POOL="2606:4700:10::ac42:ad95
-2606:4700:10::ac42:ad96
-2606:4700:10::6814:2011"
-# ---- pick a random edge from the live AAAA pool, but ONLY if IPv6 to it
-# actually works. a pin to an unreachable AAAA is a self-inflicted DNS
-# outage for opencode.ai — that is exactly the failure this port must never
-# reproduce, so the pin is validated before it is applied.
-v6_ok(){
-  local ip="$1"
+# ---- pick a random cloudflare edge that actually answers ------------------
+# linux upstream pins IPv6 because it runs inside a namespace and assumes a
+# v6 path to the edge. macOS often has no working v6 route (this Mac does
+# not), so the Mac version pins a validated IPv4 edge first, then falls back
+# to IPv6 only if v4 fails. same feature — a per-launch edge — without the
+# self-inflicted outage of pinning a dead address.
+V4_POOL=$(dig +short A opencode.ai @1.1.1.1 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
+V6_POOL=$(dig +short AAAA opencode.ai @1.1.1.1 2>/dev/null | grep -E '^[0-9A-Fa-f:]+$' | sort -u)
+
+edge_ok4(){
+  curl -4 -sS -o /dev/null --connect-timeout 2 --max-time 3 \
+    --resolve "opencode.ai:443:$1" https://opencode.ai >/dev/null 2>&1
+}
+edge_ok6(){
   curl -6 -sS -o /dev/null --connect-timeout 2 --max-time 3 \
-    --resolve "opencode.ai:443:[$ip]" https://opencode.ai >/dev/null 2>&1
+    --resolve "opencode.ai:443:[$1]" https://opencode.ai >/dev/null 2>&1
 }
 
 pick_edge(){
   local ip
-  for ip in $(printf '%s\n' "$AAAA_POOL" | awk 'BEGIN{srand();}{print rand(),$0}' | sort -n | cut -d' ' -f2 | head -6); do
-    v6_ok "$ip" && { printf '%s' "$ip"; return 0; }
+  for ip in $(printf '%s\n' "$V4_POOL" | awk 'BEGIN{srand();}{print rand(),$0}' | sort -n | cut -d' ' -f2); do
+    edge_ok4 "$ip" && { printf '%s' "$ip"; return 0; }
+  done
+  for ip in $(printf '%s\n' "$V6_POOL" | awk 'BEGIN{srand();}{print rand(),$0}' | sort -n | cut -d' ' -f2); do
+    edge_ok6 "$ip" && { printf '%s' "$ip"; return 0; }
   done
   return 1
 }
 
-AAAA="$(pick_edge || true)"
+EDGE="$(pick_edge || true)"
 
 # ---- /etc/hosts pin (marked block, always restored)
 MARK_BEGIN="# >>> opencode-unlimited lane >>>"
@@ -108,15 +108,15 @@ restore_hosts(){
 }
 trap restore_hosts EXIT INT TERM HUP
 
-if [ -n "$AAAA" ]; then
+if [ -n "$EDGE" ]; then
   tmp=$(mktemp /tmp/ouc-hosts.XXXXXX 2>/dev/null) || tmp=""
   if [ -n "$tmp" ]; then
     strip_block /etc/hosts "$tmp"
     {
       printf '%s\n' "$MARK_BEGIN"
-      printf '%s opencode.ai\n' "$AAAA"
-      printf '%s www.opencode.ai\n' "$AAAA"
-      printf '%s api.opencode.ai\n' "$AAAA"
+      printf '%s opencode.ai\n' "$EDGE"
+      printf '%s www.opencode.ai\n' "$EDGE"
+      printf '%s api.opencode.ai\n' "$EDGE"
       printf '%s\n' "$MARK_END"
     } >> "$tmp"
     # the sudoers grant is for this exact cp — test the command itself, not

@@ -28,7 +28,7 @@ fi
 [ -n "$WARP" ] || { echo "warp-cli not found"; exit 1; }
 
 COOLDOWN=75
-MAX_HOP_TRIES=3
+MAX_HOP_TRIES=8
 WALL_RE="QuotaExceeded|Free usage limit reached|usage limit reached|FreeUsageLimitError|FreeUsageLimit|rate limit exceeded|too many requests"
 
 mkdir -p "$STATE_DIR"
@@ -196,8 +196,15 @@ while true; do
     NEW="$V"; break
   done
 
+  # upstream parity: when every block is burnt, recycle the oldest — these
+  # buckets reset around midnight anyway
   if [ -z "$NEW" ]; then
-    glog "no fresh block left in cloudflare's pool — wall is account-side, not ip-side; keeping the tunnel"
+    glog "every block blacklisted — recycling oldest block"
+    V=$(hop_once)
+    [ -n "$V" ] && NEW="$V"
+  fi
+  if [ -z "$NEW" ]; then
+    glog "rotation failed — wall is likely account-side, not ip-side; keeping the tunnel"
   fi
 
   if [ -n "$NEW" ]; then

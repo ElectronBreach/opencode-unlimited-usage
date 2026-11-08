@@ -36,11 +36,26 @@ else
   bad "keeper down — sudo launchctl bootstrap system /Library/LaunchDaemons/com.opencode-unlimited.keeper.plist"
 fi
 
+# ---- cloudflare daemon (its own launchd job)
+if launchctl print system/com.cloudflare.1dot1dot1dot1.macos.warp.daemon >/dev/null 2>&1; then
+  ok "cloudflare warp daemon"
+else
+  bad "cloudflare daemon down — keeper re-bootstraps it within ~45s"
+fi
+
 # ---- warp tunnel
 ST=$(wo status | head -1)
 echo "$ST" | grep -q Connected \
   && ok "warp tunnel: connected" \
   || bad "warp not connected — keeper repairs within ~45s (or restart it)"
+
+MODE=$(wo settings 2>/dev/null | awk -F'Mode: ' '/Mode:/ {print $2; exit}')
+case "$MODE" in
+  TunnelOnly) ok "warp mode: TunnelOnly (dns stays local)" ;;
+  Warp)       warn "warp mode: Warp (dns rides the tunnel — keeper will switch it)" ;;
+  "")         warn "warp mode: unreadable" ;;
+  *)          warn "warp mode: $MODE" ;;
+esac
 
 # ---- leak guard (opt-in)
 if [ -f /etc/pf.anchors/OUC_LEAKGUARD ]; then

@@ -68,7 +68,7 @@ grep -q "zen-lane" "$SHIM" 2>/dev/null && ok "opencode shim → lane" || bad "op
 
 grep -q "ensure_credit" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: credit enforcement" || bad "lane: credit" "missing"
 grep -q "MACHINE_ID" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: random machine-id" "env (linux: /etc/machine-id bind)" || bad "lane: machine-id" "missing"
-grep -q "v6_ok" "$DEST/scripts/zen-lane.sh" 2>/dev/null && dv "lane: edge pin" "validated; skipped when IPv6 dead" || bad "lane: edge pin" "unvalidated"
+grep -q "edge_ok4" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: edge pin" "v4-first, validated, falls back to v6" || bad "lane: edge pin" "unvalidated"
 grep -q "remove each launch\|restore_hosts\|MARK_BEGIN" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: hosts pin restorable" || bad "lane: hosts restore" "missing"
 grep -q "Telegram:- @ElectronCursed" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: non-tty credit append" || bad "lane: ntty credit" "missing"
 
