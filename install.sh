@@ -75,6 +75,7 @@ echo ""
 command -v launchctl >/dev/null 2>&1 || die "launchd not found — is this really macOS?"
 command -v python3   >/dev/null 2>&1 || die "python3 required (xcode-select --install)"
 command -v curl      >/dev/null 2>&1 || die "curl required"
+command -v dig       >/dev/null 2>&1 || die "dig required (ships with macOS — check /usr/bin/dig)"
 
 # ---------------------------------------------------------------- sudo
 # order: cached (sudo -n) → password prompt from your terminal (curl | bash
@@ -174,6 +175,9 @@ else
   say "fetching scripts from github"
   for f in warp-keeper.sh zen-lane.sh zen-guard.sh zen-hop.sh doctor.sh audit.sh; do
     curl -fsSL "$RAW/scripts/$f" -o "$DEST/scripts/$f" || die "could not fetch $f"
+    # a truncated download is the quiet kind of broken: it installs, then dies
+    # at 3am inside a rotation. refuse anything that does not parse.
+    bash -n "$DEST/scripts/$f" 2>/dev/null || die "fetched $f is not valid bash — branch is broken or the download truncated"
   done
   curl -fsSL "$RAW/AGENTS.md" -o "$DEST/AGENTS.md" 2>/dev/null || true
   # the branch must actually be the macOS one, not linux scripts from main

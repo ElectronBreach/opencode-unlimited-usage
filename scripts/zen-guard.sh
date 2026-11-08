@@ -138,6 +138,27 @@ clear_registration(){
   return 1
 }
 
+# a rotation that never returns is a dead guard. bound it hard.
+hop_with_timeout(){
+  local out p i
+  out=$(mktemp /tmp/ouc-hop.XXXXXX 2>/dev/null) || { hop_once; return; }
+  ( hop_once > "$out" 2>/dev/null ) &
+  p=$!
+  i=0
+  while kill -0 "$p" 2>/dev/null; do
+    i=$((i + 1))
+    if [ "$i" -ge 90 ]; then
+      glog "rotation exceeded 180s — killing it and keeping the tunnel"
+      kill -TERM "$p" 2>/dev/null; sleep 2; kill -KILL "$p" 2>/dev/null
+      break
+    fi
+    sleep 2
+  done
+  wait "$p" 2>/dev/null
+  cat "$out" 2>/dev/null
+  rm -f "$out"
+}
+
 hop_once(){
   pause_keeper
   w disconnect
@@ -184,8 +205,14 @@ while true; do
   # a rotation already owns the tunnel (manual hop or keeper surgery). do not
   # advance the offset: the wall is still ours to act on next tick.
   if [ -f "$PAUSE" ]; then
-    [ "$WALL" = 1 ] && glog "wall seen while a rotation owns the tunnel — holding it for the next tick"
-    continue
+    PPID_OWNER=$(tr -dc '0-9' < "$PAUSE" 2>/dev/null)
+    if [ -n "$PPID_OWNER" ] && ! kill -0 "$PPID_OWNER" 2>/dev/null; then
+      glog "rotation marker was orphaned (pid $PPID_OWNER gone) — clearing it"
+      rm -f "$PAUSE" 2>/dev/null
+    else
+      [ "$WALL" = 1 ] && glog "wall seen while a rotation owns the tunnel — holding it for the next tick"
+      continue
+    fi
   fi
   state_set offset "$SIZE"
 
@@ -217,7 +244,7 @@ while true; do
   TRY=0
   while [ "$TRY" -lt "$MAX_HOP_TRIES" ]; do
     TRY=$((TRY + 1))
-    V=$(hop_once)
+    V=$(hop_with_timeout)
     # the free pool is four addresses; the quota key is the registration.
     # a new device id with a repeated ip is a successful rotation.
     DEV_AFTER=$(cur_device)
@@ -240,7 +267,7 @@ while true; do
   # buckets reset around midnight anyway
   if [ -z "$NEW" ]; then
     glog "every block blacklisted — recycling oldest block"
-    V=$(hop_once)
+    V=$(hop_with_timeout)
     if [ -n "$V" ] && is_warp_ip "$V"; then NEW="$V"; fi
   fi
   if [ -z "$NEW" ]; then

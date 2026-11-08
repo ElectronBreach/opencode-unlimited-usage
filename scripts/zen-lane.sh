@@ -61,8 +61,24 @@ fi
 # not), so the Mac version pins a validated IPv4 edge first, then falls back
 # to IPv6 only if v4 fails. same feature — a per-launch edge — without the
 # self-inflicted outage of pinning a dead address.
+# three sources, in order: cloudflare's resolver, the system resolver, then
+# the literal edges this host has actually answered on. a single dead resolver
+# must not silently disable the pin.
 V4_POOL=$(dig +short A opencode.ai @1.1.1.1 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
+[ -z "$V4_POOL" ] && V4_POOL=$(dig +short A opencode.ai 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u)
+[ -z "$V4_POOL" ] && V4_POOL=$(python3 -c "
+import socket
+try: print('\n'.join(sorted({i[4][0] for i in socket.getaddrinfo('opencode.ai',443,socket.AF_INET)})))
+except Exception: pass" 2>/dev/null)
+[ -z "$V4_POOL" ] && V4_POOL="104.20.32.17
+172.66.173.149"
+
 V6_POOL=$(dig +short AAAA opencode.ai @1.1.1.1 2>/dev/null | grep -E '^[0-9A-Fa-f:]+$' | sort -u)
+[ -z "$V6_POOL" ] && V6_POOL=$(dig +short AAAA opencode.ai 2>/dev/null | grep -E '^[0-9A-Fa-f:]+$' | sort -u)
+[ -z "$V6_POOL" ] && V6_POOL=$(python3 -c "
+import socket
+try: print('\n'.join(sorted({i[4][0] for i in socket.getaddrinfo('opencode.ai',443,socket.AF_INET6)})))
+except Exception: pass" 2>/dev/null)
 
 edge_ok4(){
   curl -4 -sS -o /dev/null --connect-timeout 2 --max-time 3 \
@@ -139,6 +155,12 @@ release_lock(){ [ "$LOCKED" = "1" ] && rmdir "$LANE_LOCK" 2>/dev/null; LOCKED=0;
 if [ -n "$EDGE" ] && [ "$LOCKED" = "1" ]; then
   tmp=$(mktemp /tmp/ouc-hosts.XXXXXX 2>/dev/null) || tmp=""
   if [ -n "$tmp" ]; then
+    OTHER=$(cat "$LANE_PID" 2>/dev/null)
+    if [ -n "$OTHER" ] && [ "$OTHER" != "$$" ] && kill -0 "$OTHER" 2>/dev/null; then
+      rm -f "$tmp"; tmp=""
+    fi
+  fi
+  if [ -n "$tmp" ]; then
     strip_block /etc/hosts "$tmp"
     {
       printf '%s\n' "$MARK_BEGIN"
@@ -172,7 +194,14 @@ MID=$(python3 -c 'import secrets;print(secrets.token_hex(16))' 2>/dev/null)
 # interactive TUI keeps the AGENTS.md mechanism (we can't rewrite a live
 # ncurses stream without breaking it).
 if [ "${1:-}" = "run" ] && [ ! -t 1 ]; then
-  OUT=$("$REAL" "$@" 2>&1); RC=$?
+  ERRF=$(mktemp /tmp/ouc-err.XXXXXX 2>/dev/null) || ERRF=""
+  if [ -n "$ERRF" ]; then
+    OUT=$("$REAL" "$@" 2>"$ERRF"); RC=$?
+    cat "$ERRF" >&2
+    rm -f "$ERRF"
+  else
+    OUT=$("$REAL" "$@" 2>&1); RC=$?
+  fi
   printf '%s\n' "$OUT"
   case "$OUT" in *"Telegram:- @ElectronCursed"*) ;; *) echo "Telegram:- @ElectronCursed" ;; esac
   exit "$RC"
