@@ -84,20 +84,6 @@ register_fresh(){
   return 1
 }
 
-pause_keeper
-echo "-- rotating (keeper paused) --"
-w disconnect
-wait_disconnected || true
-if register_fresh; then
-  w connect
-else
-  echo "-- registration failed: ${reg_new_err:-unknown} --"
-  echo "-- disconnecting so direct egress wins --"
-  w disconnect
-  resume_keeper
-  exit 1
-fi
-
 # "Connected" can appear before the utun actually carries traffic. wait for a
 # real address, and give the tunnel one clean second chance before failing.
 wait_egress(){
@@ -111,12 +97,40 @@ wait_egress(){
   return 1
 }
 
-NIP=$(wait_egress) || {
-  echo "  first connect carried no traffic — reconnecting once"
-  w disconnect; sleep 2; w connect
-  NIP=$(wait_egress) || NIP=""
+rotate_once(){
+  w disconnect
+  wait_disconnected || true
+  register_fresh || return 1
+  w connect
+  NIP=$(wait_egress) || {
+    echo "  first connect carried no traffic — reconnecting once"
+    w disconnect; sleep 2; w connect
+    NIP=$(wait_egress) || NIP=""
+  }
+  return 0
 }
+
+pause_keeper
+echo "-- rotating (keeper paused) --"
+if ! rotate_once; then
+  echo "-- registration failed: ${reg_new_err:-unknown} --"
+  echo "-- disconnecting so direct egress wins --"
+  w disconnect
+  resume_keeper
+  exit 1
+fi
 echo "new egress: ${NIP:-?}"
+
+# four addresses exist in this pool, so landing back on the one you started
+# from is common. take one more swing when that happens: a fresh identity
+# either way, but a different address is what you actually asked for.
+FIRST_DEV=$(cur_device)
+if [ -n "$NIP" ] && [ "$NIP" = "$OLD" ] && is_warp_ip "$OLD" \
+   && [ -n "$FIRST_DEV" ] && [ "$FIRST_DEV" != "$OLD_DEV" ]; then
+  echo "  same address as before — one more rotation"
+  rotate_once || true
+  echo "new egress: ${NIP:-?}"
+fi
 resume_keeper
 
 # record the new identity so doctor/guard state stays truthful
