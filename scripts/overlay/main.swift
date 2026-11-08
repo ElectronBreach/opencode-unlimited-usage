@@ -67,20 +67,49 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         buildWindow()
         buildWebView()
         restoreFrame()
+        // an NSWindow that is created is not on screen until it is ordered in,
+        // and `open -g` never activates us. orderFrontRegardless is the only
+        // call that puts a non-activating panel in front without stealing focus.
+        window.orderFrontRegardless()
 
         poll = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
             self.refresh(force: false)
+            self.dumpState()
         }
         cmdWatch = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { _ in
             self.watchCommandFile()
         }
         refresh(force: true)
+        dumpState()
         if ProcessInfo.processInfo.arguments.contains("--collapsed") {
             setCollapsed(true, animate: false)
         }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
+
+    // the app's own view of whether the panel is actually on screen. CGWindowList
+    // cannot answer that without Screen Recording permission, and this can.
+    func dumpState() {
+        guard window != nil, web != nil else { return }
+        var d: [String: Any] = [
+            "visible": window.isVisible,
+            "occluded": !window.occlusionState.contains(.visible),
+            "onActiveSpace": window.isOnActiveSpace,
+            "frame": NSStringFromRect(window.frame),
+            "level": window.level.rawValue,
+            "alpha": Double(window.alphaValue),
+            "collapsed": collapsed,
+            "policy": NSApp.activationPolicy().rawValue,
+            "hidden": NSApp.isHidden,
+            "webLoaded": !web.isLoading && web.url != nil,
+            "ts": Int(Date().timeIntervalSince1970)
+        ]
+        if let scr = currentScreen() { d["screen"] = NSStringFromRect(scr.visibleFrame) }
+        if let data = try? JSONSerialization.data(withJSONObject: d, options: [.prettyPrinted]) {
+            try? data.write(to: guardDir.appendingPathComponent("overlay-state.json"))
+        }
+    }
 
     func writeContext(dir: String) {
         try? fm.createDirectory(at: guardDir, withIntermediateDirectories: true)
@@ -96,7 +125,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                        styleMask: [.borderless, .nonactivatingPanel],
                        backing: .buffered, defer: false)
         window.isFloatingPanel = true
-        window.level = .floating
+        window.level = .statusBar
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -210,9 +239,13 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
 
     func setCollapsed(_ v: Bool, animate: Bool) {
-        guard collapsed != v else { return }
+        if collapsed == v {
+            window.orderFrontRegardless()
+            return
+        }
         collapsed = v
         applyShape(animate: animate)
+        window.orderFrontRegardless()
     }
 
     func saveFrame() {
@@ -282,8 +315,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "dragStart": beginDrag()
         case "dragEnd": endDrag()
         case "collapse": setCollapsed(true, animate: true)
-        case "expand": setCollapsed(false, animate: true)
+        case "expand":
+            setCollapsed(false, animate: true)
+            window.orderFrontRegardless()
         case "dock": dockSide()
+        case "state": dumpState()
         case "close": NSApp.terminate(nil)
         case "refresh": refresh(force: true)
         case "copy": copySummary()

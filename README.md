@@ -134,6 +134,22 @@ opencode-unlimited-overlay close
 
 Set `OUC_OVERLAY=0` before launching opencode if you want it to stay shut.
 
+**It is a separate floating window, not a pane inside the terminal.** It sits
+above your terminal at the right edge of the screen (or wherever you drag it),
+non-activating, so typing in the terminal never loses focus. It follows you
+across Spaces and stays on top of a fullscreen terminal.
+
+Not seeing it?
+
+```bash
+opencode-unlimited-overlay show          # raise it now
+opencode-unlimited-overlay expand        # make sure it is the panel, not the circle
+cat ~/.local/share/opencode-unlimited/guard/overlay-state.json   # visible / occluded / frame
+```
+
+If `visible` is `true` and `occluded` is `false`, it is on screen — look for a
+366×596 panel at the right edge, or the 78 px circle if it was left collapsed.
+
 Reading tokens is read-only (`mode=ro` against the live WAL database) — the
 HUD never writes to opencode's data.
 
