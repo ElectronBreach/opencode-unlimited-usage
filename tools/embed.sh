@@ -21,7 +21,11 @@ build_payload(){
   cp AGENTS.md "$tmp/payload/AGENTS.md"
   cp uninstall.sh "$tmp/payload/uninstall.sh"
   ( cd "$tmp/payload" && tar -czf "$tmp/payload.tgz" . )
-  sha=$(shasum -a 256 "$tmp/payload.tgz" | awk '{print $1}')
+  # a gzip tarball is not byte-reproducible (mtimes, compression windows), so
+  # hashing it made the drift check cry wolf on every run. hash the *content*
+  # instead: one sorted line per file.
+  sha=$( cd "$tmp/payload" && find . -type f -exec shasum -a 256 {} + \
+         | sort -k2 | shasum -a 256 | awk '{print $1}' )
   b64=$(base64 < "$tmp/payload.tgz" | tr -d '\n')
   rm -rf "$tmp"
   printf '%s\n%s\n' "$sha" "$b64"
