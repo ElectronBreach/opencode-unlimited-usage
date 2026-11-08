@@ -71,7 +71,11 @@ grep -q "IOPlatformExpertDevice" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "
 grep -q "OUC_PAYLOAD" "$DEST/install.sh" 2>/dev/null && ok "installer: standalone payload (no branch needed)" || dv "installer" "needs a checkout or published branch"
 grep -q "lane_live" "$DEST/scripts/warp-keeper.sh" 2>/dev/null && ok "keeper: pid-owned lane pin sweep" || bad "keeper: lane sweep" "missing"
 grep -q "hop_with_timeout" "$DEST/scripts/zen-guard.sh" 2>/dev/null && ok "guard: bounded rotation (180s cap)" || dv "guard: rotation cap" "unbounded"
-grep -q "MACHINE_ID" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: random machine-id" "env (linux: /etc/machine-id bind)" || bad "lane: machine-id" "missing"
+grep -q "IOPlatformExpertDevice" "$DEST/scripts/zen-lane.sh" 2>/dev/null \
+  && ok "lane: machine-id" "ioreg shim (macOS has no /etc/machine-id)" \
+  || bad "lane: machine-id" "no shim"
+grep -q "export MACHINE_ID" "$DEST/scripts/zen-lane.sh" 2>/dev/null \
+  && dv "lane: MACHINE_ID env" "exported, but opencode v2 never reads it" | true
 grep -q "v6 first" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: edge pin" "v6-first (warp /64 reaches the server), v4 fallback" || dv "lane: edge pin" "v4-first"
 PFX=$(ifconfig 2>/dev/null | awk '/^utun/{i=$1} /inet6 26[0-9a-f]*:/{print $2}' | head -1 | cut -d/ -f1 | awk -F: '{print $1":"$2":"$3":"$4}')
 [ -n "$PFX" ] && ok "warp /64 present" "$PFX" || dv "warp /64" "none — v4 pool only"
@@ -94,7 +98,7 @@ d=json.load(open(sys.argv[1]))
 need={"blacklist","offset","last_hop","hops","current"}
 missing=need-set(d)
 print("  \033[32m✓\033[0m %-46s %s" % ("guard state schema", "ok" if not missing else f"missing {missing}"))
-print("      offset=%r hops=%r current=%r" % (d.get("offset"), d.get("hops"), d.get("current")))
+print("      offset=%r hops=%r current=%r /64=%r" % (d.get("offset"), d.get("hops"), d.get("current"), d.get("prefix")))
 PY
 else
   bad "guard state" "missing"

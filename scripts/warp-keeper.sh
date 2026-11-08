@@ -96,7 +96,17 @@ restore_dns(){
 
 dns_ok(){ [ -n "$(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null)" ]; }
 raw_ok(){ curl -k -fsS -o /dev/null --connect-timeout 3 --max-time 5 https://1.1.1.1 2>/dev/null; }
-egress_ok(){ [ -n "$(curl -4 -fsS --connect-timeout 3 --max-time 6 https://api64.ipify.org 2>/dev/null)" ]; }
+# one slow lookup is not a dead tunnel. retry once before calling it bad — the
+# old single-shot check turned a 6s timeout into a fail-open disconnect.
+egress_ok(){
+  local i ip
+  for i in 1 2; do
+    ip=$(curl -4 -fsS --connect-timeout 3 --max-time 5 https://api64.ipify.org 2>/dev/null)
+    [ -n "$ip" ] && return 0
+    sleep 2
+  done
+  return 1
+}
 
 # ---------------------------------------------------------------- warp -------
 w(){  "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; "$WARP" "$@" >/dev/null 2>&1; }
@@ -379,7 +389,7 @@ while true; do
   # every 15s turns one bad minute into a flap loop. once we fail open, stay
   # open for a while and let the slow path reconnect cleanly.
   now=$(date +%s)
-  if [ "$bad_ticks" -ge 3 ]; then
+  if [ "$bad_ticks" -ge 4 ]; then
     if [ $((now - ${last_failopen:-0})) -ge 120 ]; then
       klog "tunnel reports connected but dns/egress dead — disconnecting warp (fail-open, 120s backoff)"
       disarm_guard
