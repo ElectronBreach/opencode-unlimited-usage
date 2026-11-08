@@ -38,7 +38,7 @@ wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP"
 
 glog(){ echo "$(date '+%m-%d %H:%M:%S') $*" >> "$GUARD_LOG"; }
 
-pause_keeper(){ : > "$PAUSE" 2>/dev/null; }
+pause_keeper(){ mkdir -p "$STATE_DIR"; printf '%s' "$$" > "$PAUSE" 2>/dev/null; }
 resume_keeper(){ rm -f "$PAUSE" 2>/dev/null; }
 trap resume_keeper EXIT INT TERM HUP
 
@@ -48,16 +48,21 @@ try: d=json.load(open('$STATE'))
 except: d={'blacklist':[],'offset':0,'last_hop':0,'hops':0,'current':''}
 print(d.get('$1',''))" 2>/dev/null; }
 
+# atomic: kill -9 mid-write used to truncate state.json, which reset offset to 0
+# and made the guard re-read the whole log and rotate on an old wall.
 state_set(){ python3 -c "
-import json,sys
-try: d=json.load(open('$STATE'))
+import json,sys,os
+p='$STATE'
+try: d=json.load(open(p))
 except: d={'blacklist':[],'offset':0,'last_hop':0,'hops':0,'current':''}
-v=sys.argv[1]
-v=v.strip()
+v=sys.argv[1].strip()
 d['$1']=int(v) if v.isdigit() else v
-json.dump(d,open('$STATE','w'))" "$2" 2>/dev/null; }
+t=p+'.tmp'
+with open(t,'w') as f: json.dump(d,f)
+os.replace(t,p)" "$2" 2>/dev/null; }
 
 cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }
+cur_device(){ wo registration show 2>/dev/null | awk '/^ID:/{print $2; exit}'; }
 
 # warp hands out cloudflare ranges; anything else is direct ISP egress and
 # must never be blacklisted or rotated
@@ -70,7 +75,7 @@ print(':'.join(a.split(':')[:4]) if ':' in a else a)" "$1" 2>/dev/null; }
 
 blacklist_add(){
   python3 - "$STATE" "$1" <<'PY' 2>/dev/null
-import json,sys
+import json,os,sys
 p, a = sys.argv[1], sys.argv[2]
 def n(x): return ":".join(x.split(":")[:4]) if ":" in x else x
 try: d=json.load(open(p))
@@ -78,7 +83,9 @@ except: d={"blacklist":[],"offset":0,"last_hop":0,"hops":0,"current":""}
 m=n(a)
 d["blacklist"]=[x for x in d.get("blacklist",[]) if x and n(x)!=m]+[m]
 d["blacklist"]=d["blacklist"][-200:]
-json.dump(d,open(p,"w"))
+t=p+".tmp"
+with open(t,"w") as f: json.dump(d,f)
+os.replace(t,p)
 PY
 }
 
@@ -174,6 +181,12 @@ while true; do
   if [ "$NEWBYTES" -gt 0 ] && [ "$NEWBYTES" -lt 50000000 ]; then
     if tail -c +"$((OFF + 1))" "$LOGF" 2>/dev/null | grep -aqiE "$WALL_RE"; then WALL=1; fi
   fi
+  # a rotation already owns the tunnel (manual hop or keeper surgery). do not
+  # advance the offset: the wall is still ours to act on next tick.
+  if [ -f "$PAUSE" ]; then
+    [ "$WALL" = 1 ] && glog "wall seen while a rotation owns the tunnel — holding it for the next tick"
+    continue
+  fi
   state_set offset "$SIZE"
 
   NOW=$(date +%s)
@@ -200,11 +213,25 @@ while true; do
   [ -n "$OLD" ] && is_warp_ip "$OLD" && blacklist_add "$OLD"
 
   NEW=""
+  DEV_BEFORE=$(cur_device)
   TRY=0
   while [ "$TRY" -lt "$MAX_HOP_TRIES" ]; do
     TRY=$((TRY + 1))
     V=$(hop_once)
+    # the free pool is four addresses; the quota key is the registration.
+    # a new device id with a repeated ip is a successful rotation.
+    DEV_AFTER=$(cur_device)
+    if [ -n "$DEV_AFTER" ] && [ "$DEV_AFTER" != "$DEV_BEFORE" ] && [ -n "$V" ] && is_warp_ip "$V"; then
+      if is_burnt "$V"; then glog "try $TRY: new device on a known block ($V) — still a fresh identity"; fi
+      NEW="$V"; break
+    fi
     if [ -z "$V" ]; then glog "try $TRY: tunnel repair failed"; continue; fi
+    # if WARP never came back up, cur_ip falls through to the ISP address.
+    # counting that as a rotation tells you you are covered while you are not.
+    if ! is_warp_ip "$V"; then
+      glog "try $TRY: egress is not cloudflare ($V) — tunnel is not up, not a rotation"
+      continue
+    fi
     if is_burnt "$V"; then glog "try $TRY: cloudflare returned a blacklisted block ($V) — again"; continue; fi
     NEW="$V"; break
   done
@@ -214,7 +241,7 @@ while true; do
   if [ -z "$NEW" ]; then
     glog "every block blacklisted — recycling oldest block"
     V=$(hop_once)
-    [ -n "$V" ] && NEW="$V"
+    if [ -n "$V" ] && is_warp_ip "$V"; then NEW="$V"; fi
   fi
   if [ -z "$NEW" ]; then
     glog "rotation failed — wall is likely account-side, not ip-side; keeping the tunnel"

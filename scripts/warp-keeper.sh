@@ -304,9 +304,17 @@ pfconf_armed(){ grep -q "load anchor \"$ANCHOR_NAME\"" "$PF_CONF" 2>/dev/null; }
 
 paused(){
   [ -f "$PAUSE" ] || return 1
-  local age
+  local pid age
+  pid=$(tr -dc '0-9' < "$PAUSE" 2>/dev/null)
+  # a pid-owned marker is valid exactly as long as that process is alive, so a
+  # slow hop can never be walked over by the keeper mid-surgery
+  if [ -n "$pid" ]; then
+    kill -0 "$pid" 2>/dev/null && return 0
+    rm -f "$PAUSE" 2>/dev/null
+    return 1
+  fi
   age=$(( $(date +%s) - $(stat -f %m "$PAUSE" 2>/dev/null || echo 0) ))
-  [ "$age" -lt 180 ]
+  [ "$age" -lt 600 ]
 }
 
 # ---------------------------------------------------------------- boot -------

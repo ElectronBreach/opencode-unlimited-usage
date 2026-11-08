@@ -103,17 +103,40 @@ LANE_PID="$HOME/.local/share/opencode-unlimited/guard/lane.pid"
 
 restore_hosts(){
   [ "$PINNED" = "1" ] || return 0
-  local tmp
+  local tmp cur
+  # a second lane may have replaced our block while we were running. only
+  # strip the block if it is still ours — otherwise we would delete its pin.
+  cur=$(awk -v b="$MARK_BEGIN" '$0==b{getline; print $1; exit}' /etc/hosts 2>/dev/null)
+  if [ -n "$cur" ] && [ -n "${EDGE:-}" ] && [ "$cur" != "$EDGE" ]; then
+    PINNED=0
+    return 0
+  fi
   tmp=$(mktemp /tmp/ouc-hosts.XXXXXX 2>/dev/null) || return 0
   strip_block /etc/hosts "$tmp"
   sudo -n /bin/cp "$tmp" /etc/hosts 2>/dev/null
   rm -f "$tmp"
   [ "$(cat "$LANE_PID" 2>/dev/null)" = "$$" ] && rm -f "$LANE_PID" 2>/dev/null
+  release_lock
   PINNED=0
 }
 trap restore_hosts EXIT INT TERM HUP
 
-if [ -n "$EDGE" ]; then
+# two opencode launches at once used to interleave their /etc/hosts writes:
+# one lane's trap would strip the other's pin mid-run. a directory lock makes
+# the pin section single-file.
+LANE_LOCK="$HOME/.local/share/opencode-unlimited/guard/lane.lock"
+mkdir -p "$(dirname "$LANE_LOCK")" 2>/dev/null || true
+LOCKED=0
+for _i in $(seq 1 20); do
+  if mkdir "$LANE_LOCK" 2>/dev/null; then LOCKED=1; break; fi
+  # a lane killed with -9 leaves the directory behind
+  age=$(( $(date +%s) - $(stat -f %m "$LANE_LOCK" 2>/dev/null || echo 0) ))
+  [ "$age" -gt 60 ] && rm -rf "$LANE_LOCK" 2>/dev/null
+  sleep 0.5
+done
+release_lock(){ [ "$LOCKED" = "1" ] && rmdir "$LANE_LOCK" 2>/dev/null; LOCKED=0; }
+
+if [ -n "$EDGE" ] && [ "$LOCKED" = "1" ]; then
   tmp=$(mktemp /tmp/ouc-hosts.XXXXXX 2>/dev/null) || tmp=""
   if [ -n "$tmp" ]; then
     strip_block /etc/hosts "$tmp"
@@ -135,6 +158,8 @@ if [ -n "$EDGE" ]; then
     rm -f "$tmp"
   fi
 fi
+
+release_lock
 
 # ---- fresh machine identity per launch
 MID=$(python3 -c 'import secrets;print(secrets.token_hex(16))' 2>/dev/null)

@@ -25,13 +25,20 @@ fi
 w(){  sudo -n "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; sudo -n "$WARP" "$@" >/dev/null 2>&1; }
 wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP" "$@" 2>/dev/null; }
 
-pause_keeper(){ mkdir -p "$GUARD_DIR"; : > "$PAUSE" 2>/dev/null; }
+pause_keeper(){ mkdir -p "$GUARD_DIR"; printf '%s' "$$" > "$PAUSE" 2>/dev/null; }
 resume_keeper(){ rm -f "$PAUSE" 2>/dev/null; }
 trap resume_keeper EXIT INT TERM HUP
 
 cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }
 
+# warp hands out cloudflare ranges. anything else means the tunnel is not up
+# and the "new" address is your own ISP — never report that as a rotation.
+is_warp_ip(){ case "${1:-}" in 104.28.*|162.159.*|172.64.*|188.114.*|2a09:*|2606:*) return 0;; *) return 1;; esac; }
+
+cur_device(){ wo registration show 2>/dev/null | awk '/^ID:/{print $2; exit}'; }
+
 OLD=$(cur_ip)
+OLD_DEV=$(cur_device)
 echo "old egress: ${OLD:-?}"
 
 # a plain `registration delete` then `registration new` is a race: the daemon
@@ -91,12 +98,24 @@ else
   exit 1
 fi
 
-for i in $(seq 1 20); do
-  sleep 3
-  wo status | head -1 | grep -q Connected && break
-done
+# "Connected" can appear before the utun actually carries traffic. wait for a
+# real address, and give the tunnel one clean second chance before failing.
+wait_egress(){
+  local i ip
+  for i in $(seq 1 30); do
+    sleep 3
+    wo status 2>/dev/null | head -1 | grep -q Connected || continue
+    ip=$(cur_ip)
+    [ -n "$ip" ] && { printf '%s' "$ip"; return 0; }
+  done
+  return 1
+}
 
-NIP=$(cur_ip)
+NIP=$(wait_egress) || {
+  echo "  first connect carried no traffic — reconnecting once"
+  w disconnect; sleep 2; w connect
+  NIP=$(wait_egress) || NIP=""
+}
 echo "new egress: ${NIP:-?}"
 resume_keeper
 
@@ -118,9 +137,23 @@ if [ -z "$NIP" ]; then
   w disconnect
   exit 1
 fi
-if [ "$NIP" != "$OLD" ]; then
-  echo "== FRESH IDENTITY ✓ — re-send your message =="
+if ! is_warp_ip "$NIP"; then
+  echo "-- egress is not cloudflare ($NIP) — the tunnel did not come up; not a rotation --"
+  w disconnect
+  exit 1
+fi
+NEW_DEV=$(cur_device)
+# cloudflare's free pool is four addresses. the quota follows the registration
+# (device id), not the address, so a repeated ip with a new device id is still
+# a fresh identity.
+if [ -n "$NEW_DEV" ] && [ "$NEW_DEV" != "$OLD_DEV" ]; then
+  echo "== FRESH IDENTITY ✓  device ${OLD_DEV:0:8}… → ${NEW_DEV:0:8}…  egress $NIP =="
+  echo "   re-send your message"
   exit 0
 fi
-echo "== cloudflare handed back the same block — run me again =="
+if [ "$NIP" != "$OLD" ]; then
+  echo "== new egress $NIP, but the device id did not change — run me again =="
+  exit 1
+fi
+echo "== cloudflare handed back the same block and device — run me again =="
 exit 1
