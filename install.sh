@@ -64,6 +64,15 @@ if ! sudo -n true 2>/dev/null; then
     die "sudo failed — run me from a real terminal"
   fi
 fi
+# sudo that works from a terminal, an askpass helper, or piped stdin
+s(){
+  if sudo -n true 2>/dev/null; then sudo "$@"
+  elif [ -n "${SUDO_ASKPASS:-}" ] && sudo -A true 2>/dev/null; then sudo -A "$@"
+  elif [ -t 0 ]; then sudo "$@"
+  else sudo -S "$@"
+  fi
+}
+
 # keep the sudo timestamp alive for the whole install
 ( while true; do sudo -n true 2>/dev/null || exit; sleep 50; done ) &
 SUDO_KEEP=$!
@@ -106,7 +115,7 @@ fi
 # reject a 0-byte stub (this is what broke the previous install)
 if [ -n "$WARP" ] && [ ! -s "$WARP" ]; then
   warn "found 0-byte stub at $WARP — removing"
-  sudo rm -f "$WARP"
+  s rm -f "$WARP"
   WARP=""
 fi
 if [ -z "$WARP" ]; then
@@ -125,8 +134,8 @@ fi
 # warp-cli callers: some boxes wrap warp-cli with a shim that already passes
 # --accept-tos, and passing it twice makes the CLI die. so: try with the
 # flag first (fresh installs need it), fall back to without (shimmed boxes).
-w(){  sudo -n "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; sudo -n "$WARP" "$@" >/dev/null 2>&1; }
-wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP" "$@" 2>/dev/null; }
+w(){  sudo -n "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; sudo -A "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; sudo -A "$WARP" "$@" >/dev/null 2>&1; }
+wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -A "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -A "$WARP" "$@" 2>/dev/null; }
 
 # ---------------------------------------------------------------- scripts
 mkdir -p "$DEST/scripts" "$HOME/.local/bin" "$GUARD_DIR"
@@ -173,9 +182,9 @@ SUDOERS_NEED="$USER ALL=(root) NOPASSWD: $WARP, /sbin/pfctl -a OUC_LEAKGUARD -s 
 SUDOERS_NOW="$(sudo -n cat "$SUDOERS_FILE" 2>/dev/null || echo '')"
 if [ "$SUDOERS_NOW" != "$SUDOERS_NEED" ]; then
   say "sudoers: passwordless warp-cli + pf read/flush + hosts pin"
-  printf '%s\n' "$SUDOERS_NEED" | sudo tee "$SUDOERS_FILE" >/dev/null
-  sudo chmod 440 "$SUDOERS_FILE"
-  sudo visudo -c >/dev/null 2>&1 || { sudo rm -f "$SUDOERS_FILE"; die "sudoers rejected — this should never happen"; }
+  printf '%s\n' "$SUDOERS_NEED" | s tee "$SUDOERS_FILE" >/dev/null
+  s chmod 440 "$SUDOERS_FILE"
+  s visudo -c >/dev/null 2>&1 || { s rm -f "$SUDOERS_FILE"; die "sudoers rejected — this should never happen"; }
 fi
 wo status >/dev/null 2>&1 || die "passwordless warp-cli did not work — check $SUDOERS_FILE"
 ok "passwordless warp-cli works"
@@ -261,11 +270,11 @@ cat > /tmp/ouc-keeper.plist <<EOF
 </dict>
 </plist>
 EOF
-sudo install -m 644 -o root -g wheel /tmp/ouc-keeper.plist "$DAEMON_PLIST" || die "could not install keeper plist"
+s install -m 644 -o root -g wheel /tmp/ouc-keeper.plist "$DAEMON_PLIST" || die "could not install keeper plist"
 rm -f /tmp/ouc-keeper.plist
-sudo launchctl bootout system/"$DAEMON_LABEL" >/dev/null 2>&1 || true
-sudo launchctl bootstrap system "$DAEMON_PLIST" >/dev/null 2>&1 \
-  || sudo launchctl load -w "$DAEMON_PLIST" >/dev/null 2>&1 || true
+s launchctl bootout system/"$DAEMON_LABEL" >/dev/null 2>&1 || true
+s launchctl bootstrap system "$DAEMON_PLIST" >/dev/null 2>&1 \
+  || s launchctl load -w "$DAEMON_PLIST" >/dev/null 2>&1 || true
 launchctl print system/"$DAEMON_LABEL" >/dev/null 2>&1 \
   && ok "keeper daemon (root): running" \
   || die "keeper did not start — check: sudo launchctl print system/$DAEMON_LABEL"
