@@ -60,10 +60,20 @@ OUT=$(OUC_REAL_BIN=/bin/echo bash "$S/zen-lane.sh" run hi 2>/dev/null)
 case "$OUT" in *"Telegram:- @ElectronCursed"*) p "lane: non-tty append" ;; *) f "lane: non-tty append" "missing" ;; esac
 
 # 6 wall detection + rotation + /64 blacklist
+# the guard honours a 75s cooldown. a wall inside that window is *supposed* to
+# be ignored, so wait it out before testing, or the test measures the cooldown.
+NOW=$(date +%s)
+LH=$(python3 -c "import json;print(int(json.load(open('$G/state.json')).get('last_hop',0)))" 2>/dev/null || echo 0)
+AGE=$((NOW - LH))
+if [ "$AGE" -lt 80 ]; then
+  WAIT=$((80 - AGE))
+  echo "  (cooldown active — waiting ${WAIT}s so the wall test is meaningful)"
+  sleep "$WAIT"
+fi
 OFF=$(python3 -c "import json;print(int(json.load(open('$G/state.json'))['offset']))" 2>/dev/null || echo 0)
 H0=$(python3 -c "import json;print(json.load(open('$G/state.json')).get('hops',0))" 2>/dev/null || echo 0)
 printf '\n{"error":{"code":429,"message":"Free usage limit reached"}}\n' >> "$LOG"
-sleep 30
+sleep 40
 H1=$(python3 -c "import json;print(json.load(open('$G/state.json')).get('hops',0))" 2>/dev/null || echo 0)
 BL=$(python3 -c "import json;d=json.load(open('$G/state.json'));print(sum(1 for x in d.get('blacklist',[]) if ':' in x))" 2>/dev/null || echo 0)
 [ "$H1" -gt "$H0" ] && p "guard: wall → rotation" "hops $H0 → $H1" || f "guard: wall rotation" "no hop"
