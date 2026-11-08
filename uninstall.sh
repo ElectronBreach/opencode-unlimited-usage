@@ -17,8 +17,8 @@ ANCHOR_NAME="OUC_LEAKGUARD"
 ANCHOR="/etc/pf.anchors/$ANCHOR_NAME"
 PF_CONF="/etc/pf.conf"
 
-ok(){ echo -e "  \e[32m✓\e[0m $*"; }
-warn(){ echo -e "  \e[33m!\e[0m $*"; }
+ok(){ printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn(){ printf '  \033[33m!\033[0m %s\n' "$*"; }
 
 # sudo that works from a terminal, an askpass helper, or piped stdin
 s(){
@@ -51,6 +51,13 @@ s launchctl bootout system/"$DAEMON_LABEL" >/dev/null 2>&1 && ok "keeper stopped
 s rm -f "$DAEMON_PLIST"
 
 # DNS back to the captured baseline BEFORE the state dir goes away
+if [ ! -f "$GUARD_DIR/dns-baseline.txt" ]; then
+  for svc in $(networksetup -listallnetworkservices 2>/dev/null | tail -n +2); do
+    case "$svc" in \**) continue ;; esac
+    s networksetup -setdnsservers "$svc" Empty >/dev/null 2>&1 || true
+  done
+  ok "dns reset to dhcp (no baseline was recorded)"
+fi
 if [ -f "$GUARD_DIR/dns-baseline.txt" ]; then
   while IFS=$'\t' read -r svc servers; do
     [ -n "$svc" ] || continue
@@ -83,17 +90,16 @@ s rm -f "$ANCHOR" "$PF_CONF.ouc.bak"
 ok "leak guard removed (pf back to stock)"
 
 # sudoers entry
-s rm -f "/etc/sudoers.d/$BRAND" && ok "sudoers entry removed"
+s rm -f "/etc/sudoers.d/$BRAND" "/etc/sudoers.d/${BRAND}-mac" && ok "sudoers entry removed (both names)"
 
-# wrapper — restore direct access to the real binary if it still exists
+# wrapper — remove it outright. keeping a passthrough shim meant the entry
+# survived every uninstall and could shadow a reinstall.
+rm -f "$HOME/.local/bin/opencode"
 REAL="$(resolve_real_opencode)"
 if [ -n "$REAL" ]; then
-  printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$REAL" > "$HOME/.local/bin/opencode"
-  chmod +x "$HOME/.local/bin/opencode"
-  ok "opencode entry → stock binary ($REAL)"
+  ok "opencode entry removed (stock binary still at $REAL)"
 else
-  rm -f "$HOME/.local/bin/opencode"
-  warn "opencode entry removed (no real binary found to restore)"
+  warn "opencode entry removed (no real binary found on PATH)"
 fi
 
 # credit file (ours only — if the user added their own rules, those stay)
@@ -104,12 +110,32 @@ fi
 
 # PATH tools
 rm -f "$HOME/.local/bin/${BRAND}-hop" "$HOME/.local/bin/${BRAND}-doctor"
+rm -f "$HOME/.opencode/bin/${BRAND}-hop" "$HOME/.opencode/bin/${BRAND}-doctor"
+rm -f "$HOME/.local/bin/${BRAND}-killswitch" "$HOME/.local/bin/${BRAND}-uninstall"
+rm -f "$HOME/.local/bin/${BRAND}-mac" 2>/dev/null || true
+rm -rf "$HOME/.local/share/${BRAND}-mac"
 
 # scripts + state. leave warp itself installed (it's a normal app now) —
+# a lane killed with -9 skips its trap and leaves a marked block in /etc/hosts.
+# strip it here so an uninstalled machine never keeps opencode.ai pinned to an
+# edge that no longer exists.
+if grep -qF "# >>> opencode-unlimited lane >>>" /etc/hosts 2>/dev/null; then
+  HOSTS_TMP=$(mktemp /tmp/ouc-hosts.XXXXXX 2>/dev/null) || HOSTS_TMP=""
+  if [ -n "$HOSTS_TMP" ]; then
+    awk -v b="# >>> opencode-unlimited lane >>>" -v e="# <<< opencode-unlimited lane <<<" '
+      $0==b{skip=1;next} skip&&$0==e{skip=0;next} !skip{print}' /etc/hosts > "$HOSTS_TMP"
+    s /bin/cp "$HOSTS_TMP" /etc/hosts && ok "stale lane pin removed from /etc/hosts"
+    rm -f "$HOSTS_TMP"
+    s dscacheutil -flushcache >/dev/null 2>&1 || true
+    s killall -HUP mDNSResponder >/dev/null 2>&1 || true
+  fi
+fi
+
 # disconnect the tunnel so traffic goes back to your real IP.
 rm -rf "$DEST" && ok "scripts + guard state removed"
 if command -v warp-cli >/dev/null 2>&1; then
   s warp-cli --accept-tos disconnect >/dev/null 2>&1 && ok "warp tunnel disconnected (app left installed)"
+osascript -e 'tell application "System Events" to delete login item "Cloudflare WARP"' >/dev/null 2>&1 || true
 fi
 dscacheutil -flushcache >/dev/null 2>&1 || true
 

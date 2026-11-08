@@ -197,6 +197,32 @@ re-bootstraps `com.cloudflare.1dot1dot1dot1.macos.warp.daemon` if the daemon
 ever goes missing. The installer also removes it from your login items so the
 window does not come back at boot.
 
+## Reliability notes (macOS)
+
+**The guard cannot silently vanish.** `launchctl bootout` is asynchronous, so
+the installer waits for the domain to release the label, retries `bootstrap`,
+and re-verifies after a settle window. The root keeper also checks every slow
+tick that `gui/<uid>/com.opencode-unlimited.guard` is registered and
+re-bootstraps it as the install user if it is not.
+
+**A dead lane cannot leave a pin behind.** `/etc/hosts` pins are owned by a
+pid file (`guard/lane.pid`). A lane killed with `-9` skips its trap, so the
+keeper sweeps any marked block with no live owner on its next fast tick.
+Uninstall removes the block too.
+
+**PATH tools resolve in terminals that are already open.** `${BRAND}-hop` and
+`${BRAND}-doctor` are linked into both `~/.local/bin` and `~/.opencode/bin`
+(the latter is normally first on an opencode shell's PATH).
+
+**Uninstall leaves nothing.** Shim deleted (not rewritten), both sudoers file
+names removed, legacy `-mac` paths and dangling symlinks removed, DNS reset to
+DHCP when no baseline was recorded.
+
+**Apple Silicon.** Every component is arm64-native or a universal binary. The
+cask puts `warp-cli` in `/usr/local/bin`; scripts fall back to
+`/opt/homebrew/bin` and then to the bundled
+`/Applications/Cloudflare WARP.app/Contents/Resources/warp-cli`.
+
 ## Uninstall
 
 ```bash

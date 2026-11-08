@@ -19,7 +19,7 @@ BASELINE="$STATE_DIR/dns-baseline.txt"
 WARP="${OUC_WARP_BIN:-}"
 if [ -z "$WARP" ] || [ ! -s "$WARP" ] || ! "$WARP" --version >/dev/null 2>&1; then
   WARP=""
-  for c in "$(command -v warp-cli 2>/dev/null)" /usr/local/bin/warp-cli /opt/homebrew/bin/warp-cli; do
+  for c in "$(command -v warp-cli 2>/dev/null)" /usr/local/bin/warp-cli /opt/homebrew/bin/warp-cli "/Applications/Cloudflare WARP.app/Contents/Resources/warp-cli"; do
     [ -n "$c" ] && [ -x "$c" ] && [ -s "$c" ] || continue
     "$c" --version >/dev/null 2>&1 || continue
     WARP="$c"; break

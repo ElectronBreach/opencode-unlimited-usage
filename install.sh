@@ -27,9 +27,37 @@ REPO="https://github.com/ElectronBreach/opencode-unlimited-usage"
 RAW="https://raw.githubusercontent.com/ElectronBreach/opencode-unlimited-usage/macos"
 
 say(){ echo -e "  $*"; }
-ok(){ echo -e "  \e[32m✓\e[0m $*"; }
-warn(){ echo -e "  \e[33m!\e[0m $*"; }
-bad(){ echo -e "  \e[31m✗\e[0m $*"; }
+
+# launchctl bootout is asynchronous: bootstrapping the same label 100ms later
+# can fail on a still-tearing-down service, and the legacy `load -w` fallback
+# "succeeds" in a compatibility mode launchd then reaps seconds later — which
+# looks exactly like a healthy agent that vanishes after install. wait for the
+# domain to actually release the label, then bootstrap with retries, then
+# verify twice with a delay.
+bootout_wait(){
+  local domain="$1" label="$2" i
+  launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
+  for i in $(seq 1 40); do
+    launchctl print "$domain/$label" >/dev/null 2>&1 || return 0
+    sleep 0.25
+  done
+  return 0
+}
+
+bootstrap_verified(){
+  local domain="$1" plist="$2" label="$3" i
+  for i in 1 2 3 4 5; do
+    launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1 || true
+    sleep 1
+    launchctl print "$domain/$label" >/dev/null 2>&1 || { sleep 1; continue; }
+    sleep 2          # survive the reaping window before trusting it
+    launchctl print "$domain/$label" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+ok(){ printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn(){ printf '  \033[33m!\033[0m %s\n' "$*"; }
+bad(){ printf '  \033[31m✗\033[0m %s\n' "$*"; }
 die(){ bad "$*"; exit 1; }
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd)"
@@ -158,8 +186,18 @@ chmod +x "$DEST/scripts/"*.sh
 # scripts pick the warp binary themselves (OUC_WARP_BIN env if the service
 # provides one, else standard paths). no baking — sed-editing scripts after
 # download is how you ship a broken script.
+mkdir -p "$HOME/.local/bin"
 ln -sf "$DEST/scripts/zen-hop.sh" "$HOME/.local/bin/${BRAND}-hop"
 ln -sf "$DEST/scripts/doctor.sh"  "$HOME/.local/bin/${BRAND}-doctor"
+
+# second home: ~/.opencode/bin is already first on PATH in a typical opencode
+# shell, and it exists even when an older terminal was started before
+# ~/.local/bin was added to PATH. linking here means the commands resolve in
+# terminals that are already open, not only in new ones.
+if [ -d "$HOME/.opencode/bin" ]; then
+  ln -sf "$DEST/scripts/zen-hop.sh" "$HOME/.opencode/bin/${BRAND}-hop"
+  ln -sf "$DEST/scripts/doctor.sh"  "$HOME/.opencode/bin/${BRAND}-doctor"
+fi
 ok "scripts in $DEST"
 
 # ---------------------------------------------------------------- DNS baseline
@@ -278,9 +316,20 @@ EOF
 s install -m 644 -o root -g wheel /tmp/ouc-keeper.plist "$DAEMON_PLIST" || die "could not install keeper plist"
 rm -f /tmp/ouc-keeper.plist
 s launchctl bootout system/"$DAEMON_LABEL" >/dev/null 2>&1 || true
-s launchctl bootstrap system "$DAEMON_PLIST" >/dev/null 2>&1 \
-  || s launchctl load -w "$DAEMON_PLIST" >/dev/null 2>&1 || true
-launchctl print system/"$DAEMON_LABEL" >/dev/null 2>&1 \
+for i in $(seq 1 40); do
+  s launchctl print system/"$DAEMON_LABEL" >/dev/null 2>&1 || break
+  sleep 0.25
+done
+DAEMON_OK=0
+for i in 1 2 3 4 5; do
+  s launchctl bootstrap system "$DAEMON_PLIST" >/dev/null 2>&1 || true
+  sleep 1
+  if s launchctl print system/"$DAEMON_LABEL" >/dev/null 2>&1; then
+    sleep 2
+    s launchctl print system/"$DAEMON_LABEL" >/dev/null 2>&1 && { DAEMON_OK=1; break; }
+  fi
+done
+[ "$DAEMON_OK" = "1" ] \
   && ok "keeper daemon (root): running" \
   || die "keeper did not start — check: sudo launchctl print system/$DAEMON_LABEL"
 
@@ -311,10 +360,8 @@ cat > "$AGENT_PLIST" <<EOF
 </plist>
 EOF
 plutil -lint "$AGENT_PLIST" >/dev/null 2>&1 || die "guard plist invalid"
-launchctl bootout "gui/$(id -u)/$AGENT_LABEL" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" >/dev/null 2>&1 \
-  || launchctl load -w "$AGENT_PLIST" >/dev/null 2>&1 || true
-launchctl print "gui/$(id -u)/$AGENT_LABEL" >/dev/null 2>&1 \
+bootout_wait "gui/$(id -u)" "$AGENT_LABEL"
+bootstrap_verified "gui/$(id -u)" "$AGENT_PLIST" "$AGENT_LABEL" \
   && ok "zen-guard agent (user): running" \
   || die "guard did not start — check: launchctl print gui/$(id -u)/$AGENT_LABEL"
 

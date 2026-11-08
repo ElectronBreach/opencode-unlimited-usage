@@ -17,6 +17,7 @@ if [ -z "$WARP" ]; then
   if command -v warp-cli >/dev/null 2>&1; then WARP="$(command -v warp-cli)"
   elif [ -x /usr/local/bin/warp-cli ]; then WARP=/usr/local/bin/warp-cli
   elif [ -x /opt/homebrew/bin/warp-cli ]; then WARP=/opt/homebrew/bin/warp-cli
+  elif [ -x "/Applications/Cloudflare WARP.app/Contents/Resources/warp-cli" ]; then WARP="/Applications/Cloudflare WARP.app/Contents/Resources/warp-cli"
   fi
 fi
 [ -n "$WARP" ] || { echo "warp-cli not found"; exit 1; }

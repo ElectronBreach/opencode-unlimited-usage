@@ -19,7 +19,7 @@ set -u
 WARP="${OUC_WARP_BIN:-}"
 if [ -z "$WARP" ] || [ ! -s "$WARP" ] || ! "$WARP" --version >/dev/null 2>&1; then
   WARP=""
-  for c in "$(command -v warp-cli 2>/dev/null)" /usr/local/bin/warp-cli /opt/homebrew/bin/warp-cli; do
+  for c in "$(command -v warp-cli 2>/dev/null)" /usr/local/bin/warp-cli /opt/homebrew/bin/warp-cli "/Applications/Cloudflare WARP.app/Contents/Resources/warp-cli"; do
     [ -n "$c" ] && [ -x "$c" ] && [ -s "$c" ] || continue
     "$c" --version >/dev/null 2>&1 || continue
     WARP="$c"; break
@@ -133,6 +133,37 @@ ensure_daemon(){
   daemon_up
 }
 
+CF_GUARD_LABEL="com.opencode-unlimited.guard"
+
+# the user LaunchAgent can lose its registration (legacy load, a reaped
+# compatibility job, a domain reset after login). the guard is the thing that
+# rotates on the wall, so the root keeper watches it and puts it back.
+guard_owner(){ stat -f %Su "$GUARD_DIR" 2>/dev/null; }
+user_home(){
+  local h
+  h=$(dscl . -read "/Users/$1" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+  [ -n "$h" ] || h="/Users/$1"
+  printf '%s' "$h"
+}
+
+ensure_guard(){
+  local u uid plist
+  u=$(guard_owner); [ -n "$u" ] || return 0
+  [ "$u" = "root" ] && return 0
+  uid=$(id -u "$u" 2>/dev/null) || return 0
+  plist="$(user_home "$u")/Library/LaunchAgents/$CF_GUARD_LABEL.plist"
+  [ -f "$plist" ] || return 0
+  launchctl print "gui/$uid/$CF_GUARD_LABEL" >/dev/null 2>&1 && return 0
+  launchctl asuser "$uid" launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1 \
+    || launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1 || true
+  sleep 2
+  if launchctl print "gui/$uid/$CF_GUARD_LABEL" >/dev/null 2>&1; then
+    klog "zen-guard agent was not registered — re-bootstrapped it"
+    return 0
+  fi
+  return 1
+}
+
 ensure_connected(){
   connected && return 0
   w connect; sleep 4
@@ -143,6 +174,37 @@ ensure_connected(){
   w connect
   sleep 5
   connected
+}
+
+# ---------------------------------------------------------------- hosts ------
+# the lane pins a cloudflare edge into /etc/hosts and removes it on exit. a
+# lane killed with -9 never runs its trap, so the root loop sweeps any block
+# no live lane owns. a pinned edge is not a lockout (dns still answers for
+# everyone else) but a stale pin freezes the edge and must not outlive it.
+HOSTS_BEGIN="# >>> opencode-unlimited lane >>>"
+HOSTS_END="# <<< opencode-unlimited lane <<<"
+
+LANE_PID="$GUARD_DIR/lane.pid"
+
+lane_live(){
+  local pid
+  pid=$(cat "$LANE_PID" 2>/dev/null) || return 1
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  ps -o command= -p "$pid" 2>/dev/null | grep -q "zen-lane.sh"
+}
+
+sweep_hosts(){
+  grep -qF "$HOSTS_BEGIN" /etc/hosts 2>/dev/null || return 0
+  lane_live && return 0
+  local tmp edge
+  tmp=$(mktemp /tmp/ouc-hosts.XXXXXX 2>/dev/null) || return 1
+  awk -v b="$HOSTS_BEGIN" -v e="$HOSTS_END" '
+    $0==b{skip=1;next} skip&&$0==e{skip=0;next} !skip{print}' /etc/hosts > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  /bin/cp "$tmp" /etc/hosts 2>/dev/null && klog "stale lane pin removed from /etc/hosts (no live lane owns it)"
+  rm -f "$tmp"
+  dscacheutil -flushcache >/dev/null 2>&1 || true
+  killall -HUP mDNSResponder >/dev/null 2>&1 || true
 }
 
 # ---------------------------------------------------------------- guard ------
@@ -212,6 +274,11 @@ arm_guard(){
 
 disarm_guard(){ pfctl -a "$ANCHOR_NAME" -F all >/dev/null 2>&1; }
 
+# "armed" means visible in the LIVE ruleset, not merely present on disk — a
+# manually flushed anchor still has its file and its pf.conf line.
+guard_live(){ pfctl -a "$ANCHOR_NAME" -s rules 2>/dev/null | grep -q .; }
+pfconf_armed(){ grep -q "load anchor \"$ANCHOR_NAME\"" "$PF_CONF" 2>/dev/null; }
+
 paused(){
   [ -f "$PAUSE" ] || return 1
   local age
@@ -240,6 +307,8 @@ loops=0
 
 while true; do
   if paused; then sleep "$FAST"; continue; fi
+
+  sweep_hosts
 
   # ---- health: DNS first, then egress -------------------------------------
   if raw_ok; then
@@ -279,6 +348,7 @@ while true; do
   loops=0
 
   ensure_mode
+  ensure_guard
 
   if ! daemon_up && ! ensure_daemon; then
     klog "warp daemon unreachable — flushing guard, keeping direct egress"

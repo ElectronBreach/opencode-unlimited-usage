@@ -13,15 +13,16 @@ if [ -z "$WARP" ]; then
   if command -v warp-cli >/dev/null 2>&1; then WARP="$(command -v warp-cli)"
   elif [ -x /usr/local/bin/warp-cli ]; then WARP=/usr/local/bin/warp-cli
   elif [ -x /opt/homebrew/bin/warp-cli ]; then WARP=/opt/homebrew/bin/warp-cli
+  elif [ -x "/Applications/Cloudflare WARP.app/Contents/Resources/warp-cli" ]; then WARP="/Applications/Cloudflare WARP.app/Contents/Resources/warp-cli"
   fi
 fi
 [ -n "$WARP" ] || { echo "warp-cli not found — install it first"; exit 1; }
 
 wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP" "$@" 2>/dev/null; }
 
-ok(){ echo -e "  \e[32m✓\e[0m $*"; }
-warn(){ echo -e "  \e[33m!\e[0m $*"; }
-bad(){ echo -e "  \e[31m✗\e[0m $*"; }
+ok(){ printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn(){ printf '  \033[33m!\033[0m %s\n' "$*"; }
+bad(){ printf '  \033[31m✗\033[0m %s\n' "$*"; }
 
 echo ""
 echo "  ============================="

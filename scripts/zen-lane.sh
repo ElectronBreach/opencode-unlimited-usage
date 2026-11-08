@@ -97,6 +97,10 @@ strip_block(){
     $0==b{skip=1;next} skip&&$0==e{skip=0;next} !skip{print}' "$src" > "$dst" 2>/dev/null
 }
 
+# the root keeper sweeps a pin whose lane died hard (-9 skips the trap), so
+# the pin is owned by a pid file rather than a guess at the process table
+LANE_PID="$HOME/.local/share/opencode-unlimited/guard/lane.pid"
+
 restore_hosts(){
   [ "$PINNED" = "1" ] || return 0
   local tmp
@@ -104,6 +108,7 @@ restore_hosts(){
   strip_block /etc/hosts "$tmp"
   sudo -n /bin/cp "$tmp" /etc/hosts 2>/dev/null
   rm -f "$tmp"
+  [ "$(cat "$LANE_PID" 2>/dev/null)" = "$$" ] && rm -f "$LANE_PID" 2>/dev/null
   PINNED=0
 }
 trap restore_hosts EXIT INT TERM HUP
@@ -123,6 +128,8 @@ if [ -n "$EDGE" ]; then
     # `sudo -n true` (which is not in the grant and always fails)
     if sudo -n /bin/cp "$tmp" /etc/hosts 2>/dev/null; then
       PINNED=1
+      mkdir -p "$(dirname "$LANE_PID")" 2>/dev/null || true
+      printf '%s\n' "$$" > "$LANE_PID" 2>/dev/null || true
       dscacheutil -flushcache >/dev/null 2>&1 || true
     fi
     rm -f "$tmp"
