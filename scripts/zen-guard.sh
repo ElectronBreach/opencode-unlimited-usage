@@ -119,14 +119,27 @@ restore_dns(){
   glog "dns: baseline restored + cache flushed"
 }
 
+reg_present(){ wo registration show 2>/dev/null | grep -qi "ID:"; }
+
+clear_registration(){
+  local i
+  for i in 1 2 3 4 5; do
+    w registration delete
+    sleep 2
+    reg_present || return 0
+  done
+  return 1
+}
+
 hop_once(){
   pause_keeper
   w disconnect
-  w registration delete
+  clear_registration
   local ok=0 i
   for i in 1 2 3; do
-    w registration new && { ok=1; break; }
-    sleep 6
+    if ! reg_present && w registration new; then ok=1; break; fi
+    clear_registration
+    sleep 4
   done
   w connect
   resume_keeper

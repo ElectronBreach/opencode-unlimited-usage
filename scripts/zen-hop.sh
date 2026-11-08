@@ -34,22 +34,62 @@ cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }
 OLD=$(cur_ip)
 echo "old egress: ${OLD:-?}"
 
+# a plain `registration delete` then `registration new` is a race: the daemon
+# re-creates or keeps the blob for a moment and `new` answers "Old registration
+# is still around" five times in a row. delete, confirm it is actually gone,
+# then register — and re-clear whenever the daemon hands the old one back.
+reg_present(){ wo registration show 2>/dev/null | grep -qi "ID:"; }
+
+wait_disconnected(){
+  local i
+  for i in $(seq 1 10); do
+    wo status 2>/dev/null | head -1 | grep -q Disconnected && return 0
+    sleep 1
+  done
+  return 1
+}
+
+clear_registration(){
+  local i
+  for i in 1 2 3 4 5; do
+    w registration delete
+    sleep 2
+    reg_present || return 0
+  done
+  return 1
+}
+
+reg_new_err=""
+register_fresh(){
+  local i out
+  clear_registration
+  for i in 1 2 3 4 5; do
+    out=$(sudo -n "$WARP" --accept-tos registration new 2>&1 \
+          || sudo -n "$WARP" registration new 2>&1)
+    rc=$?
+    # success is the command's exit status. a fresh registration obviously
+    # shows an ID afterwards — checking "no ID" here was the bug.
+    if [ "$rc" -eq 0 ]; then return 0; fi
+    reg_new_err=$(printf '%s' "$out" | tail -1)
+    case "$out" in *"still around"*|*"already"*) clear_registration ;; esac
+    sleep 3
+  done
+  return 1
+}
+
 pause_keeper
 echo "-- rotating (keeper paused) --"
 w disconnect
-w registration delete
-NEW=0
-for i in 1 2 3 4 5; do
-  w registration new && { NEW=1; break; }
-  echo "  attempt $i failed"; sleep 8
-done
-if [ "$NEW" != 1 ]; then
-  echo "-- registration failed — disconnecting so direct egress wins --"
+wait_disconnected || true
+if register_fresh; then
+  w connect
+else
+  echo "-- registration failed: ${reg_new_err:-unknown} --"
+  echo "-- disconnecting so direct egress wins --"
   w disconnect
   resume_keeper
   exit 1
 fi
-w connect
 
 for i in $(seq 1 20); do
   sleep 3

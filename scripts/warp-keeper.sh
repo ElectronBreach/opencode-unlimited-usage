@@ -164,13 +164,36 @@ ensure_guard(){
   return 1
 }
 
+reg_present(){ wo registration show 2>/dev/null | grep -qi "ID:"; }
+
+clear_registration(){
+  local i
+  for i in 1 2 3 4 5; do
+    w registration delete
+    sleep 2
+    reg_present || return 0
+  done
+  return 1
+}
+
 ensure_connected(){
   connected && return 0
   w connect; sleep 4
   connected && return 0
   w disconnect
-  w registration delete
-  w registration new || return 1
+  local i
+  for i in 1 2 3 4 5; do
+    wo status 2>/dev/null | head -1 | grep -q Disconnected && break
+    sleep 1
+  done
+  clear_registration
+  local ok=0
+  for i in 1 2 3 4 5; do
+    if ! reg_present && w registration new; then ok=1; break; fi
+    clear_registration
+    sleep 3
+  done
+  [ "$ok" = "1" ] || return 1
   w connect
   sleep 5
   connected
