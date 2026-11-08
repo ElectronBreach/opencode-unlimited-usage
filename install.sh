@@ -24,7 +24,7 @@ AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 SHIM="$HOME/.local/bin/opencode"
 SUDOERS_FILE="/etc/sudoers.d/$BRAND"
 REPO="https://github.com/ElectronBreach/opencode-unlimited-usage"
-RAW="https://raw.githubusercontent.com/ElectronBreach/opencode-unlimited-usage/main"
+RAW="https://raw.githubusercontent.com/ElectronBreach/opencode-unlimited-usage/macos"
 
 say(){ echo -e "  $*"; }
 ok(){ echo -e "  \e[32m✓\e[0m $*"; }
@@ -144,10 +144,14 @@ if [ -n "$SRC" ]; then
   [ -f "$SRC/AGENTS.md" ] && cp "$SRC/AGENTS.md" "$DEST/AGENTS.md"
 else
   say "fetching scripts from github"
-  for f in warp-keeper.sh zen-lane.sh zen-guard.sh zen-hop.sh doctor.sh; do
+  for f in warp-keeper.sh zen-lane.sh zen-guard.sh zen-hop.sh doctor.sh audit.sh; do
     curl -fsSL "$RAW/scripts/$f" -o "$DEST/scripts/$f" || die "could not fetch $f"
   done
   curl -fsSL "$RAW/AGENTS.md" -o "$DEST/AGENTS.md" 2>/dev/null || true
+  # the branch must actually be the macOS one, not linux scripts from main
+  grep -q "launchctl" "$DEST/scripts/warp-keeper.sh" \
+    || grep -q "launchd" "$DEST/scripts/warp-keeper.sh" \
+    || die "fetched linux scripts from $RAW — this installer needs the macos branch"
 fi
 chmod +x "$DEST/scripts/"*.sh
 
