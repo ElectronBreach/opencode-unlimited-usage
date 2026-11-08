@@ -34,12 +34,18 @@ cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }
 # warp hands out cloudflare ranges. anything else means the tunnel is not up
 # and the "new" address is your own ISP — never report that as a rotation.
 is_warp_ip(){ case "${1:-}" in 104.28.*|162.159.*|172.64.*|188.114.*|2a09:*|2606:*) return 0;; *) return 1;; esac; }
+warp_prefix(){
+  ifconfig 2>/dev/null | awk '/^utun/{i=$1} /inet6 26[0-9a-f]*:/{print $2}' \
+    | head -1 | cut -d/ -f1 | awk -F: '{print $1":"$2":"$3":"$4}'
+}
+
 
 cur_device(){ wo registration show 2>/dev/null | awk '/^ID:/{print $2; exit}'; }
 
 OLD=$(cur_ip)
 OLD_DEV=$(cur_device)
-echo "old egress: ${OLD:-?}"
+OLD_PFX=$(warp_prefix)
+echo "old egress: ${OLD:-?}  /64 ${OLD_PFX:-none}"
 
 # a plain `registration delete` then `registration new` is a race: the daemon
 # re-creates or keeps the blob for a moment and `new` answers "Old registration
@@ -161,7 +167,7 @@ NEW_DEV=$(cur_device)
 # (device id), not the address, so a repeated ip with a new device id is still
 # a fresh identity.
 if [ -n "$NEW_DEV" ] && [ "$NEW_DEV" != "$OLD_DEV" ]; then
-  echo "== FRESH IDENTITY ✓  device ${OLD_DEV:0:8}… → ${NEW_DEV:0:8}…  egress $NIP =="
+  echo "== FRESH IDENTITY ✓  device ${OLD_DEV:0:8}… → ${NEW_DEV:0:8}…  egress $NIP  /64 $(warp_prefix) =="
   echo "   re-send your message"
   exit 0
 fi

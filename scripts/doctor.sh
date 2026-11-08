@@ -58,6 +58,9 @@ case "$MODE" in
   *)          warn "warp mode: $MODE" ;;
 esac
 
+PFX=$(ifconfig 2>/dev/null | awk '/^utun/{i=$1} /inet6 26[0-9a-f]*:/{print $2}' | head -1 | cut -d/ -f1 | awk -F: '{print $1":"$2":"$3":"$4}')
+if [ -n "$PFX" ]; then ok "warp ipv6 /64: $PFX (quota key)"; else warn "warp ipv6 /64: none — falling back to the 4 v4 addresses"; fi
+
 # ---- leak guard (opt-in)
 if [ -f /etc/pf.anchors/OUC_LEAKGUARD ]; then
   RULES=$(sudo -n /sbin/pfctl -a OUC_LEAKGUARD -s rules 2>/dev/null | grep -c . )

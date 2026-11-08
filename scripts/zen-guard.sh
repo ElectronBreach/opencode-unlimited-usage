@@ -63,6 +63,11 @@ os.replace(t,p)" "$2" 2>/dev/null; }
 
 cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }
 cur_device(){ wo registration show 2>/dev/null | awk '/^ID:/{print $2; exit}'; }
+warp_prefix(){
+  ifconfig 2>/dev/null | awk '/^utun/{i=$1} /inet6 26[0-9a-f]*:/{print $2}' \
+    | head -1 | cut -d/ -f1 | awk -F: '{print $1":"$2":"$3":"$4}'
+}
+
 
 # warp hands out cloudflare ranges; anything else is direct ISP egress and
 # must never be blacklisted or rotated
@@ -236,8 +241,12 @@ while true; do
   fi
 
   OLD=$(cur_ip)
-  glog "wall detected — rotating (was: ${OLD:-?})"
-  [ -n "$OLD" ] && is_warp_ip "$OLD" && blacklist_add "$OLD"
+  OLD_BLOCK=$(warp_prefix)
+  [ -n "$OLD_BLOCK" ] || OLD_BLOCK="$OLD"
+  glog "wall detected — rotating (was: ${OLD:-?} /64 ${OLD_BLOCK:-?})"
+  # the /64 is the bucket, exactly like the linux build. fall back to the v4
+  # address only when the tunnel has no v6 address at all.
+  [ -n "$OLD_BLOCK" ] && is_warp_ip "$OLD_BLOCK" && blacklist_add "$OLD_BLOCK"
 
   NEW=""
   DEV_BEFORE=$(cur_device)
@@ -277,6 +286,8 @@ while true; do
   if [ -n "$NEW" ]; then
     state_set last_hop "$NOW"
     state_set current "$NEW"
+    NPFX=$(warp_prefix)
+    [ -n "$NPFX" ] && state_set prefix "$NPFX"
     H=$(state_get hops); H=${H:-0}; H=$((H + 1))
     state_set hops "$H"
     glog "rotated #$H: ${OLD:-?} → $NEW ✓"

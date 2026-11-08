@@ -230,6 +230,12 @@ Uninstall removes the block too.
 names removed, legacy `-mac` paths and dangling symlinks removed, DNS reset to
 DHCP when no baseline was recorded.
 
+**The rotation key is the warp /64.** Cloudflare hands a fresh IPv6 /64 on
+every registration (`2606:4700:110:xxxx::/64`), and only a v6 request carries
+that prefix to the server. The lane therefore pins an IPv6 edge first — v4 is
+the fallback for a host with no v6 path, and it is why a v4-only rotation looks
+like it only ever sees four addresses.
+
 **Apple Silicon.** Every component is arm64-native or a universal binary. The
 cask puts `warp-cli` in `/usr/local/bin`; scripts fall back to
 `/opt/homebrew/bin` and then to the bundled

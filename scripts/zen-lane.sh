@@ -91,11 +91,14 @@ edge_ok6(){
 
 pick_edge(){
   local ip
-  for ip in $(printf '%s\n' "$V4_POOL" | awk 'BEGIN{srand();}{print rand(),$0}' | sort -n | cut -d' ' -f2); do
-    edge_ok4 "$ip" && { printf '%s' "$ip"; return 0; }
-  done
+  # v6 first: the quota key upstream uses is the warp /64, and only a v6
+  # request carries that /64 to the server. v4 is the fallback for a host
+  # with no working v6 path.
   for ip in $(printf '%s\n' "$V6_POOL" | awk 'BEGIN{srand();}{print rand(),$0}' | sort -n | cut -d' ' -f2); do
     edge_ok6 "$ip" && { printf '%s' "$ip"; return 0; }
+  done
+  for ip in $(printf '%s\n' "$V4_POOL" | awk 'BEGIN{srand();}{print rand(),$0}' | sort -n | cut -d' ' -f2); do
+    edge_ok4 "$ip" && { printf '%s' "$ip"; return 0; }
   done
   return 1
 }

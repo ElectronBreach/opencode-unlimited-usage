@@ -72,7 +72,9 @@ grep -q "OUC_PAYLOAD" "$DEST/install.sh" 2>/dev/null && ok "installer: standalon
 grep -q "lane_live" "$DEST/scripts/warp-keeper.sh" 2>/dev/null && ok "keeper: pid-owned lane pin sweep" || bad "keeper: lane sweep" "missing"
 grep -q "hop_with_timeout" "$DEST/scripts/zen-guard.sh" 2>/dev/null && ok "guard: bounded rotation (180s cap)" || dv "guard: rotation cap" "unbounded"
 grep -q "MACHINE_ID" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: random machine-id" "env (linux: /etc/machine-id bind)" || bad "lane: machine-id" "missing"
-grep -q "edge_ok4" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: edge pin" "v4-first, validated, falls back to v6" || bad "lane: edge pin" "unvalidated"
+grep -q "v6 first" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: edge pin" "v6-first (warp /64 reaches the server), v4 fallback" || dv "lane: edge pin" "v4-first"
+PFX=$(ifconfig 2>/dev/null | awk '/^utun/{i=$1} /inet6 26[0-9a-f]*:/{print $2}' | head -1 | cut -d/ -f1 | awk -F: '{print $1":"$2":"$3":"$4}')
+[ -n "$PFX" ] && ok "warp /64 present" "$PFX" || dv "warp /64" "none — v4 pool only"
 grep -q "remove each launch\|restore_hosts\|MARK_BEGIN" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: hosts pin restorable" || bad "lane: hosts restore" "missing"
 grep -q "Telegram:- @ElectronCursed" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: non-tty credit append" || bad "lane: ntty credit" "missing"
 
