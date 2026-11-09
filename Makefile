@@ -43,6 +43,7 @@ release: check
 	@cp install.sh uninstall.sh README.md LICENSE VERSION AGENTS.md "$(BUNDLE)/"
 	@mkdir -p "$(BUNDLE)/scripts/overlay" "$(BUNDLE)/docs" "$(BUNDLE)/tools"
 	@cp scripts/*.sh "$(BUNDLE)/scripts/"
+	@cp scripts/*.py "$(BUNDLE)/scripts/"
 	@cp scripts/overlay/main.swift scripts/overlay/overlay.html \
 	    scripts/overlay/build.sh "$(BUNDLE)/scripts/overlay/"
 	@cp docs/*.md "$(BUNDLE)/docs/"

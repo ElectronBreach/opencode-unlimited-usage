@@ -332,11 +332,73 @@ button.act.busy .dot{display:none}
 #lastSession{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px}
 
 /* ---------- toast ---------- */
+/* ---------- proxy sheet ----------
+   the panel does not grow for this layer. every control lives on a sheet that
+   covers the panel while it is open and gets out of the way again, so the
+   tabs, the identity pane and the console keep their exact heights. */
+#sheet{position:absolute;inset:0;z-index:40;display:none;flex-direction:column;
+  padding:10px 11px 9px;gap:7px;border-radius:18px;
+  background-color:#050a11;
+  background-image:linear-gradient(170deg,rgba(10,19,30,.94),rgba(4,7,12,.97));
+  box-shadow:inset 0 0 0 1px rgba(34,211,238,.22),0 0 40px rgba(0,0,0,.65)}
+#sheet.on{display:flex}
+.sheet-head{display:flex;align-items:center;gap:6px}
+.stab{border:0;background:transparent;color:#5f778a;font:700 8px var(--mono);
+  letter-spacing:.14em;padding:3px 7px;border-radius:6px;cursor:pointer}
+.stab:hover{color:#a9c6d8}
+.stab.on{background:rgba(34,211,238,.13);color:#bff3ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.3)}
+.stab b{font-weight:600;color:rgba(167,139,250,.9);margin-left:3px}
+.sbody{display:none;flex:1 1 auto;min-height:0;flex-direction:column;gap:7px}
+.sbody.on{display:flex}
+.px-hint{margin-top:9px;padding:8px 10px;border-radius:8px;font:9px/1.6 var(--mono);
+  color:#4d6e82;letter-spacing:.03em;
+  background:rgba(34,211,238,.035);box-shadow:inset 0 0 0 1px rgba(34,211,238,.09)}
+.mx-head{display:flex;align-items:baseline;gap:7px;font:8px var(--mono);letter-spacing:.1em;color:#5d7486}
+.mx-head b{color:#c8e6f5;font-weight:600;font-size:9px;letter-spacing:.02em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sheet-head .sc{margin-left:auto;font:700 9px var(--mono);letter-spacing:.1em;color:var(--mut)}
+.sheet-head .sc.up{color:var(--ok)}
+.sx{background:none;border:0;color:var(--mut);font:inherit;cursor:pointer;font-size:11px;padding:2px 4px}
+.sx:hover{color:var(--cy)}
+.sheet-status{font:9px/1.5 var(--mono);color:var(--mut);letter-spacing:.06em;
+  border-top:1px solid rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.05);padding:4px 0}
+.sheet-status b{color:#c8e6f5;font-weight:600}
+.px-list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:3px}
+.px-list::-webkit-scrollbar{width:3px}
+.px-list::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
+.pxr{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;cursor:pointer;
+  background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.045);font:9px var(--mono)}
+.pxr:hover{background:rgba(34,211,238,.09)}
+.pxr.cur{background:rgba(34,211,238,.13);border-color:rgba(34,211,238,.3)}
+.pxr .pxd{width:5px;height:5px;border-radius:50%;background:var(--mut);flex:0 0 auto}
+.pxr .pxd.live{background:var(--ok);box-shadow:0 0 6px rgba(52,211,153,.7)}
+.pxr .pxd.dead{background:var(--bad)}
+.pxr b{color:var(--vio);font-weight:600;min-width:13px}
+.pxr .pxa{flex:1 1 auto;color:#a9c6d8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pxr .pxm{color:var(--mut);flex:0 0 auto}
+.pxdel{background:none;border:0;color:rgba(251,113,133,.55);font:inherit;cursor:pointer;padding:0 2px}
+.pxdel:hover{color:var(--bad)}
+.px-empty{color:var(--mut);font:9px/1.6 var(--mono);padding:10px 2px;text-align:center}
+.px-add{display:flex;gap:5px;flex:0 0 auto}
+.px-add input{flex:1 1 auto;min-width:0;height:22px;background:rgba(0,0,0,.35);
+  border:1px solid rgba(34,211,238,.18);border-radius:6px;color:var(--txt);
+  font:10px var(--mono);padding:0 7px;-webkit-user-select:text;user-select:text;outline:none}
+.px-add input:focus{border-color:rgba(34,211,238,.45)}
+.px-row{display:flex;gap:5px;flex:0 0 auto}
+.px-row .act.mini{flex:1 1 0}
+.sheet-foot{font:8px/1.5 var(--mono);letter-spacing:.08em;color:var(--mut);text-align:center;flex:0 0 auto}
+/* the chip is a 10px text run; give it a real target without moving the row */
+.meta #pxChip{cursor:pointer;padding:4px 3px;margin:-4px -3px;border-radius:5px}
+.meta #pxChip:hover{background:rgba(34,211,238,.08)}
+.meta #pxChip:hover b{color:var(--cy)}
+.meta #pxChip b.up{color:var(--ok)}
+.meta #pxChip b.on{color:var(--cy)}
+
 #toast{
   position:absolute;left:50%;bottom:14px;transform:translate(-50%,10px);
   padding:5px 11px;border-radius:20px;font-size:9px;letter-spacing:.12em;
   background:rgba(34,211,238,.14);border:1px solid rgba(34,211,238,.4);color:#c8f7ff;
-  opacity:0;pointer-events:none;transition:all .22s;z-index:6;white-space:nowrap;
+  opacity:0;pointer-events:none;transition:all .22s;z-index:60;white-space:nowrap;
   box-shadow:0 0 18px rgba(34,211,238,.25);
 }
 #toast.on{opacity:1;transform:translate(-50%,0)}
@@ -457,6 +519,7 @@ body.collapsed #bubble{display:grid}
         <span>BUCKET<b id="mBucket">—</b></span>
         <span>WALLS<b id="mWalls">0</b></span>
         <span>BURNED<b id="mBurned">0</b></span>
+        <span id="pxChip" title="proxy pool — add, test, rotate, system proxy">PROXY<b id="mProxy">—</b></span>
       </div>
     </div>
 
@@ -503,6 +566,61 @@ body.collapsed #bubble{display:grid}
     <pre id="logBody"></pre>
     <div class="log-foot"><span id="lastSession">no session yet</span><span id="clock">--:--:--</span></div>
   </section>
+
+<!-- ============ proxy sheet =============================================
+     the panel does not grow a single pixel for the proxy layer. every
+     control lives here, on a sheet that covers the panel while it is open
+     and leaves the tabs, the console and the tokens exactly where they were.
+     ==================================================================== -->
+<div id="sheet" aria-hidden="true">
+  <div class="sheet-head">
+    <button class="stab on" data-sheet="proxy">PROXY</button>
+    <button class="stab" data-sheet="models">MODELS<b id="mxCount"></b></button>
+    <span class="sc" id="pxHead">off</span>
+    <button class="sx" id="btnPxClose" title="close (esc)">✕</button>
+  </div>
+  <div class="sheet-status" id="pxStat">mux down · no upstreams</div>
+
+  <div class="sbody on" data-body="proxy">
+    <div class="px-list" id="pxList"><div class="px-empty">pool is empty — paste a proxy below</div></div>
+    <div class="px-add">
+      <input id="pxInput" placeholder="host:port:user:pass" autocomplete="off" spellcheck="false">
+      <button class="act mini" id="btnPxAdd">ADD</button>
+    </div>
+    <div class="px-row">
+      <button class="act mini key" id="btnPxOn" title="start the local mux">ON</button>
+      <button class="act mini del" id="btnPxOff" title="stop the mux and restore the system proxy">OFF</button>
+      <button class="act mini key" id="btnPxRot" title="switch upstream now — no restart">ROTATE ⇄</button>
+    </div>
+    <div class="px-row">
+      <button class="act mini ghost2" id="btnPxTest" title="probe every upstream through cdn-cgi/trace">TEST</button>
+      <button class="act mini ghost3" id="btnPxSys" title="route the whole machine through the mux">SYS</button>
+      <button class="act mini ghost3" id="btnPxPol" title="conn: new ip per connection · window: hold one ip">CONN</button>
+    </div>
+  </div>
+
+  <div class="sbody" data-body="models">
+    <div class="mx-head">
+      <span class="k">FREE MODEL</span>
+      <b id="mxCur">—</b>
+    </div>
+    <div class="px-list" id="mxList"><div class="px-empty">loading the catalog…</div></div>
+    <div class="px-row">
+      <button class="act mini key" id="btnMxNext" title="switch to the next free model this run has not burned">NEXT ⇄</button>
+      <button class="act mini del" id="btnMxBurn" title="mark the current model as walled">BURN</button>
+      <button class="act mini ghost3" id="btnMxReset" title="forget the burned list">RESET</button>
+    </div>
+    <div class="px-row">
+      <button class="act mini ghost2" id="btnMxRefresh" title="re-fetch the model catalog">REFRESH</button>
+      <button class="act mini ghost2" id="btnMxHop" title="also move the egress /64 — the expensive lever">HOP /64</button>
+    </div>
+  </div>
+
+  <div class="sheet-foot" id="pxFoot">client → 127.0.0.1:8899 · rotation behind a fixed address</div>
+</div>
+
+
+
 </div>
 
 <div id="bubble" title="opencode unlimited — click to expand">
@@ -518,6 +636,9 @@ body.collapsed #bubble{display:grid}
 </div>
 
 <div id="toast"></div>
+
+
+
 
 <script>
 "use strict";
@@ -619,6 +740,20 @@ function render(d){
   $("egress").textContent = d.egress4 || "—";
   $("prefix").textContent = id.prefix || "—";
   $("hops").textContent = id.hops || 0;
+
+  // the proxy chip is the whole reason the sheet is reachable in one tap: if
+  // the second egress lever is live you should see it without opening anything.
+  const px = d.proxy || {};
+  window._px = Object.assign(window._px || {}, px);
+  const chip = $("mProxy");
+  if (chip) {
+    chip.textContent = px.up ? (px.healthy || 0) + "/" + (px.pool || 0) : "off";
+    chip.className = px.up ? "up" : "";
+    $("pxChip").title = px.up
+      ? "proxy mux up · " + (px.current || "—") + " · click to manage"
+      : "proxy pool " + (px.pool || 0) + " · click to manage";
+    if (sheet && sheet.classList.contains("on")) renderSheet();
+  }
   // the identity tab carries a dot when the current bucket is one we have
   // already been walled on — that is the one thing you need to see without
   // opening the tab.
@@ -849,11 +984,241 @@ window.ouc = function(ev){
       ["btnKeyAdd", "btnKeyPrev", "btnKeyNext", "btnKeyList", "btnKeyDel"].forEach(id => { $(id).disabled = false; });
     }, 30000);
   }
+  else if (ev.type === "proxyState") {
+    try {
+      const d = JSON.parse(ev.payload.json || "{}");
+      pxRows = d.upstreams || [];
+      pxSeen = true;
+      window._px = Object.assign(window._px || {}, d);
+    } catch (e) {}
+    renderSheet();
+  }
+  else if (ev.type === "proxyOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "proxy updated" : "proxy command failed");
+    bridge("proxyList");
+  }
+  else if (ev.type === "proxyBusy") {
+    const on = !!ev.payload.on;
+    ["btnPxAdd", "btnPxOn", "btnPxOff", "btnPxRot", "btnPxTest", "btnPxSys", "btnPxPol"].forEach(id => { $(id).disabled = on; });
+    clearTimeout(window.oucPxUnlock);
+    // TEST probes every upstream with its own timeout; a big pool can run
+    // long, and a wedged native process must not grey the sheet out forever.
+    if (on) window.oucPxUnlock = setTimeout(() => {
+      ["btnPxAdd", "btnPxOn", "btnPxOff", "btnPxRot", "btnPxTest", "btnPxSys", "btnPxPol"].forEach(id => { $(id).disabled = false; });
+    }, 60000);
+  }
+  else if (ev.type === "modelState") {
+    try {
+      const d = JSON.parse(ev.payload.json || "{}");
+      mxModels = d.models || [];
+      mxSeen = true;
+      window._mx = d;
+    } catch (e) {}
+    renderModels();
+    renderModelStat();
+  }
+  else if (ev.type === "modelOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "model lever updated" : "model command failed");
+    bridge("modelList");
+  }
+  else if (ev.type === "modelBusy") {
+    const on = !!ev.payload.on;
+    ["btnMxNext", "btnMxBurn", "btnMxReset", "btnMxRefresh"].forEach(id => { $(id).disabled = on; });
+  }
 };
 window.oucUpdate = function(d){ try { render(d); } catch (e) { console.log(e); } };
 
 /* ---------- controls ---------- */
-$("btnHop").addEventListener("click", () => bridge("hop"));
+// a plain click hops; a long press asks where we are and rotates nothing.
+// the read-only answer is the one you want when a hop would be expensive.
+let hopTimer = null, hopLong = false;
+const hopBtn = $("btnHop");
+hopBtn.addEventListener("pointerdown", () => {
+  hopLong = false;
+  hopTimer = setTimeout(() => { hopLong = true; toast("where am i…"); bridge("where"); }, 550);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach(ev =>
+  hopBtn.addEventListener(ev, () => { if (hopTimer) { clearTimeout(hopTimer); hopTimer = null; } }));
+hopBtn.addEventListener("click", () => {
+  if (hopLong) { hopLong = false; return; }
+  bridge("hop");
+});
+hopBtn.title = "click: rotate · press and hold: where am i (no rotation)";
+
+// the bucket line is the same question, one tap away
+const metaRow = document.querySelector(".meta");
+if (metaRow) {
+  metaRow.style.cursor = "pointer";
+  metaRow.title = "tap for full identity — bucket, both egress families, device, blacklist";
+  metaRow.addEventListener("click", () => { toast("where am i…"); bridge("where"); });
+}
+
+/* ---------- proxy sheet ----------
+   the second egress lever, entirely on a sheet: the panel keeps its exact
+   height, the console keeps its leftover height, and every control here runs
+   scripts/proxy-pool.sh for real. nothing decorative. */
+let pxRows = [], pxSeen = false;
+const sheet = $("sheet");
+function openSheet(on){
+  sheet.classList.toggle("on", on);
+  sheet.setAttribute("aria-hidden", on ? "false" : "true");
+  if (on) { renderSheet(); bridge("proxyList"); }
+}
+$("pxChip").addEventListener("click", (e) => {
+  e.stopPropagation();          // the meta row underneath asks "where"; this asks "proxy"
+  openSheet(true);
+});
+$("btnPxClose").addEventListener("click", () => openSheet(false));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") openSheet(false); });
+
+function sheetTab(){
+  const b = document.querySelector(".stab.on");
+  return (b && b.dataset.sheet) || "proxy";
+}
+function renderSheet(){
+  const p = window._px || {};
+  $("pxHead").textContent = p.up ? "up" : "down";
+  $("pxHead").classList.toggle("up", !!p.up);
+  // the status line belongs to the visible page — a proxy poll landing while
+  // the models page is open must not repaint it with proxy text.
+  if (sheetTab() === "proxy") $("pxStat").innerHTML = (p.up
+      ? "mux up · <b>" + (p.current || "—") + "</b> · " + (p.rotations || 0) + " rotations · " + (p.served || 0) + " served"
+      : "mux down · " + (p.pool || 0) + " upstreams in the pool")
+    + " · system " + (p.system ? "<b>on</b>" : "off");
+  $("btnPxSys").textContent = p.system ? "SYS ON" : "SYS";
+  $("btnPxPol").textContent = p.policy === "window" ? "WINDOW" : "CONN";
+  $("btnPxPol").title = p.policy === "window"
+    ? "one ip held for the window length — click for a new ip per connection"
+    : "new ip per connection — click to hold one ip for a while";
+  if (!pxSeen) return;
+  const list = $("pxList");
+  if (!pxRows.length) {
+    list.innerHTML = '<div class="px-empty">pool is empty — paste a proxy below</div>';
+    return;
+  }
+  list.innerHTML = "";
+  pxRows.forEach(r => {
+    const row = document.createElement("div");
+    row.className = "pxr" + (p.up && p.index === r.slot - 1 ? " cur" : "");
+    row.title = "click: rotate to this upstream" + (r.ip ? " · " + r.ip : "");
+    const dot = document.createElement("i");
+    dot.className = "pxd " + (r.state === "dead" ? "dead" : r.state === "live" ? "live" : "");
+    const n = document.createElement("b"); n.textContent = "#" + r.slot;
+    const a = document.createElement("span"); a.className = "pxa"; a.textContent = r.masked;
+    const m = document.createElement("span"); m.className = "pxm";
+    m.textContent = r.state === "live" ? (r.ms ? r.ms + "ms" : "live")
+                  : (r.state === "dead" ? "dead" : "—");
+    const del = document.createElement("button");
+    del.className = "pxdel"; del.textContent = "✕"; del.title = "remove #" + r.slot;
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toast("removing #" + r.slot + "…");
+      bridge("proxyRemove", { slot: String(r.slot) });
+    });
+    row.append(dot, n, a, m, del);
+    row.addEventListener("click", () => {
+      toast("rotating to #" + r.slot + "…");
+      bridge("proxyRotate", { slot: String(r.slot) });
+    });
+    list.appendChild(row);
+  });
+  // with a thin pool the list leaves a lot of dead glass. say the useful thing
+  // there instead of nothing: what the policy does and what fixes a thin pool.
+  if (pxRows.length < 3) {
+    const hint = document.createElement("div");
+    hint.className = "px-hint";
+    hint.innerHTML = p.policy === "window"
+      ? "one upstream held for a window — add more before it is exhausted"
+      : "a new upstream per connection — two or three is where rotation starts paying";
+    list.appendChild(hint);
+  }
+}
+
+$("btnPxAdd").addEventListener("click", () => {
+  const v = $("pxInput").value.trim();
+  if (!v) { toast("paste a proxy spec first"); return; }
+  toast("adding upstream…");
+  bridge("proxyAdd", { spec: v });
+  $("pxInput").value = "";
+});
+$("pxInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btnPxAdd").click(); });
+$("btnPxOn").addEventListener("click", () => { toast("starting the mux…"); bridge("proxyOn"); });
+$("btnPxOff").addEventListener("click", () => { toast("stopping the mux…"); bridge("proxyOff"); });
+$("btnPxRot").addEventListener("click", () => { toast("rotating…"); bridge("proxyRotate"); });
+$("btnPxTest").addEventListener("click", () => { toast("probing every upstream…"); bridge("proxyTest"); });
+$("btnPxSys").addEventListener("click", () => {
+  const on = !!(window._px && window._px.system);
+  toast(on ? "restoring the system proxy…" : "routing the machine through the mux…");
+  bridge("proxySys", { on: on ? "off" : "on" });
+});
+$("btnPxPol").addEventListener("click", () => {
+  const next = (window._px && window._px.policy) === "window" ? "conn" : "window";
+  toast("policy → " + next);
+  bridge("proxyPolicy", { value: next });
+});
+
+/* ---------- sheet tabs + model levers ----------
+   same sheet, second page. the free tier is per model — the client's own wall
+   text says "or switch models" — so this is the cheapest lever on the machine:
+   no tunnel, no dns window, no registration. 51 of them. */
+[...document.querySelectorAll(".stab")].forEach(b => b.addEventListener("click", () => {
+  const want = b.dataset.sheet;
+  document.querySelectorAll(".stab").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll(".sbody").forEach(x => x.classList.toggle("on", x.dataset.body === want));
+  $("pxFoot").textContent = want === "models"
+    ? "new sessions pick up the switch"
+    : "client → 127.0.0.1:8899 · rotation behind a fixed address";
+  if (want === "models") { renderModelStat(); bridge("modelList"); }
+  else renderSheet();
+}));
+
+// the models status line reads the same small blocks the list does, so it is
+// right before the catalog finishes loading and stays right after.
+function renderModelStat(){
+  if (sheetTab() !== "models") return;
+  const d = window._mx || {};
+  $("pxStat").innerHTML = d.free
+    ? "free tier is per model · <b>" + (d.free - (d.burned || 0)) + "</b> of " + d.free + " unburned"
+    : "free tier is per model · catalog not loaded";
+}
+
+let mxModels = [], mxSeen = false;
+function renderModels(){
+  const d = window._mx || {};
+  $("mxCur").textContent = d.current ? "opencode/" + d.current : "not pinned";
+  const mc = $("mxCount");
+  if (mc) mc.textContent = d.free ? (d.free - (d.burned || 0)) + "/" + d.free : "";
+  if (!mxSeen) return;
+  const list = $("mxList");
+  if (!mxModels.length) { list.innerHTML = '<div class="px-empty">no catalog — hit REFRESH</div>'; return; }
+  list.innerHTML = "";
+  mxModels.forEach((m, i) => {
+    const row = document.createElement("div");
+    row.className = "pxr" + (m.current ? " cur" : "");
+    row.title = m.id + (m.ctx ? " · " + Math.round(m.ctx / 1000) + "k context" : "");
+    const dot = document.createElement("i");
+    dot.className = "pxd " + (m.current ? "live" : m.burned ? "dead" : "");
+    const n = document.createElement("b"); n.textContent = i + 1;
+    const a = document.createElement("span"); a.className = "pxa"; a.textContent = m.id;
+    const c = document.createElement("span"); c.className = "pxm";
+    c.textContent = m.ctx ? Math.round(m.ctx / 1000) + "k" : "";
+    row.append(dot, n, a, c);
+    row.addEventListener("click", () => {
+      toast("model → " + m.id);
+      bridge("modelSet", { id: m.id });
+    });
+    list.appendChild(row);
+  });
+}
+$("btnMxNext").addEventListener("click", () => { toast("next free model…"); bridge("modelNext"); });
+$("btnMxBurn").addEventListener("click", () => { toast("marking the model burned…"); bridge("modelBurn"); });
+$("btnMxReset").addEventListener("click", () => { toast("clearing the burn list…"); bridge("modelReset"); });
+$("btnMxRefresh").addEventListener("click", () => { toast("re-fetching the catalog…"); bridge("modelRefresh"); });
+$("btnMxHop").addEventListener("click", () => { toast("hopping the /64…"); bridge("hop"); });
 
 // api keys: add what is in the box, or rotate to the next live key. the native
 // side runs scripts/api-keys.sh, so the HUD never touches the db itself.

@@ -359,6 +359,11 @@ while true; do
     [ "$FW" = 1 ] && glog "wall ${AGE}s after a rotation — the identity is seconds old; waiting ${COOLDOWN_J}s"
     if [ "$FW" -ge 3 ]; then
       glog "three walls inside a minute of a fresh identity — account-side, parking rotations for 15 min"
+      # no /64 fixes this, and the wall's own text names the cheaper lever:
+      # "or switch models". say it once, in the log, and let olivia press it —
+      # a stale session may not pick up a config change, so the guard never
+      # switches models behind a running client.
+      glog "the wall is not the ip right now — HUD → PROXY → MODELS, pick a free model"
       state_set last_hop "$((NOW + 900))"
       state_set fastwalls 0
       continue
@@ -466,6 +471,7 @@ print(int(d.get("count") or 0))' 2>/dev/null || echo 0)
       fi
     fi
     glog "every try landed on a burned /64 ($COLLISIONS wasted) — pool saturated, parking rotations 15 min"
+    glog "the /64 pool is out of fresh blocks — switch to a free model in HUD → PROXY → MODELS"
     state_set last_hop "$((NOW + 900))"
     state_set pool_dry "$NOW"
     continue

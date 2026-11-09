@@ -318,6 +318,12 @@ pass out quick inet from any to 192.168.0.0/16
 pass out quick inet from any to 169.254.0.0/16
 pass out quick inet from any to 224.0.0.0/4
 pass out quick inet6 from any to fe80::/10
+# neighbour discovery, router advertisements and dhcpv6 all live on link-local
+# multicast (ff02::/16). they never leave the segment, so passing them leaks
+# nothing — but dropping them silently breaks ipv6 the moment the guard is
+# armed, which is the exact class of breakage this keeper exists to prevent.
+pass out quick inet6 proto icmp6 from any to ff02::/16
+pass out quick inet6 from any to ff02::/16
 pass out quick inet6 from any to fc00::/7
 pass out quick inet proto udp to any port 2408
 pass out quick inet proto udp to any port 500

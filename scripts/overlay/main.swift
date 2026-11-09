@@ -323,7 +323,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
 
     func measureControls() {
-        let js = "JSON.stringify(Array.from(document.querySelectorAll('button,#bubble,#drag,.chip[data-act]')).map(e=>{const r=e.getBoundingClientRect();return {id:e.id,x:r.x,y:r.y,w:r.width,h:r.height}}))"
+        let js = "JSON.stringify(Array.from(document.querySelectorAll('button,#bubble,#drag,.chip[data-act],#pxChip')).map(e=>{const r=e.getBoundingClientRect();return {id:e.id,x:r.x,y:r.y,w:r.width,h:r.height}}))"
         web.evaluateJavaScript(js) { res, err in
             var body: [String: Any] = ["frame": NSStringFromRect(self.window.frame)]
             if let s = res as? String { body["controls"] = s }
@@ -849,6 +849,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "refresh": refresh(force: true)
         case "copy": copySummary()
         case "hop": runCommand("hop")
+        case "where": runCommand("where")
         case "doctor": runCommand("doctor")
         case "keyList": keyCmd(["health"])
         case "keyPrune": keyCmd(["prune"])
@@ -862,6 +863,31 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             if let slot = body["slot"] as? String, !slot.isEmpty { keyCmd(["remove", slot]) }
         case "keyAdd":
             if let k = body["key"] as? String, !k.isEmpty { keyCmd(["add", k]) }
+        // ---- proxy sheet. every one of these runs proxy-pool.sh for real.
+        case "proxyList": proxyCmd(["json"], json: true)
+        case "proxyAdd":
+            if let spec = body["spec"] as? String, !spec.isEmpty { proxyCmd(["add", spec]) }
+        case "proxyRemove":
+            if let slot = body["slot"] as? String, !slot.isEmpty { proxyCmd(["remove", slot]) }
+        case "proxyRotate":
+            if let slot = body["slot"] as? String, !slot.isEmpty { proxyCmd(["rotate", slot]) }
+            else { proxyCmd(["rotate"]) }
+        case "proxyOn": proxyCmd(["on"])
+        case "proxyOff": proxyCmd(["off"])
+        case "proxyTest": proxyCmd(["test"])
+        case "proxySys":
+            proxyCmd(["sys", (body["on"] as? String) == "on" ? "on" : "off"])
+        case "proxyPolicy":
+            proxyCmd(["policy", (body["value"] as? String) == "window" ? "window" : "conn"])
+        // ---- model levers. the free tier is one bucket per model, and the
+        // wall message itself says "or switch models".
+        case "modelList": modelCmd(["json"], json: true)
+        case "modelSet":
+            if let id = body["id"] as? String, !id.isEmpty { modelCmd(["set", id]) }
+        case "modelNext": modelCmd(["next"])
+        case "modelBurn": modelCmd(["burn-current"])
+        case "modelReset": modelCmd(["reset"])
+        case "modelRefresh": modelCmd(["refresh"])
         default: break
         }
     }
@@ -958,6 +984,65 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         }
     }
 
+    // proxy-pool.sh and model-levers.sh both answer in two flavours: plain
+    // text for the console, and json for the sheet's lists. one runner, a tag
+    // per tool, so a third lever costs three lines instead of forty.
+    func toolCmd(_ script: String, _ args: [String], json: Bool = false, tag: String) {
+        push("\(tag)Busy", ["on": true])
+        DispatchQueue.global(qos: .userInitiated).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/bash")
+            p.arguments = [scripts.appendingPathComponent(script).path] + args
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:\(home.path)/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            env["TERM"] = "dumb"
+            p.environment = env
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = pipe
+            do { try p.run() } catch {
+                DispatchQueue.main.async {
+                    self.push("\(tag)Busy", ["on": false])
+                    self.push("toast", ["text": "\(script) not installed"])
+                }
+                return
+            }
+            // TEST probes every upstream through a real CONNECT; a full pool is
+            // minutes of work at 14s a probe, so the cap is generous. anything
+            // past it is a wedged process, not a slow proxy.
+            let watchdog = DispatchWorkItem {
+                guard p.isRunning else { return }
+                p.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                    if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 90, execute: watchdog)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            watchdog.cancel()
+            let out = (String(data: data, encoding: .utf8) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async {
+                self.push("\(tag)Busy", ["on": false])
+                if json {
+                    self.push("\(tag)State", ["json": out])
+                } else {
+                    self.push("\(tag)Out", ["text": out, "ok": p.terminationStatus == 0])
+                }
+                self.refresh(force: true)
+            }
+        }
+    }
+
+    func proxyCmd(_ args: [String], json: Bool = false) {
+        toolCmd("proxy-pool.sh", args, json: json, tag: "proxy")
+    }
+
+    func modelCmd(_ args: [String], json: Bool = false) {
+        toolCmd("model-levers.sh", args, json: json, tag: "model")
+    }
+
     func copySummary() {
         var text = "opencode unlimited — status\n"
         if let d = try? JSONSerialization.jsonObject(with: Data(lastStatus.utf8)) as? [String: Any] {
@@ -990,10 +1075,14 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         busy = true
         push("busy", ["cmd": which, "on": true])
 
-        let path = scripts.appendingPathComponent(which == "hop" ? "zen-hop.sh" : "doctor.sh").path
+        // "where" is the read-only question: what identity am i on right now.
+        // it runs the same script as the hop with a flag that never touches
+        // the tunnel, so asking cannot cost a registration.
+        let isHopScript = (which == "hop" || which == "where")
+        let path = scripts.appendingPathComponent(isHopScript ? "zen-hop.sh" : "doctor.sh").path
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = [path]
+        p.arguments = (which == "where") ? [path, "--where"] : [path]
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:\(home.path)/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["TERM"] = "dumb"
@@ -1077,7 +1166,24 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "keyprune": keyCmd(["prune"])
         case "snapshot": snapshot(to: cmdFile.deletingLastPathComponent().appendingPathComponent("overlay-snapshot.png"))
         case "probe":
-            web.evaluateJavaScript("JSON.stringify({title:document.title,nodes:document.querySelectorAll('*').length,txt:document.body.innerText.slice(0,200)})") { v, e in
+            // the probe also reports what the sheet's model rows actually say
+            // and where they sit: a row click that selects the wrong model is
+            // only visible if the rendered order and the payload order can be
+            // compared side by side.
+            let js = """
+            JSON.stringify({
+              title: document.title,
+              nodes: document.querySelectorAll('*').length,
+              txt: document.body.innerText.slice(0,200),
+              modelRows: Array.from(document.querySelectorAll('.sbody[data-body="models"] .pxr')).slice(0,6).map(r => {
+                const b = r.getBoundingClientRect();
+                return {t: (r.querySelector('.pxa')||{}).textContent, x: Math.round(b.x), y: Math.round(b.y), h: Math.round(b.height)}
+              }),
+              sheetOpen: !!document.querySelector('#sheet.on'),
+              tab: (document.querySelector('.stab.on')||{}).dataset ? document.querySelector('.stab.on').dataset.sheet : null
+            })
+            """
+            web.evaluateJavaScript(js) { v, e in
                 let s = (v as? String) ?? "err: \(String(describing: e))"
                 try? s.write(to: cmdFile.deletingLastPathComponent().appendingPathComponent("overlay-probe.txt"), atomically: true, encoding: .utf8)
             }

@@ -3,6 +3,86 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.4.0 — 2026-11-09
+
+### Two levers that are cheaper than a rotation
+
+A `/64` rotation is a full disconnect, a re-register, a reconnect, and a
+blacklist check before the landing can even be trusted. It is the right first
+move for an ip-keyed wall and the wrong first move for everything else, so the
+sheet now carries the two levers that cost nothing.
+
+**The free tier is per model.** The client's own wall text is the spec:
+"Free usage limit reached. Connect a provider or subscribe to OpenCode Go to
+keep going, **or switch models**." The catalog at `models.opencode.ai` lists
+**51 zero-cost chat models** on the `opencode` provider — 51 buckets against
+the eight `/64`s WARP hands out, and a switch is one key in
+`~/.config/opencode/opencode.json`. No tunnel, no registration, no DNS window.
+
+- `model-levers.sh` — `list`, `current`, `set`, `next`, `burn`, `burn-current`,
+  `reset`, `refresh`, `json`. Catalog cached 24 h (it is 10 MB; the status hot
+  path never touches it)
+- the switch stays **manual**. A session that already took a wall may not
+  re-read the config, so an automatic switch could burn three models in one
+  tick on a stale wall. The guard logs the advice instead
+
+**A rotating proxy in front of the tunnel.** `proxy-mux.py` takes `CONNECT` on
+`127.0.0.1:8899` and dials an upstream behind it. The client config is written
+once, so rotating is a pointer move: no restart, no tunnel rebuild, no DNS
+window. `conn` gives a new upstream per connection, `window` holds one for a
+while.
+
+- accepts `host:port:user:pass` (webshare's export), `user:pass@host:port`, and
+  URL forms; `http`, `https`, `socks5`, `socks5h`; deduped, capped at 200
+- a failed upstream is parked 60 s, the connection retries on the next live one
+- **fails closed**: no live upstream answers 502. An egress layer that falls
+  back to direct is not an egress layer
+- `proxy-pool.sh` — `add`, `list`, `remove`, `test`, `on`, `off`, `rotate`,
+  `policy`, `sys`, `status`, `json`; `sys` routes the whole machine through the
+  mux and restores the saved baseline on `off`
+
+### The sheet, without growing the panel
+
+`PROXY` is a chip in the identity row, not a fourth tab. It opens a full-panel
+sheet with `PROXY | MODELS` pages, so the panel keeps its exact **366×642** and
+the console keeps every pixel of its leftover height.
+
+- each page has its own status line, and a poll that lands while the other page
+  is open cannot repaint it
+- `TEST` hands its verdict to the running mux (`reload`), so the sheet and the
+  mux cannot disagree about a pool one of them just proved dead
+- the models tab carries the unburned count in the tab itself (`51/51`)
+
+### Honesty fixes found while wiring it up
+
+- **a fresh mux lied about health.** With a dead pool it reported "2 of 2
+  healthy" until the first connection failed. Health now counts only upstreams
+  the mux has actually tried (`healthy` / `tested`), and `doctor.sh` says
+  "nothing probed yet" instead of a green tick
+- **the mux started blind.** It now seeds its dead set from the last `TEST`
+  (`proxy-health.json`, 900 s TTL), so a pool that was just proven dead is
+  skipped from the first connection
+- **`count()` printed two zeros.** `grep -c` prints `0` *and* exits 1, so
+  `|| echo 0` produced `"0\n0"` and every arithmetic test blew up
+- **`state_up()`** — a stale `"up": true` after a kill no longer reads as
+  running, because the pid is checked, not just the file
+- `doctor.sh` now verifies the `SYS` claim against `scutil --proxy` instead of
+  trusting the flag, and reports the model lever without false green
+
+### Install parity
+
+- the mux is python, and every copy path took `*.sh` only — `install.sh`,
+  `tools/embed.sh` and `make release` now carry `scripts/*.py` too
+- the remote fetch list covers every script the macOS build ships, not just the
+  eight originals
+
+### The guard says when the ip is not the problem
+
+Three walls inside a minute of a fresh identity, or a saturated `/64` pool,
+means the wall is account-side. The guard now logs "the wall is not the ip right
+now — HUD → PROXY → MODELS, pick a free model" at that point, once, and parks
+rotations. It does not touch the config itself.
+
 ## 2.3.0 — 2026-11-09
 
 ### A burnt bucket is not a fresh identity

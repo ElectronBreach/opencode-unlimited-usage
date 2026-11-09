@@ -379,5 +379,77 @@ if os.path.exists(db):
         keys["error"] = str(e)[:200]
 out["apiKeys"] = keys
 
+# ---- custom proxy layer — the second egress lever. WARP moves the /64; the
+# mux moves the upstream behind one fixed local address. the HUD only needs
+# four facts: is it up, how many exits are left, which one is current, and
+# whether the machine-wide switch is on. a stale state file from a mux that
+# died must read as down, so the pid is checked, not trusted.
+px = {"up": False, "pool": 0, "healthy": 0, "current": None, "index": -1,
+      "rotations": 0, "served": 0, "failed": 0, "system": False,
+      "listen": "127.0.0.1:8899", "policy": "conn"}
+try:
+    gdir = os.path.dirname(PROBE)
+    with open(os.path.join(gdir, "proxy-state.json")) as f:
+        st = json.load(f)
+    alive = False
+    try:
+        pid = int(st.get("pid") or 0)
+        if pid > 0:
+            os.kill(pid, 0)
+            alive = True
+    except Exception:
+        alive = False
+    px.update({k: st.get(k, px[k]) for k in px if k in st})
+    px["up"] = bool(st.get("up")) and alive
+    if not px["up"]:
+        px["current"] = None
+    px["system"] = bool(st.get("system")) and px["up"]
+except Exception:
+    pass
+
+pool_file = os.path.join(os.path.dirname(PROBE), "..", "proxies.txt")
+try:
+    with open(os.path.normpath(pool_file)) as f:
+        px["pool"] = sum(1 for l in f if l.strip() and not l.lstrip().startswith("#"))
+except Exception:
+    px["pool"] = px.get("pool") or 0
+if not px.get("pool"):
+    px["healthy"] = 0
+elif px["up"]:
+    px["healthy"] = px.get("healthy") or px["pool"]
+out["proxy"] = px
+
+# ---- free-model lever. the wall text says "or switch models", and there are
+# 51 zero-cost chat models on the opencode provider, so the cheapest bypass is
+# a model switch: no tunnel, no dns window, no registration. only three small
+# files are read here — the 10MB catalog is never touched in this path.
+md = {"current": "", "burned": 0, "free": 0}
+try:
+    with open(os.path.expanduser("~/.config/opencode/opencode.json")) as f:
+        conf = json.load(f)
+    mm = conf.get("model")
+    if isinstance(mm, str):
+        md["current"] = mm.split("/", 1)[1] if "/" in mm else mm
+    elif isinstance(mm, dict):
+        md["current"] = mm.get("model") or ""
+except Exception:
+    pass
+try:
+    with open(os.path.join(os.path.dirname(PROBE), "models-used.json")) as f:
+        md["burned"] = len(json.load(f))
+except Exception:
+    pass
+try:
+    with open(os.path.expanduser("~/.local/share/opencode-unlimited/models.json")) as f:
+        cat = json.load(f)
+    p = cat.get("opencode") or {}
+    md["free"] = sum(1 for m in (p.get("models") or {}).values()
+                     if (((m.get("cost") or {}).get("text") or {}).get("output") or {}).get("price") == 0
+                     and (((m.get("cost") or {}).get("text") or {}).get("input") or {}).get("price") == 0
+                     and m.get("type") in ("chat", "decision"))
+except Exception:
+    pass
+out["model"] = md
+
 print(json.dumps(out, separators=(",", ":")))
 PY

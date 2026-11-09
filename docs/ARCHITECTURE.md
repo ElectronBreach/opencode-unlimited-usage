@@ -35,6 +35,9 @@ launchd daemon  launchd agent 6 s loop          OpencodeOverlay.app
 | `scripts/overlay/main.swift` | user, launchd agent | session | the panel; starts only when a session exists |
 | `scripts/status.sh` | user, on demand | — | one JSON snapshot of everything |
 | `scripts/api-keys.sh` | user, on demand | — | the OpenCode Console key pool |
+| `scripts/proxy-mux.py` | user, on demand | session | rotating CONNECT proxy on `127.0.0.1:8899` |
+| `scripts/proxy-pool.sh` | user, on demand | — | that proxy's pool: add/list/test/rotate/sys |
+| `scripts/model-levers.sh` | user, on demand | — | free-model catalog + the CLI's default model |
 | `scripts/doctor.sh` / `audit.sh` | user, on demand | — | health and feature parity |
 | `scripts/ouc.sh` | user | — | the one entry point for all of the above |
 
@@ -53,6 +56,10 @@ guard/
   overlay-crash.log                one line per surprise
   identities.json                  per-bucket ledger: walls, hops, first/last
   key-probe.json                   10 min cache of console key verdicts
+  proxy-state.json                 mux: up, pid, pool, healthy, tested, served
+  proxy-health.json                per-upstream verdicts from the last TEST
+  proxy-cmd                        rotate|reload, the mux's command channel
+  models-used.json                 free models burned this run
   status-cache.json                12 s cache of the network probes
   keeper.log guard-daemon.log overlay-daemon.log
 ```
@@ -108,6 +115,47 @@ guard notices the wall in the log. Either way `zen-hop.sh` re-registers WARP,
 gets a new `/64`, blacklists the old one for good, and the lane re-pins
 `opencode.ai` to a different edge. `rotate.lock` makes sure the guard and a
 manual `ouc hop` never race each other.
+
+## The other two levers
+
+The `/64` rotation is the expensive lever: a full disconnect, register,
+connect, and a blacklist that has to be checked before a landing is accepted.
+It is also the only one that touches the network, so two cheaper levers sit in
+front of it on the same panel.
+
+**A rotating proxy in front of the tunnel.** `proxy-mux.py` accepts `CONNECT`
+on `127.0.0.1:8899` and dials an upstream from `proxies.txt` behind it. The
+client is configured once and never again: rotating is a pointer move inside
+the mux, so no process restarts, no tunnel is rebuilt, and DNS never has a
+window where it answers from the wrong side. Two policies:
+
+- `conn` — a new upstream per client connection, maximum spread
+- `window` — one upstream held for `window` seconds, for endpoints that dislike
+  a changing address mid-session
+
+A failed upstream is parked for 60 s and the connection is retried on the next
+live one. When nothing is live the mux answers **502** — never direct. An
+egress layer that fails open is not an egress layer.
+
+**The free tier is per model.** The client's own wall text is the spec:
+
+```
+Free usage limit reached. Connect a provider or subscribe to OpenCode Go
+to keep going, or switch models.
+```
+
+The catalog at `models.opencode.ai` lists 51 zero-cost chat models on the
+`opencode` provider, each with its own quota. Switching one is a write to the
+top-level `model` key of `~/.config/opencode/opencode.json` — no tunnel, no
+registration, no key. So the order of levers is: switch model (free), rotate
+`/64` (a registration), rotate the console key (a credential, and the last
+thing that actually helps).
+
+Model switching stays **manual** in the HUD. A session that has already
+received a wall may not re-read the config, and an automatic switch on a stale
+wall would spend three models in a single tick. The guard's job is to say the
+truth in its log — "the wall is not the ip right now" — and let the one-tap
+control do the rest.
 
 ## Failure modes that are designed for
 

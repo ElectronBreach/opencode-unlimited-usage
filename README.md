@@ -80,7 +80,9 @@ just use `opencode` like always.
 | `zen-hop` | manual "give me a new identity right now" button |
 | `doctor` | health check — tells you what's alive and what's not |
 | `api-keys` | OpenCode Console key pool — add, rotate, probe, prune, 50-key cap |
-| `overlay` | always-on-top HUD: hop + doctor + live token ledger + key pool |
+| `proxy-pool` | local rotating proxy: add webshare-style upstreams, test, rotate, system-wide |
+| `model-levers` | the 51 free models on the `opencode` provider — list, switch, burn |
+| `overlay` | always-on-top HUD: hop + doctor + live token ledger + key pool + PROXY sheet |
 | `ouc` | one entry point for every one of the above |
 
 ## Daily usage
@@ -128,6 +130,10 @@ scripts you would run by hand and reads the same database opencode writes.
 - **health** — warp / DNS / keeper / guard / credit / leak-guard, one dot each
 - **API keys** — the OpenCode Console key pool: add, prev/next, check, clean, delete
 - **HOP** and **DOCTOR** — the two commands, running live, output in the console
+- **PROXY** — a sheet over the panel with two more levers: a rotating proxy mux
+  (add upstreams, test them, rotate live, or route the whole machine through
+  it) and the free-model list (51 zero-cost models, switch with one tap). The
+  panel does not grow: the sheet covers it, the console keeps its height
 - **session burn** — the last 24 sessions that spent anything, ranked
 - **⇄** docks it to the other screen edge, **−** collapses it, **✕** hides it
 
@@ -237,6 +243,21 @@ keeps its normal internet. When the keeper repairs the tunnel it re-arms.
 Your TUI session picked an edge whose bucket is full for that model. Close and
 reopen opencode — each launch picks a fresh random edge. The guard handles the
 egress side automatically.
+
+**What is the fastest way out of a wall?**
+Switch model. The wall text itself says "or switch models", and there are 51
+zero-cost models on the `opencode` provider, each with its own free quota —
+`HUD → PROXY → MODELS`, one tap, no tunnel, no registration, no DNS window.
+Rotating the `/64` is the expensive lever and comes second. The guard logs
+"the wall is not the ip right now" once it has proven the egress is not the
+problem, and it never switches a model behind a running session.
+
+**What are the proxies for?**
+Optional. `HUD → PROXY` runs a local `CONNECT` mux on `127.0.0.1:8899`; the
+client points at it once and the mux rotates upstreams behind that fixed
+address, so a rotation costs no restart and no DNS window. Paste webshare-style
+`host:port:user:pass` lines, hit `TEST` to see which are alive, `ON` to start.
+The mux fails closed — a dead pool gets 502, never a direct connection.
 
 **Does this work on Linux / Windows?**
 Linux is the upstream repo (systemd + iptables). WSL2 counts as Linux. Windows
@@ -388,6 +409,6 @@ in the repo, so a release can be installed with `./install.sh` or
 
 MIT license. Use it, fork it, just don't sell it to your grandma.
 
-This is `VERSION` 2.3.0 — see [CHANGELOG.md](CHANGELOG.md).
+This is `VERSION` 2.4.0 — see [CHANGELOG.md](CHANGELOG.md).
 
 — ELECTRONBREACH

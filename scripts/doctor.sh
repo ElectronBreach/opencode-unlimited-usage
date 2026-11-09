@@ -218,6 +218,93 @@ else
   warn "overlay HUD not built — bash $DEST/scripts/overlay/build.sh"
 fi
 
+# ---- proxy layer (opt-in rotating CONNECT mux)
+python3 - "$GUARD_DIR/proxy-state.json" "$DEST/proxies.txt" <<'PY'
+import json,os,subprocess,sys
+state_p,pool_p=sys.argv[1],sys.argv[2]
+st={}
+try: st=json.load(open(state_p))
+except Exception: st={}
+pool=0
+try:
+    for line in open(pool_p):
+        line=line.strip()
+        if line and not line.startswith("#"): pool+=1
+except Exception: pass
+up=bool(st.get("up"))
+pid=st.get("pid") or 0
+alive=False
+if up and pid:
+    try:
+        os.kill(int(pid),0); alive=True
+    except Exception:
+        alive=False
+if up and not alive:
+    print("    ! proxy mux says up but pid %s is gone — HUD → PROXY → OFF then ON" % pid)
+elif alive:
+    healthy=st.get("healthy",0); tested=st.get("tested",0)
+    mark="✓" if healthy or not tested else "!"
+    print("    %s proxy mux up on %s · %s of %s upstreams healthy · %s rotations · %s served" % (
+        mark, st.get("listen") or "127.0.0.1:8899", healthy, pool,
+        st.get("rotations",0), st.get("served",0)))
+    if pool and tested==0:
+        print("    ! nothing probed yet — a fresh mux cannot know the pool is good; HUD → PROXY → TEST")
+    elif pool and healthy==0:
+        print("    ! all %d probed upstream(s) are parked dead — that is the pool, not the mux" % tested)
+elif pool:
+    print("    ! %d upstream(s) in the pool but the mux is down — HUD → PROXY → ON" % pool)
+else:
+    print("    ✓ proxy layer off (opt-in) — HUD → PROXY to add webshare-style upstreams")
+
+# the system toggle is a claim about the os, so check the os.
+if st.get("system"):
+    try:
+        out=subprocess.run(["scutil","--proxy"],capture_output=True,text=True,timeout=5).stdout
+    except Exception:
+        out=""
+    if "127.0.0.1" in out and "8899" in out:
+        print("    ✓ system proxy → 127.0.0.1:8899 (every app routed through the mux)")
+    else:
+        print("    ! system flag is set but macOS is not pointed at 127.0.0.1:8899 — HUD → PROXY → OFF then SYS")
+PY
+
+# ---- free-model lever (the wall text itself says "or switch models")
+python3 - "$HOME/.config/opencode/opencode.json" "$DEST/models.json" "$GUARD_DIR/models-used.json" <<'PY'
+import json,sys
+conf_p,cat_p,used_p=sys.argv[1:4]
+cur=""
+try:
+    d=json.load(open(conf_p)); m=d.get("model")
+    if isinstance(m,str): cur=m.split("/",1)[1] if "/" in m else m
+    elif isinstance(m,dict): cur=m.get("model") or ""
+except Exception: pass
+free=set()
+try:
+    cat=json.load(open(cat_p)).get("opencode") or {}
+    for mid,mm in (cat.get("models") or {}).items():
+        c=((mm.get("cost") or {}).get("text") or {})
+        if (c.get("input") or {}).get("price")==0 and (c.get("output") or {}).get("price")==0 \
+           and mm.get("type") in ("chat","decision"):
+            free.add(mid)
+except Exception: pass
+burned=[]
+try: burned=json.load(open(used_p))
+except Exception: pass
+if not free:
+    print("    ! model catalog not cached — HUD → PROXY → MODELS → REFRESH")
+else:
+    hot=[b for b in burned if b in free]
+    if cur and cur in free:
+        print("    ✓ default model is a free one: %s · %d of %d unburned" % (
+            cur, len(free)-len(hot), len(free)))
+    elif cur:
+        print("    ! default model %s is not a zero-cost model — pick one in HUD → PROXY → MODELS" % cur)
+    else:
+        print("    ✓ no default model pinned — the CLI picks · %d free models available" % len(free))
+    if hot:
+        print("    · burned this run: %d (%s)" % (len(hot), ", ".join(hot[:3])))
+PY
+
 # ---- credit system (AGENTS.md)
 [ -f "$HOME/.opencode/AGENTS.md" ] \
   && ok "credit file ~/.opencode/AGENTS.md present (every AI response signs off)" \

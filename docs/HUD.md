@@ -31,7 +31,51 @@ Every button runs a real script. There is nothing decorative.
 | `CLEAN` | `api-keys.sh prune` — drops duplicates and rejected keys |
 | `DEL` | arm, then confirm within 4 s — `api-keys.sh remove <id>` |
 | `WARP` chip | opens the Cloudflare WARP window |
+| `PROXY` chip | opens the sheet — the proxy mux and the free-model lever |
 | `last session` row | copies the summary to the clipboard |
+
+## The sheet — two levers that do not rotate the tunnel
+
+`PROXY` in the identity row opens a full-panel sheet. It is a sheet, not a
+fourth tab: the panel keeps its exact 366×642 and the console keeps its
+leftover height, because the sheet covers the panel instead of squeezing it.
+
+**PROXY page** — a local `CONNECT` mux on `127.0.0.1:8899` that rotates
+upstream proxies behind one fixed address. The client config never changes, so
+a rotation costs no restart, no tunnel, no DNS window.
+
+| Control | Runs |
+|---|---|
+| `ADD` | `proxy-pool.sh add <spec>` — `host:port:user:pass`, `user:pass@host:port`, or a URL |
+| row click | `proxy-pool.sh rotate <n>` — pin that upstream now |
+| row `✕` | `proxy-pool.sh remove <n>` |
+| `ON` / `OFF` | start/stop the mux; `OFF` also restores the system proxy |
+| `ROTATE ⇄` | `proxy-pool.sh rotate` — next upstream, live connections keep running |
+| `TEST` | probe every upstream through `cdn-cgi/trace`, record live/dead + ms + exit ip |
+| `SYS` | route every app on the machine through the mux (`proxy-pool.sh sys on`) |
+| `CONN` | toggle rotation policy: new ip per connection, or one ip held for a window |
+
+The mux fails **closed**: with no live upstream it answers 502 and never falls
+back to direct. That is deliberate — the whole point of the layer is that a
+dead pool cannot quietly leak the real address.
+
+**MODELS page** — the wall's own text ends with "or switch models", and the
+`opencode` provider carries 51 zero-cost chat models. That is 51 free buckets
+against the eight `/64`s WARP will hand out, and switching one costs no
+registration at all.
+
+| Control | Runs |
+|---|---|
+| row click | `model-levers.sh set <id>` — writes the CLI default |
+| `NEXT ⇄` | next free model this run has not burned |
+| `BURN` | marks the current model walled for this run |
+| `RESET` | forget the burn list |
+| `REFRESH` | re-fetch the catalog (cached 24 h otherwise) |
+| `HOP /64` | the expensive lever: rotate the egress identity |
+
+A model switch is never automatic. The running session may not re-read the
+config, so an auto-switch on a stale wall can burn three models in one tick;
+the HUD makes it one tap and the guard only logs the advice.
 
 ## Reading the panel
 
@@ -89,5 +133,8 @@ and the click that lands on them is `x = frame.x + c.x + c.w/2`,
 scripts/overlay/main.swift      the app (AppKit + WebKit, one file)
 scripts/overlay/overlay.html    the entire UI
 scripts/overlay/build.sh        swiftc → .app bundle
+scripts/proxy-mux.py            the rotating CONNECT proxy behind the sheet
+scripts/proxy-pool.sh           its pool CLI (add/list/test/rotate/sys)
+scripts/model-levers.sh         the free-model list + CLI default writer
 ~/Library/Application Support/opencode-unlimited/OpencodeOverlay.app
 ```

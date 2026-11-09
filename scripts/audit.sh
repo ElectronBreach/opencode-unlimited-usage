@@ -192,6 +192,37 @@ grep -q "http_alive" "$DEST/scripts/warp-keeper.sh" 2>/dev/null   && ok "keeper:
 grep -q "opencode_busy" "$DEST/scripts/warp-keeper.sh" 2>/dev/null   && ok "keeper: never bounces a busy session" "idle-gated reconnects" || dv "keeper idle gate" "missing"
 grep -q "rescue_provider" "$DEST/scripts/zen-guard.sh" 2>/dev/null   && ok "guard: provider rescue" "on ModelUnavailableError" || dv "guard provider rescue" "missing"
 
+# ---- 15. the two cheap levers ---------------------------------------------
+if [ -x "$DEST/scripts/proxy-pool.sh" ] && [ -f "$DEST/scripts/proxy-mux.py" ]; then
+  PX=$("$DEST/scripts/proxy-pool.sh" json 2>/dev/null)
+  PXC=$(printf '%s' "$PX" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("pool",0))' 2>/dev/null)
+  case "${PXC:-x}" in
+    ''|*[!0-9]*) bad "proxy pool json" "unreadable" ;;
+    *) ok "rotating proxy mux" "${PXC} upstreams · $(printf '%s' "$PX" | python3 -c 'import json,sys;d=json.load(sys.stdin);print("up" if d.get("up") else "idle")' 2>/dev/null)" ;;
+  esac
+  grep -q 'ALLOW_DIRECT", "0"' "$DEST/scripts/proxy-mux.py" 2>/dev/null \
+    && ok "proxy mux fails closed" "no direct fallback" || dv "proxy mux fail-closed" "allow-direct default changed"
+else
+  bad "proxy lever" "proxy-pool.sh / proxy-mux.py not installed"
+fi
+
+if [ -x "$DEST/scripts/model-levers.sh" ]; then
+  MD=$("$DEST/scripts/model-levers.sh" json 2>/dev/null)
+  MDF=$(printf '%s' "$MD" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("free",0))' 2>/dev/null)
+  MDC=$(printf '%s' "$MD" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("current") or "")' 2>/dev/null)
+  case "${MDF:-x}" in
+    ''|*[!0-9]*) bad "free model catalog" "unreadable — model-levers refresh" ;;
+    *) ok "free model lever" "$MDF zero-cost models" ;;
+  esac
+  if [ -n "${MDC:-}" ]; then
+    printf '%s' "$MD" | grep -q '"current":"'"$MDC"'"' && ok "default model pinned" "$MDC" || dv "default model" "$MDC"
+  else
+    dv "default model" "unpinned — the CLI picks (HUD → PROXY → MODELS)"
+  fi
+else
+  bad "model lever" "model-levers.sh not installed"
+fi
+
 echo ""
 echo "  pass=$pass  deviation=$dev  fail=$fail"
 if [ "$fail" -gt 0 ]; then echo "  ✗ something is broken — see the ✗ lines"; else echo "  ✓ no failures. ~ lines are documented macOS adaptations."; fi

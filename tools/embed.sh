@@ -18,6 +18,7 @@ build_payload(){
   tmp=$(mktemp -d /tmp/ouc-embed.XXXXXX)
   mkdir -p "$tmp/payload/scripts"
   cp scripts/*.sh "$tmp/payload/scripts/"
+  cp scripts/*.py "$tmp/payload/scripts/" 2>/dev/null || true
   if [ -d scripts/overlay ]; then
     cp -R scripts/overlay "$tmp/payload/scripts/"
   fi
