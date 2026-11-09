@@ -90,6 +90,10 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // health tick. the lane clears it on the next opencode launch.
     var hidden = false
     var statusItem: NSStatusItem?
+    var reloadAttempts = 0
+    var warpChecks = 0
+    var warpFixAt: TimeInterval = 0
+    var lastDump: TimeInterval = 0
 
     // ---------------------------------------------------------------- boot
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -108,6 +112,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
 
         crashLog("launch pid=\(ProcessInfo.processInfo.processIdentifier)")
         evictOlderInstances()
+        launchGuard()
         buildWindow()
         buildWebView()
         restoreFrame()
@@ -133,8 +138,15 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
 
         poll = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
             self.refresh(force: false)
-            self.dumpState()
             self.healthTick()
+            self.warpWindowTick()
+            // the state file is read by tooling, not by a person — 5s is plenty
+            // and it keeps a 2s timer from doing two disk writes every tick.
+            let now = Date().timeIntervalSince1970
+            if now - self.lastDump >= 5 {
+                self.lastDump = now
+                self.dumpState()
+            }
         }
         seedCommandCursor()
         cmdWatch = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { _ in
@@ -148,6 +160,27 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
+
+    // launchd restarts this app every few seconds when it dies. if it dies from
+    // something that reproduces on boot, that becomes a spin that pegs a core
+    // and churns the crash log. count launches in a rolling window and, past a
+    // threshold, wait before building anything — the loop gets slower instead
+    // of hotter, and a human still has a running process to look at.
+    func launchGuard() {
+        let f = guardDir.appendingPathComponent("overlay-launches.json")
+        var stamps: [Double] = []
+        if let d = try? Data(contentsOf: f),
+           let a = try? JSONSerialization.jsonObject(with: d) as? [Double] { stamps = a }
+        let now = Date().timeIntervalSince1970
+        stamps = stamps.filter { now - $0 < 120 }
+        stamps.append(now)
+        if let d = try? JSONSerialization.data(withJSONObject: stamps) { try? d.write(to: f) }
+        // 6 launches inside 2 minutes means it is not recovering on its own.
+        if stamps.count > 6 {
+            crashLog("launch loop detected (\(stamps.count) in 120s) — backing off 30s")
+            Thread.sleep(forTimeInterval: 30)
+        }
+    }
 
     func applicationWillTerminate(_ n: Notification) {
         crashLog("terminate (window visible=\(window?.isVisible ?? false))")
@@ -398,6 +431,52 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
 
     // cheap liveness: a web process that died leaves an empty page, and a
     // window that was ordered out never comes back on its own.
+    // the WARP GUI is a menu bar app. after a sleep, a crash restart or a
+    // display change it can end up running with no usable window: `open -a`
+    // then does nothing, which is exactly what "cloudflare will not open"
+    // looks like. the daemon keeps the tunnel up the whole time, so nothing
+    // else reports a fault. check the window every 30s and relaunch only the
+    // GUI (never the root daemon) when it is gone. at most once every 10 min.
+    func warpWindowTick() {
+        warpChecks += 1
+        guard warpChecks % 15 == 0 else { return }   // 2s poll × 15 = 30s
+        let now = Date().timeIntervalSince1970
+        let app = NSWorkspace.shared.runningApplications.first(
+            where: { ($0.bundleIdentifier ?? "").contains("cloudflare.1dot1dot1") })
+        // no GUI at all: the tunnel lives in the root daemon, so this is only
+        // the window being gone. open it, and never more than once every 10min.
+        guard let app = app else {
+            guard now - warpFixAt > 600 else { return }
+            warpFixAt = now
+            crashLog("warp GUI not running — opening it")
+            openWarp()
+            return
+        }
+        let pid = app.processIdentifier
+        guard let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements],
+                                                    kCGNullWindowID) as? [[String: Any]] else { return }
+        let usable = list.contains { w in
+            guard let owner = w[kCGWindowOwnerPID as String] as? pid_t, owner == pid,
+                  let b = w[kCGWindowBounds as String] as? [String: Any] else { return false }
+            let ww = b["Width"] as? Double ?? 0
+            let hh = b["Height"] as? Double ?? 0
+            return ww >= 300 && hh >= 300
+        }
+        guard !usable else { return }
+        guard now - warpFixAt > 600 else { return }
+        warpFixAt = now
+        crashLog("warp GUI has no window — relaunching it (tunnel untouched)")
+        push("log", ["line": "warp UI had no window — restarted the app"])
+        let kill = Process()
+        kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        kill.arguments = ["-f", "Cloudflare WARP.app/Contents/MacOS/"]
+        try? kill.run()
+        kill.waitUntilExit()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.openWarp()
+        }
+    }
+
     func healthTick() {
         if !hidden, !window.isVisible { window.orderFrontRegardless() }
         if web.url == nil && !web.isLoading {
@@ -480,7 +559,23 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     @objc func menuHide() { setHidden(true) }
     @objc func menuBubble() { setHidden(false); setCollapsed(true, animate: true) }
     @objc func menuReload() { setHidden(false); reloadPage() }
-    @objc func menuQuit() { NSApp.terminate(nil) }
+    // KeepAlive would put it straight back. bootout the agent first, so "Quit"
+    // means quit until the next login (or `opencode-unlimited-overlay show`,
+    // which launches the app directly and does not need the agent).
+    @objc func menuQuit() { quitForReal() }
+
+    func quitForReal() {
+        crashLog("quit requested")
+        defaults.set(false, forKey: "hidden")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = ["bootout", "gui/\(getuid())/com.opencode-unlimited.overlay"]
+        p.standardError = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        try? p.run()
+        p.waitUntilExit()
+        NSApp.terminate(nil)
+    }
     @objc func menuWarp() { openWarp() }
 
     // the WARP GUI is a menu bar app. it can come back from a sleep or a crash
@@ -817,7 +912,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "hide": setHidden(true)
         case "show": setHidden(false)
         case "warp": openWarp()
-        case "quit": NSApp.terminate(nil)
+        case "quit": quitForReal()
         default: break
         }
     }
@@ -847,14 +942,30 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         // before the page exists — replay them now that it does.
         web.evaluateJavaScript("window.oucUpdate && window.oucUpdate(\(lastStatus));", completionHandler: nil)
         push("window", ["collapsed": collapsed])
+        reloadAttempts = 0
         refresh(force: true)
     }
 
+    // a missing or half-written page used to retry once a second, forever, and
+    // flooded the crash log. back off instead: 1s, 2s, 4s … capped at 30s, and
+    // reset as soon as the page actually loads.
     func webView(_ webView: WKWebView, didFail n: WKNavigation!, withError e: Error) {
         crashLog("web load failed: \(e.localizedDescription)")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.reloadPage()
+        reloadAttempts += 1
+        let delay = min(30.0, pow(2.0, Double(min(reloadAttempts - 1, 5))))
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self, self.web.url == nil || !self.web.isLoading else { return }
+            self.reloadPage()
         }
+    }
+
+    // the web content process is a separate process and it can be killed by the
+    // system under memory pressure. without this the window goes white and
+    // stays white until something else reloads it.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        crashLog("web content process terminated — reloading")
+        reloadAttempts = 0
+        reloadPage()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {

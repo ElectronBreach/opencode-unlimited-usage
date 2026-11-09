@@ -38,10 +38,26 @@ json.dump({"dir": d, "ts": int(time.time())}, open(p, "w"))
 PY
 }
 
+AGENT="gui/$(id -u)/com.opencode-unlimited.overlay"
+PLIST="$HOME/Library/LaunchAgents/com.opencode-unlimited.overlay.plist"
+
+# `quit` boots the agent out so the app cannot be resurrected by KeepAlive.
+# that leaves no crash protection, so a later show puts the agent back first —
+# launchd supervises it again and a crash is recovered by the system, not by
+# nobody noticing.
+ensure_agent(){
+  launchctl print "$AGENT" >/dev/null 2>&1 && return 0
+  [ -f "$PLIST" ] || return 1
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || open -g "$APP"
+  return 0
+}
+
 show(){
   ctx
   if running; then
     printf 'expand\n' > "$CMD"
+  elif ensure_agent; then
+    :
   else
     open -g "$APP" --args --session-dir "${OUC_SESSION_DIR:-$PWD}"
   fi

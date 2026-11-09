@@ -121,6 +121,14 @@ else
   bad "dns: system resolver wedged (dig ok, getaddrinfo fails) — sudo killall -HUP mDNSResponder"
 fi
 
+# ---- warp ui (the window, not the tunnel)
+WGUI=$(pgrep -f "Cloudflare WARP.app/Contents/MacOS/Cloudflare WARP$" 2>/dev/null | head -1)
+if [ -n "${WGUI:-}" ]; then
+  ok "cloudflare warp UI running" "pid $WGUI"
+else
+  warn "cloudflare warp UI not running" "tunnel is unaffected — click the WARP chip in the HUD, or the menu bar item"
+fi
+
 # ---- guard (user LaunchAgent)
 if launchctl print "gui/$(id -u)/com.opencode-unlimited.guard" >/dev/null 2>&1; then
   ok "zen-guard agent (user)"
