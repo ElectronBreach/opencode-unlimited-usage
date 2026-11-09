@@ -95,7 +95,7 @@ export OUC_NOW="$now" OUC_IP="${c_ip:-}" OUC_DNS="$c_dns" OUC_TUNNEL="$tunnel" \
        OUC_CTX_TS="$ctx_ts" OUC_BRAND="$BRAND" OUC_DEST="$DEST"
 
 python3 - <<'PY'
-import json, os, sqlite3, time
+import json, os, sqlite3, time, datetime
 
 def env(k, d=""):
     return os.environ.get(k, d)
@@ -134,11 +134,27 @@ out["identity"] = {
 }
 
 # ---- tokens (opencode.db, read-only; WAL is active so never copy the file)
+#
+# opencode keeps one row per session and no per-message ledger, so every number
+# here is a session total. the parts are kept separate rather than pre-added:
+# cache reads outnumber real tokens by two orders of magnitude, and folding them
+# into one "tokens" figure makes the headline meaningless.
+#
+#   input / output / reasoning      what the model actually read and wrote
+#   cacheRead / cacheWrite          prompt cache traffic (cheap, but real work)
+#   total                           input + output          — the headline
+#   billed                          input + output + reasoning
+#   cacheHit                        cacheRead / (cacheRead + input)
+#   activeSec                       time_busy summed, i.e. time the model ran
+#   subagents                       sessions with a parent — spawned, not typed
 tok = {
-    "db": False, "sessions": 0, "input": 0, "output": 0, "reasoning": 0,
-    "cacheRead": 0, "cacheWrite": 0, "cost": 0.0,
-    "today": {"input": 0, "output": 0, "cost": 0.0, "sessions": 0},
-    "last": None, "recent": [], "models": [],
+    "db": False, "sessions": 0, "allSessions": 0, "subagents": 0,
+    "input": 0, "output": 0, "reasoning": 0,
+    "cacheRead": 0, "cacheWrite": 0,
+    "total": 0, "billed": 0, "cacheHit": 0.0, "cost": 0.0, "activeSec": 0,
+    "today": {"sessions": 0, "input": 0, "output": 0, "reasoning": 0,
+              "cacheRead": 0, "total": 0, "cost": 0.0},
+    "week": [], "last": None, "recent": [], "models": [],
 }
 db = env("OUC_DB")
 if os.path.exists(db):
@@ -146,61 +162,140 @@ if os.path.exists(db):
         con = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=3)
         con.row_factory = sqlite3.Row
         c = con.cursor()
-        r = c.execute("""SELECT COUNT(*) n, COALESCE(SUM(tokens_input),0) ti,
+        r = c.execute("""SELECT COUNT(*) n,
+                                SUM(CASE WHEN parent_id IS NULL THEN 1 ELSE 0 END) roots,
+                                COALESCE(SUM(tokens_input),0) ti,
                                 COALESCE(SUM(tokens_output),0) to_,
                                 COALESCE(SUM(tokens_reasoning),0) tr,
                                 COALESCE(SUM(tokens_cache_read),0) tcr,
                                 COALESCE(SUM(tokens_cache_write),0) tcw,
-                                COALESCE(SUM(cost),0) cost FROM session_v2""").fetchone()
+                                COALESCE(SUM(cost),0) cost,
+                                COALESCE(SUM(CASE WHEN time_busy > time_created
+                                                  THEN time_busy - time_created ELSE 0 END),0) span
+                         FROM session_v2""").fetchone()
+        ti, to_, tr = int(r["ti"]), int(r["to_"]), int(r["tr"])
+        tcr, tcw = int(r["tcr"]), int(r["tcw"])
+        denom = tcr + ti
         tok.update({
-            "db": True, "sessions": r["n"], "input": r["ti"], "output": r["to_"],
-            "reasoning": r["tr"], "cacheRead": r["tcr"], "cacheWrite": r["tcw"],
+            "db": True,
+            "sessions": int(r["roots"] or 0),
+            "allSessions": int(r["n"] or 0),
+            "subagents": int((r["n"] or 0) - (r["roots"] or 0)),
+            "input": ti, "output": to_, "reasoning": tr,
+            "cacheRead": tcr, "cacheWrite": tcw,
+            "total": ti + to_, "billed": ti + to_ + tr,
+            "cacheHit": round(tcr / denom, 4) if denom else 0.0,
             "cost": round(r["cost"] or 0, 4),
+            # time_busy is an epoch, not a duration. summing it produced a
+            # number in the tens of billions. the span from create to last
+            # activity is the only hours figure the schema actually carries.
+            "activeSec": int((r["span"] or 0) / 1000),
         })
-        r = c.execute("""SELECT COUNT(*) n, COALESCE(SUM(tokens_input),0) ti,
+
+        # today: sessions that did work since local midnight. a session that
+        # started last week counts here if it is still being used — the tokens
+        # are still that session's lifetime, so this is a "touched today" view,
+        # not a slice of today's spend. it is labelled that way in the HUD.
+        # sqlite's 'localtime' and python's disagree on this box, so the day
+        # boundaries are computed once, here, and passed in as epochs.
+        today0 = int(datetime.datetime.combine(datetime.date.today(),
+                                               datetime.time.min).timestamp())
+        r = c.execute("""SELECT COUNT(*) n,
+                                COALESCE(SUM(tokens_input),0) ti,
                                 COALESCE(SUM(tokens_output),0) to_,
-                                COALESCE(SUM(cost),0) cost FROM session_v2
-                         WHERE date(time_updated/1000,'unixepoch','localtime')
-                               = date('now','localtime')""").fetchone()
-        tok["today"] = {"sessions": r["n"], "input": r["ti"], "output": r["to_"],
-                        "cost": round(r["cost"] or 0, 4)}
+                                COALESCE(SUM(tokens_reasoning),0) tr,
+                                COALESCE(SUM(tokens_cache_read),0) tcr,
+                                COALESCE(SUM(cost),0) cost
+                         FROM session_v2
+                         WHERE time_busy >= ?""", (today0 * 1000,)).fetchone()
+        tok["today"] = {
+            "sessions": int(r["n"] or 0),
+            "input": int(r["ti"] or 0), "output": int(r["to_"] or 0),
+            "reasoning": int(r["tr"] or 0), "cacheRead": int(r["tcr"] or 0),
+            "total": int((r["ti"] or 0) + (r["to_"] or 0)),
+            "cost": round(r["cost"] or 0, 4),
+        }
+
+        # last 7 days by the day the session started — the only per-day cut the
+        # schema supports without a message ledger. bucketed in python because
+        # the SQL boundary compared an INTEGER column to a TEXT strftime and
+        # every row lost, leaving the chart flat zero.
+        week0 = today0 - 6 * 86400
+        rows = c.execute("""SELECT time_created, tokens_input, tokens_output, cost
+                            FROM session_v2
+                            WHERE time_created >= ?""", (week0 * 1000,)).fetchall()
+        days = {}
+        for row in rows:
+            d = datetime.datetime.fromtimestamp(int(row["time_created"]) / 1000).date()
+            e = days.setdefault(d, {"total": 0, "cost": 0.0, "sessions": 0})
+            e["total"] += int(row["tokens_input"] or 0) + int(row["tokens_output"] or 0)
+            e["cost"] += row["cost"] or 0
+            e["sessions"] += 1
+        week = []
+        for i in range(6, -1, -1):
+            day = datetime.date.today() - datetime.timedelta(days=i)
+            e = days.get(day) or {"total": 0, "cost": 0.0, "sessions": 0}
+            week.append({
+                "date": day.strftime("%Y-%m-%d"),
+                "label": day.strftime("%a"),
+                "total": e["total"],
+                "cost": round(e["cost"], 4),
+                "sessions": e["sessions"],
+            })
+        tok["week"] = week
+
         def model_name(m):
             m = m or ""
             try:
                 j = json.loads(m)
-                n = j.get("id") or j.get("modelID") or m
-                return "%s/%s" % (j["providerID"], n) if j.get("providerID") else n
             except Exception:
                 return m
+            # the variant is a setting, not a different model. without this the
+            # same model splits across rows and the top-4 list lies.
+            n = j.get("id") or j.get("modelID") or m
+            return "%s/%s" % (j["providerID"], n) if j.get("providerID") else n
 
-        rows = c.execute("""SELECT title, tokens_input, tokens_output,
-                                   cost, model, time_updated
-                            FROM session_v2 ORDER BY time_updated DESC LIMIT 12""").fetchall()
+        # 24 rows because the burn chart draws 24; it used to ask for 12 and
+        # label the chart "last 24".
+        rows = c.execute("""SELECT title, tokens_input, tokens_output, tokens_reasoning,
+                                   tokens_cache_read, cost, model, time_updated, directory
+                            FROM session_v2 ORDER BY time_updated DESC LIMIT 24""").fetchall()
         for i, row in enumerate(rows):
             d = dict(row)
             item = {
                 "title": (d.get("title") or "untitled")[:64],
-                "tokens": (d.get("tokens_input") or 0) + (d.get("tokens_output") or 0),
-                "input": d.get("tokens_input") or 0,
-                "output": d.get("tokens_output") or 0,
+                "input": int(d.get("tokens_input") or 0),
+                "output": int(d.get("tokens_output") or 0),
+                "reasoning": int(d.get("tokens_reasoning") or 0),
+                "cacheRead": int(d.get("tokens_cache_read") or 0),
+                "tokens": int(d.get("tokens_input") or 0) + int(d.get("tokens_output") or 0),
                 "cost": round(d.get("cost") or 0, 4),
                 "model": model_name(d.get("model")),
+                "dir": (d.get("directory") or "").rsplit("/", 1)[-1],
                 "age": max(0, now - int((d.get("time_updated") or 0) / 1000)),
             }
             if i == 0:
                 tok["last"] = item
             tok["recent"].append(item)
+
         rows = c.execute("""SELECT model, COUNT(*) AS n,
                                    SUM(tokens_input+tokens_output) AS tok,
+                                   SUM(tokens_cache_read) AS cache,
                                    SUM(cost) AS cost
-                            FROM session_v2 GROUP BY model
-                            ORDER BY tok DESC LIMIT 4""").fetchall()
+                            FROM session_v2 GROUP BY model""").fetchall()
+        agg = {}
         for row in rows:
             d = dict(row)
-            tok["models"].append({"name": model_name(d.get("model")),
-                                  "sessions": d.get("n") or 0,
-                                  "tokens": d.get("tok") or 0,
-                                  "cost": round(d.get("cost") or 0, 4)})
+            name = model_name(d.get("model"))
+            a = agg.setdefault(name, {"name": name, "sessions": 0, "tokens": 0,
+                                      "cacheRead": 0, "cost": 0.0})
+            a["sessions"] += int(d.get("n") or 0)
+            a["tokens"] += int(d.get("tok") or 0)
+            a["cacheRead"] += int(d.get("cache") or 0)
+            a["cost"] += d.get("cost") or 0
+        tok["models"] = sorted(agg.values(), key=lambda x: x["tokens"], reverse=True)[:4]
+        for m in tok["models"]:
+            m["cost"] = round(m["cost"], 4)
         con.close()
     except Exception as e:
         tok["error"] = str(e)[:200]

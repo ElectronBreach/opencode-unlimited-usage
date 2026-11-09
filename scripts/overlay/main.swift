@@ -41,7 +41,7 @@ func crashLog(_ msg: String) {
     }
 }
 
-let EXPANDED = NSSize(width: 366, height: 700)
+let EXPANDED = NSSize(width: 366, height: 736)
 let COLLAPSED = NSSize(width: 78, height: 78)
 
 final class Panel: NSPanel {
@@ -104,6 +104,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // the user asked for the panel and has not hidden it since. a pinned panel
     // ignores the session watcher; an auto-raised one follows opencode.
     var pinned = false
+    var tickCount = 0
     // the user closed the panel deliberately. the session watcher must not
     // reopen it until they ask again — otherwise ✕ does nothing.
     var manualHide = false
@@ -165,7 +166,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         }
 
         poll = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
-            self.refresh(force: false)
+            // nobody is looking at a hidden panel. the session watcher still runs
+            // every tick; the status probe drops to every fourth (8s), which is
+            // 1/4 the process spawns and still instant to the eye on show.
+            self.tickCount += 1
+            if !self.hidden || self.tickCount % 4 == 0 { self.refresh(force: false) }
             self.healthTick()
             self.warpWindowTick()
             self.sessionTick()
@@ -267,7 +272,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             "dismissed": hidden,
             "policy": NSApp.activationPolicy().rawValue,
             "statusItem": statusItem?.button != nil,
-            "hidden": NSApp.isHidden,
+            "appHidden": NSApp.isHidden,
             "webLoaded": !web.isLoading && web.url != nil,
             "ts": Int(Date().timeIntervalSince1970)
         ]
@@ -1002,6 +1007,21 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         p.standardError = pipe
         try? p.run()
 
+        // a hop or a doctor that never exits (dead tunnel, a sudo prompt with
+        // nowhere to type) would hold `busy` forever and refuse every command
+        // after it. 90s is longer than any real run, short enough to recover.
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard p.isRunning else { return }
+            DispatchQueue.main.async {
+                self?.push("log", ["line": "… \(which) exceeded 90s — stopping it"])
+            }
+            p.terminate()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 90, execute: watchdog)
+
         var buffer = ""
         pipe.fileHandleForReading.readabilityHandler = { fh in
             let d = fh.availableData
@@ -1019,6 +1039,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             }
         }
         p.terminationHandler = { proc in
+            watchdog.cancel()
             DispatchQueue.main.async {
                 if !buffer.isEmpty { self.push("log", ["line": buffer]) }
                 self.busy = false

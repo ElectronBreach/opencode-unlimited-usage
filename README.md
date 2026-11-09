@@ -116,8 +116,11 @@ A small always-on-top window that opens **by itself** every time `opencode`
 starts — any session, any project. It is not decoration: it runs the same
 scripts you would run by hand and reads the same database opencode writes.
 
-- **tokens** — all-time in/out/cache, cost, sessions, refreshed every 2 s
-  straight out of `~/.local/share/opencode/opencode.db` (read-only, never cached)
+- **tokens** — input + output with the cache figure, hit rate, cost and session
+  count, refreshed every 2 s straight out of
+  `~/.local/share/opencode/opencode.db` (read-only, never cached)
+- **today · rate/min · cache hit · session time** — the four numbers that say
+  what this actually cost to run
 - **identity** — egress address, the server-seen `/64` (the actual quota key),
   device id, rotation count
 - **health** — warp / DNS / keeper / guard / credit / leak-guard, one dot each
@@ -383,6 +386,6 @@ in the repo, so a release can be installed with `./install.sh` or
 
 MIT license. Use it, fork it, just don't sell it to your grandma.
 
-This is `VERSION` 2.0.1 — see [CHANGELOG.md](CHANGELOG.md).
+This is `VERSION` 2.1.0 — see [CHANGELOG.md](CHANGELOG.md).
 
 — ELECTRONBREACH

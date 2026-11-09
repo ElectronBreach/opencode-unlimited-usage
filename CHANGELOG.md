@@ -3,6 +3,46 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.1.0 — 2026-11-09
+
+### Statistics
+
+- **The token ledger was understating work by ~30x.** Cache reads (835M on this
+  box) were collected but never shown, so the headline only counted the smaller
+  input+output pair. The hero now reads `IN + OUT`, with the cache figure beside
+  it and the hit-rate ring beside that.
+- **The 7-day chart was flat zero.** The SQL boundary compared an `INTEGER`
+  column against a TEXT `strftime('%s', …)`, and SQLite orders every TEXT above
+  every INTEGER — so the `WHERE` matched nothing. Bucketed in Python now.
+- **`time_busy` was summed as if it were a duration.** It is an epoch, and the
+  total came out at 93 million hours. Session time is now create → last activity.
+- **Subagent sessions were counted as sessions.** The count is root sessions,
+  with the spawned ones shown as `+n`.
+- **Models split by variant.** The same model appeared several times in the top
+  four because the variant lives in the same JSON string. Grouped by model id.
+- **"Today" used sqlite's `localtime`**, which disagrees with the shell's on this
+  machine. Day boundaries are computed once, in Python, and passed in.
+- The burn chart asked the DB for 12 rows and labelled itself "last 24"; it gets
+  24, and each bar carries a cache tick so a cache-heavy session is visible.
+- New one-line stat strip: TODAY · RATE/MIN (a real delta between snapshots) ·
+  CACHE HIT · SESSION TIME.
+
+### Fixed
+
+- `install.sh` never created `~/.local/bin/ouc`, and `uninstall.sh` never removed
+  it. Both do now, in both PATH homes.
+- The `LEAK` chip painted a healthy fail-open guard yellow. Off is the design.
+- `dumpState` published `NSApp.isHidden` under the key `hidden`, which is not the
+  same thing as the panel being dismissed (`dismissed` already was).
+
+### Stability
+
+- A `hop` or `doctor` that never exits held the HUD's `busy` flag forever, so
+  every later command was refused. Both now get a 90 s watchdog.
+- The status probe drops to one tick in four while the panel is hidden — a
+  quarter of the process spawns for an idle HUD, with no visible delay on show.
+- The panel grew to 736 px so the console keeps its height after the new rows.
+
 ## 2.0.1 — 2026-11-09
 
 ### Fixed

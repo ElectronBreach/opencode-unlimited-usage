@@ -107,6 +107,7 @@ s rm -f "/etc/sudoers.d/$BRAND" "/etc/sudoers.d/${BRAND}-mac" && ok "sudoers ent
 # wrapper — remove it outright. keeping a passthrough shim meant the entry
 # survived every uninstall and could shadow a reinstall.
 rm -f "$HOME/.local/bin/opencode"
+rm -f "$HOME/.local/bin/ouc" "$HOME/.opencode/bin/ouc"
 REAL="$(resolve_real_opencode)"
 if [ -n "$REAL" ]; then
   ok "opencode entry removed (stock binary still at $REAL)"
@@ -124,6 +125,8 @@ fi
 rm -f "$HOME/.local/bin/${BRAND}-hop" "$HOME/.local/bin/${BRAND}-doctor" "$HOME/.local/bin/${BRAND}-overlay"
 rm -f "$HOME/.opencode/bin/${BRAND}-hop" "$HOME/.opencode/bin/${BRAND}-doctor" "$HOME/.opencode/bin/${BRAND}-overlay"
 rm -f "$HOME/.local/bin/${BRAND}-killswitch" "$HOME/.local/bin/${BRAND}-uninstall"
+rm -f "$HOME/.opencode/bin/${BRAND}-hop" "$HOME/.opencode/bin/${BRAND}-doctor" \
+      "$HOME/.opencode/bin/${BRAND}-overlay" 2>/dev/null || true
 rm -f "$HOME/.local/bin/${BRAND}-mac" 2>/dev/null || true
 rm -rf "$HOME/.local/share/${BRAND}-mac"
 

@@ -92,7 +92,7 @@ header:active{cursor:grabbing}
 .project .pname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9fb6c8}
 
 /* ---------- hero ---------- */
-.hero{position:relative;z-index:2;margin-top:8px;padding:10px 11px 9px;border-radius:12px;
+.hero{position:relative;z-index:2;margin-top:7px;padding:9px 11px 8px;border-radius:12px;
   background:linear-gradient(160deg,rgba(34,211,238,.055),rgba(167,139,250,.03) 55%,transparent);
   border:1px solid rgba(34,211,238,.16);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 0 22px rgba(34,211,238,.06);
@@ -100,7 +100,7 @@ header:active{cursor:grabbing}
 .hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .label{font-size:8.5px;letter-spacing:.22em;color:var(--mut)}
 .big{
-  font-size:29px;line-height:1.05;font-weight:700;letter-spacing:-.01em;margin-top:3px;
+  font-size:27px;line-height:1.05;font-weight:700;letter-spacing:-.01em;margin-top:3px;
   color:#f2fbff;text-shadow:0 0 18px rgba(34,211,238,.45);
   font-variant-numeric:tabular-nums;
 }
@@ -125,6 +125,15 @@ header:active{cursor:grabbing}
 .bars .hit i{background:linear-gradient(90deg,var(--ok),#6ee7b7);box-shadow:0 0 8px rgba(52,211,153,.55)}
 .legend{display:flex;gap:9px;margin-top:5px;font-size:8.5px;letter-spacing:.08em;color:var(--mut)}
 .legend s{text-decoration:none;width:5px;height:5px;border-radius:1px;display:inline-block;margin-right:3px;vertical-align:middle}
+/* four real numbers in one line — added rows would eat the console, this does not */
+.stats{display:flex;justify-content:space-between;gap:6px;margin-top:7px;padding:5px 7px;
+  border-radius:7px;background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.055)}
+.stats div{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+.stats b{font-size:10px;font-weight:600;color:#cfe4f0;letter-spacing:.01em;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.stats span{font-size:7px;letter-spacing:.1em;color:var(--mut);white-space:nowrap}
+.stats .hi b{color:var(--cy)}
+.stats .ok b{color:var(--ok)}
 
 /* ---------- cards ---------- */
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px;position:relative;z-index:2}
@@ -162,7 +171,7 @@ header:active{cursor:grabbing}
   background:rgba(255,255,255,.015);padding:5px 7px 2px}
 .spark-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;white-space:nowrap;font-size:8px;letter-spacing:.16em;color:var(--mut);margin-bottom:3px}
 .spark-top b{font-weight:600;color:rgba(244,114,182,.85);letter-spacing:0;white-space:nowrap}
-.spark canvas{display:block;width:100%;height:44px}
+.spark canvas{display:block;width:100%;height:40px}
 
 /* ---------- actions ---------- */
 .actions{display:flex;gap:7px;margin-top:9px;position:relative;z-index:2}
@@ -348,11 +357,12 @@ body.collapsed #bubble{display:grid}
   <section class="hero">
     <div class="hero-top">
       <div>
-        <div class="label">TOKENS · ALL TIME</div>
+        <div class="label">TOKENS · IN + OUT</div>
         <div class="big"><span id="tokTotal">0</span><span class="unit" id="tokUnit"></span></div>
         <div class="hero-sub">
           <span>↑<b id="tokIn">0</b></span>
           <span>↓<b id="tokOut">0</b></span>
+          <span title="prompt cache reads — real work, billed at a fraction">⚡<b id="tokCache">0</b></span>
           <span class="cost" id="tokCost">$0</span>
         </div>
       </div>
@@ -378,6 +388,12 @@ body.collapsed #bubble{display:grid}
       <span><s style="background:#a78bfa"></s>OUT</span>
       <span><s style="background:#34d399"></s>CACHE HIT</span>
       <span style="margin-left:auto" id="sessCount">0 sessions</span>
+    </div>
+    <div class="stats">
+      <div class="hi"><b id="sToday">0</b><span>TODAY</span></div>
+      <div><b id="sRate">—</b><span>RATE / MIN</span></div>
+      <div class="ok"><b id="sHit">0%</b><span>CACHE HIT</span></div>
+      <div><b id="sActive">0h</b><span>SESSION TIME</span></div>
     </div>
   </section>
 
@@ -463,6 +479,14 @@ function compact(n){
 }
 const fmt = (n) => { const [v,u] = compact(n); return v + u; };
 const money = (c) => "$" + (Number(c)||0).toFixed(2);
+const hrs = (s) => {
+  s = Number(s) || 0;
+  if (!s) return "0h";
+  const h = s / 3600;
+  if (h >= 10) return Math.round(h) + "h";
+  if (h >= 1) return h.toFixed(1) + "h";
+  return Math.max(1, Math.round(s / 60)) + "m";
+};
 const age = (s) => {
   if (s < 0) return "—";
   if (s < 60) return s + "s ago";
@@ -475,7 +499,10 @@ const age = (s) => {
 let S = {};
 
 function healthChip(label, state, hint, act){
-  const cls = state === true ? "ok" : state === "warn" ? "warn" : "bad";
+  // "idle" is neither good nor broken — the leak guard being off is the design,
+  // not a fault, and painting it yellow made healthy systems look sick.
+  const cls = state === true ? "ok" : state === "warn" ? "warn"
+            : state === "idle" ? "" : "bad";
   const attr = act ? ` data-act="${act}"` : "";
   const cur = act ? " pointer" : "";
   return `<span class="chip ${cls}${cur}" id="chip${label}"${attr} title="${hint||""}"><i></i>${label}</span>`;
@@ -493,8 +520,10 @@ function render(d){
   $("tokUnit").textContent = tu;
   $("tokIn").textContent = fmt(t.input);
   $("tokOut").textContent = fmt(t.output);
+  $("tokCache").textContent = fmt(t.cacheRead);
   $("tokCost").textContent = money(t.cost);
-  $("sessCount").textContent = (t.sessions || 0) + " sessions";
+  $("sessCount").textContent = (t.sessions || 0) + " sessions"
+    + (t.subagents ? " +" + t.subagents : "");
 
   const cache = t.cacheRead || 0, inTok = t.input || 0;
   const hit = cache + inTok > 0 ? cache / (cache + inTok) : 0;
@@ -502,6 +531,25 @@ function render(d){
   const circ = 2 * Math.PI * 22;
   $("ringFill").style.strokeDashoffset = String(circ * (1 - hit));
   $("ringPct").textContent = pct + "%";
+
+  // the four numbers that answer "what did this actually cost me to run".
+  // rate is a real delta between two snapshots, not a guess: no new tokens, no
+  // number, and it decays as the gap grows.
+  const io = (t.input || 0) + (t.output || 0);
+  const nowTs = Date.now() / 1000;
+  if (window._ratePrev) {
+    const dt = nowTs - window._ratePrev.t;
+    const dv = io - window._ratePrev.v;
+    if (dt >= 3 && dv >= 0) {
+      const inst = (dv / dt) * 60;
+      window._rate = window._rate ? window._rate * 0.55 + inst * 0.45 : inst;
+    }
+  }
+  window._ratePrev = { t: nowTs, v: io };
+  $("sToday").textContent = fmt((t.today || {}).total || 0);
+  $("sRate").textContent = window._rate > 0.5 ? fmt(window._rate) + "/m" : "—";
+  $("sHit").textContent = pct + "%";
+  $("sActive").textContent = hrs(t.activeSec);
 
   const totalAll = (t.input||0) + (t.output||0) + cache;
   const wIn = totalAll ? (inTok / totalAll) * 100 : 0;
@@ -523,7 +571,12 @@ function render(d){
     healthChip("KEEPER", !!d.keeper, "root launchd"),
     healthChip("GUARD", !!d.guard, "user launchagent"),
     healthChip("CREDIT", !!d.credit, "~/.opencode/AGENTS.md"),
-    healthChip("LEAK", /armed/.test(d.leakguard || "") ? true : (d.leakguard === "off" ? "warn" : "warn"), d.leakguard)
+    healthChip("LEAK",
+               /armed/.test(d.leakguard || "") ? true
+                 : (d.leakguard === "off" || !d.leakguard) ? "idle" : "warn",
+               (d.leakguard === "off" || !d.leakguard)
+                 ? "off — fail-open by design, armed only while the tunnel carries traffic"
+                 : d.leakguard)
   ];
   $("health").innerHTML = chips.join("");
 
@@ -536,6 +589,8 @@ function render(d){
   }
 
   // sparkline
+  // recent arrives newest-first; the chart reads left to right in time order.
+  // 24 rows now, which is what this label has always claimed.
   const burn = (t.recent || []).slice().reverse()
     .filter(r => (r.tokens || 0) > 0).slice(-24);
   drawSpark(burn);
@@ -544,8 +599,13 @@ function render(d){
   // last session
   const last = t.last;
   if (last) {
-    $("lastSession").textContent = last.title + " · " + fmt(last.tokens) + " tok";
-    $("lastSession").title = last.title + " · " + last.model;
+    const cachePct = last.cacheRead
+      ? " · " + Math.round(100 * last.cacheRead / (last.cacheRead + last.input + 1)) + "% cached"
+      : "";
+    $("lastSession").textContent = last.title + " · " + fmt(last.tokens) + " tok" + cachePct;
+    $("lastSession").title = [last.title, last.model, last.dir,
+      "in " + fmt(last.input), "out " + fmt(last.output),
+      "cache " + fmt(last.cacheRead), money(last.cost)].filter(Boolean).join(" · ");
     $("lastAge").textContent = age(last.age);
   }
 
@@ -578,7 +638,11 @@ function drawSpark(rows){
     ctx.beginPath(); ctx.moveTo(0, H - 1.5); ctx.lineTo(W, H - 1.5); ctx.stroke();
     return;
   }
-  const max = Math.sqrt(Math.max.apply(null, rows.map(r => r.tokens || 0).concat([1])));
+  // scale bars on real tokens only. folding the cache maximum into the peak
+  // squashed every bar to a stub, because cache reads run ~30x the token count.
+  const peak = rows.reduce((m, r) => Math.max(m, r.tokens || 0), 1);
+  const max = Math.sqrt(peak);
+  const peakCache = rows.reduce((m, r) => Math.max(m, r.cacheRead || 0), 1);
   const n = rows.length;
   const bw = W / n;
   rows.forEach((r, i) => {
@@ -596,6 +660,18 @@ function drawSpark(rows){
     const cx = x + (bw - w) / 2;
     ctx.roundRect(cx, H - h, w, h, 1.5);
     ctx.fill();
+    // a tick above the bar is the cache share of that session. without it a
+    // session that was 99% cache reads looks identical to one that was not.
+    const cache = r.cacheRead || 0;
+    if (cache > 0 && peakCache > 0) {
+      // its own scale, capped, so the tick says "this one was cached heavily"
+      // without competing with the token bars for height.
+      const ch = 2 + 9 * Math.sqrt(cache / peakCache);
+      ctx.fillStyle = "rgba(52,211,153,.40)";
+      ctx.beginPath();
+      ctx.roundRect(cx, H - h - ch - 2, w, ch, 1);
+      ctx.fill();
+    }
     if (i === n - 1) {
       ctx.fillStyle = "#f472b6";
       ctx.beginPath();

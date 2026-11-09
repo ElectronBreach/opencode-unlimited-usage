@@ -35,11 +35,17 @@ Every button runs a real script. There is nothing decorative.
 
 ## Reading the panel
 
-- **TOKENS · ALL TIME** — straight from `session_v2`, refreshed every 2 s, no cache
+- **TOKENS · IN + OUT** — straight from `session_v2`, refreshed every 2 s, no cache.
+  Beside it: the prompt-cache figure (real work, billed at a fraction), the hit
+  rate ring, and the cost column
+- **TODAY · RATE/MIN · CACHE HIT · SESSION TIME** — today's tokens, a live delta
+  between snapshots (no new tokens, no number), cache hit rate, and total
+  create-to-last-activity time across all sessions
 - **IDENTITY** — the address the server sees, and the `/64` that is the actual quota key
 - **API KEYS** — pool size, which key is live, and `●` for the console's verdict
 - **STATUS** — one chip per subsystem; green means the thing it names is live
-- **SESSION BURN** — the last 24 sessions that spent anything, ranked, newest last
+- **SESSION BURN** — the last 24 sessions that spent anything, newest last. Bar
+  height is real tokens; the green tick above a bar is that session's cache share
 - **CONSOLE** — the raw output of whatever you just ran
 
 ## Driving it from a script
