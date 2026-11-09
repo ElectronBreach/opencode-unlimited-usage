@@ -3,6 +3,22 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.5.5 — 2026-11-09
+
+### The MODELS page shows what the probe already knows
+
+`model-levers json` claimed `dead: 0` because the dead cache was never passed
+to it — a JSON argument that was read from a slot nobody filled. Now it is, and
+each row carries its verdict:
+
+- **wall** — 429, the free limit on that model
+- **gone** — 400, the console is not serving it at all
+- **burnt** — this run already spent it
+- no label — no verdict yet, the size is shown instead
+
+so the tap happens after the evidence, not before it. 24 of 51 were dead on this
+machine when the fix landed.
+
 ## 2.5.4 — 2026-11-09
 
 ### The report now scores the levers

@@ -1287,11 +1287,18 @@ function renderModels(){
     row.className = "pxr" + (m.current ? " cur" : "");
     row.title = m.id + (m.ctx ? " · " + Math.round(m.ctx / 1000) + "k context" : "");
     const dot = document.createElement("i");
-    dot.className = "pxd " + (m.current ? "live" : m.burned ? "dead" : "");
+    // m.dead is what the last probe said: "429" is the free wall, "400" means
+    // the console is not serving that model at all. both are worth seeing
+    // before a tap, not after.
+    dot.className = "pxd " + (m.current ? "live" : (m.dead || m.burned) ? "dead" : "");
     const n = document.createElement("b"); n.textContent = i + 1;
     const a = document.createElement("span"); a.className = "pxa"; a.textContent = m.id;
+    if (m.dead || m.burned) { a.style.opacity = ".55"; }
     const c = document.createElement("span"); c.className = "pxm";
-    c.textContent = m.ctx ? Math.round(m.ctx / 1000) + "k" : "";
+    c.textContent = m.dead === "429" ? "wall"
+                  : m.dead === "400" ? "gone"
+                  : m.burned ? "burnt"
+                  : (m.ctx ? Math.round(m.ctx / 1000) + "k" : "");
     row.append(dot, n, a, c);
     row.addEventListener("click", () => {
       toast("model → " + m.id);

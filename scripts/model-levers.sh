@@ -393,12 +393,20 @@ PY
 
 cmd_json(){
   ensure_catalog
-  python3 - "$CATALOG" "$PROVIDER" "$USED" "$(current_id)" <<'PY'
-import json,sys
+  python3 - "$CATALOG" "$PROVIDER" "$USED" "$(current_id)" "$DEAD" <<'PY'
+import json,sys,time
 cat,prov,usedf,cur=sys.argv[1:5]
 d=json.load(open(cat))
 try: used=json.load(open(usedf))
 except Exception: used=[]
+try: dead=json.load(open(sys.argv[5]))
+except Exception: dead={}
+now=time.time()
+def deadcode(mid):
+    e=dead.get(mid) or {}
+    if not e: return None
+    ttl=1800 if str(e.get("code"))=="429" else 21600
+    return None if (now-float(e.get("ts") or 0)) > ttl else str(e.get("code"))
 rows=[]
 for mid,m in ((d.get(prov) or {}).get("models") or {}).items():
     c=((m.get("cost") or {}).get("text") or {})
@@ -406,10 +414,9 @@ for mid,m in ((d.get(prov) or {}).get("models") or {}).items():
        and m.get("type") in ("chat","decision"):
         rows.append({"id":mid,"name":m.get("name") or mid,
                      "ctx":(m.get("limit") or {}).get("context") or 0,
-                     "burned": mid in used, "current": mid==cur})
-try: dead=json.load(open(sys.argv[5]))
-except Exception: dead={}
-print(json.dumps({"provider":prov,"current":cur,"dead":len(dead),"free":len(rows),
+                     "burned": mid in used, "current": mid==cur,
+                     "dead": deadcode(mid)})
+print(json.dumps({"provider":prov,"current":cur,"dead":len([r for r in rows if r["dead"]]),"free":len(rows),
                   "burned":len([r for r in rows if r["burned"]]),
                   "models":rows},separators=(",",":")))
 PY

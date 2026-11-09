@@ -414,6 +414,6 @@ in the repo, so a release can be installed with `./install.sh` or
 
 MIT license. Use it, fork it, just don't sell it to your grandma.
 
-This is `VERSION` 2.5.4 — see [CHANGELOG.md](CHANGELOG.md).
+This is `VERSION` 2.5.5 — see [CHANGELOG.md](CHANGELOG.md).
 
 — ELECTRONBREACH
