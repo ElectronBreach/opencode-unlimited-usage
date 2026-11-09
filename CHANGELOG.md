@@ -3,6 +3,25 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.4.1 — 2026-11-09
+
+### Three doors to the sheet
+
+The chip worked and the chip was unfindable: a 10px text run at the right end
+of a 7.5px meta row. Same sheet, two more ways in, no pixels added.
+
+- the chip is now ringed, so it reads as a control instead of a label;
+- **menu bar → `Proxy & Models…`** (⌘⇧P when the HUD is frontmost) opens the
+  panel and the sheet in one move;
+- **`sheet`** in `guard/overlay-cmd` opens it from a script. The menu item and
+  the file command call the same `openSheet()`, so the two doors cannot drift.
+
+Debug plumbing that made the blank-sheet report answerable: **`eval`** in
+`guard/overlay-cmd` runs whatever JS sits in `guard/overlay-eval.js` and writes
+the result to `guard/overlay-eval.json`. The blank was a capture taken during
+the relaunch — the sheet's own geometry reads `head y=10 h=20`, `list y=67
+h=460`, `add y=534`, all visible at opacity 1.
+
 ## 2.4.0 — 2026-11-09
 
 ### Two levers that are cheaper than a rotation

@@ -388,8 +388,9 @@ button.act.busy .dot{display:none}
 .px-row .act.mini{flex:1 1 0}
 .sheet-foot{font:8px/1.5 var(--mono);letter-spacing:.08em;color:var(--mut);text-align:center;flex:0 0 auto}
 /* the chip is a 10px text run; give it a real target without moving the row */
-.meta #pxChip{cursor:pointer;padding:4px 3px;margin:-4px -3px;border-radius:5px}
-.meta #pxChip:hover{background:rgba(34,211,238,.08)}
+.meta #pxChip{cursor:pointer;padding:4px 5px;margin:-4px -5px;border-radius:5px;
+  box-shadow:inset 0 0 0 1px rgba(34,211,238,.22);color:#8fb3c6}
+.meta #pxChip:hover{background:rgba(34,211,238,.1);box-shadow:inset 0 0 0 1px rgba(34,211,238,.45)}
 .meta #pxChip:hover b{color:var(--cy)}
 .meta #pxChip b.up{color:var(--ok)}
 .meta #pxChip b.on{color:var(--cy)}

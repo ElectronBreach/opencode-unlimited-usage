@@ -247,13 +247,16 @@ egress side automatically.
 **What is the fastest way out of a wall?**
 Switch model. The wall text itself says "or switch models", and there are 51
 zero-cost models on the `opencode` provider, each with its own free quota —
-`HUD → PROXY → MODELS`, one tap, no tunnel, no registration, no DNS window.
+`PROXY` chip → `MODELS` page, one tap, no tunnel, no registration, no DNS
+window. The chip sits at the right end of the identity row; the menu bar item
+`Proxy & Models…` opens the same sheet.
 Rotating the `/64` is the expensive lever and comes second. The guard logs
 "the wall is not the ip right now" once it has proven the egress is not the
 problem, and it never switches a model behind a running session.
 
 **What are the proxies for?**
-Optional. `HUD → PROXY` runs a local `CONNECT` mux on `127.0.0.1:8899`; the
+Optional. The `PROXY` chip (or menu bar → `Proxy & Models…`) runs a local
+`CONNECT` mux on `127.0.0.1:8899`; the
 client points at it once and the mux rotates upstreams behind that fixed
 address, so a rotation costs no restart and no DNS window. Paste webshare-style
 `host:port:user:pass` lines, hit `TEST` to see which are alive, `ON` to start.
@@ -409,6 +412,6 @@ in the repo, so a release can be installed with `./install.sh` or
 
 MIT license. Use it, fork it, just don't sell it to your grandma.
 
-This is `VERSION` 2.4.0 — see [CHANGELOG.md](CHANGELOG.md).
+This is `VERSION` 2.4.1 — see [CHANGELOG.md](CHANGELOG.md).
 
 — ELECTRONBREACH

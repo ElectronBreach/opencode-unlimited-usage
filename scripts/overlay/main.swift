@@ -322,6 +322,22 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         }
     }
 
+    // Debug only: run whatever JS sits in guard/overlay-eval.js and dump the
+    // result next to it. Kept behind an explicit command so the hot path never
+    // pays for it.
+    func evalScript() {
+        let src = guardDir.appendingPathComponent("overlay-eval.js")
+        let js = (try? String(contentsOf: src, encoding: .utf8)) ?? "null"
+        web.evaluateJavaScript(js) { res, err in
+            var body: [String: Any] = ["frame": NSStringFromRect(self.window.frame)]
+            if let v = res { body["result"] = String(describing: v) }
+            if let e = err { body["error"] = String(describing: e) }
+            if let d = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted]) {
+                try? d.write(to: guardDir.appendingPathComponent("overlay-eval.json"))
+            }
+        }
+    }
+
     func measureControls() {
         let js = "JSON.stringify(Array.from(document.querySelectorAll('button,#bubble,#drag,.chip[data-act],#pxChip')).map(e=>{const r=e.getBoundingClientRect();return {id:e.id,x:r.x,y:r.y,w:r.width,h:r.height}}))"
         web.evaluateJavaScript(js) { res, err in
@@ -696,6 +712,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         menu.addItem(NSMenuItem(title: "Hide HUD", action: #selector(menuHide), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Collapse to bubble", action: #selector(menuBubble), keyEquivalent: ""))
+        let sheetItem = NSMenuItem(title: "Proxy & Models…", action: #selector(menuSheet), keyEquivalent: "p")
+        sheetItem.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(sheetItem)
         menu.addItem(NSMenuItem(title: "Reload HUD", action: #selector(menuReload), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Open Cloudflare WARP", action: #selector(menuWarp), keyEquivalent: ""))
@@ -716,6 +735,18 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     @objc func menuShow() { openedByLane = false; pinned = true; manualHide = false; setHidden(false); setCollapsed(false, animate: true) }
     @objc func menuHide() { setHidden(true) }
     @objc func menuBubble() { setHidden(false); setCollapsed(true, animate: true) }
+    @objc func menuSheet() {
+        openedByLane = false; pinned = true; manualHide = false
+        setHidden(false); setCollapsed(false, animate: true)
+        window.orderFrontRegardless()
+        openSheet()
+    }
+    // the chip is a 10px text run in the identity row; anything that has to be
+    // found by eye gets a second door. this one is also reachable from the
+    // overlay-cmd file as "sheet", so scripts and the menu share one path.
+    func openSheet() {
+        web.evaluateJavaScript("var c=document.getElementById('pxChip');if(c)c.click();") { _, _ in }
+    }
     @objc func menuReload() { setHidden(false); reloadPage() }
     // KeepAlive would put it straight back. bootout the agent first, so "Quit"
     // means quit until the next login (or `opencode-unlimited-overlay show`,
@@ -836,6 +867,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "keyrotate": keyCmd(["rotate"])
         case "keylist": keyCmd(["health"])
         case "rect": measureControls()
+        case "eval": evalScript()
+        case "sheet": setHidden(false); openSheet()
         case "dom": probeDom()
         // the panel's X puts it away for real. the process is still there, the
         // menu bar item brings it back, and the lane raises it on the next
@@ -1159,6 +1192,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "dock": dockSide()
         case "state": dumpState()
         case "rect": measureControls()
+        case "eval": evalScript()
+        case "sheet": setHidden(false); openSheet()
         case "dom": probeDom()
         case "reload": reloadPage()
         case "keyrotate": keyCmd(["rotate"])

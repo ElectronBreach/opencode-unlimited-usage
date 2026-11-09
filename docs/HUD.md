@@ -40,6 +40,14 @@ Every button runs a real script. There is nothing decorative.
 fourth tab: the panel keeps its exact 366×642 and the console keeps its
 leftover height, because the sheet covers the panel instead of squeezing it.
 
+Three doors to the same sheet, because a 10px chip is not a way in:
+
+| Door | |
+|---|---|
+| click `PROXY` | the chip sits at the right end of the meta row, ringed so it reads as a button |
+| menu bar icon → `Proxy & Models…` | ⌘⇧P while the HUD is frontmost |
+| `printf 'sheet\n' > guard/overlay-cmd` | scripts and the menu share one code path |
+
 **PROXY page** — a local `CONNECT` mux on `127.0.0.1:8899` that rotates
 upstream proxies behind one fixed address. The client config never changes, so
 a rotation costs no restart, no tunnel, no DNS window.
