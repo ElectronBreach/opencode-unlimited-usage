@@ -3,6 +3,28 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.0.1 — 2026-11-09
+
+### Fixed
+
+- **The HUD could not be kept on screen.** `applicationShouldTerminateAfterLastWindowClosed`
+  returned `true`, so ordering out the one window (a hide) was read as closing the
+  last window and the process ended on the spot. Hiding and quitting are now
+  separate things, as they always should have been.
+- **Detection missed the real binary.** The process watcher matched a process
+  named `opencode`, but the CLI ships as `opencode.exe`, and `comm` is truncated
+  to 16 bytes. It now matches argv[0], which is what actually identifies it.
+  `opencode serve` is still excluded.
+
+### Changed
+
+- The HUD is resident instead of exiting when no session exists. It boots hidden
+  when nothing is running and raises itself within one 2 s tick when opencode
+  appears — no cold start, which is where the 1–3 s lag came from.
+- `✕` latches: the session watcher will not reopen a panel the user closed until
+  the next `summon`, `show` or menu-bar Show.
+- `ouc hud show` pins the panel open; `summon` leaves it session-managed.
+
 ## 2.0.0 — 2026-11-09
 
 First versioned release of the macOS port. Everything below is macOS-specific

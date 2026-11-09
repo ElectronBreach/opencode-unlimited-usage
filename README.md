@@ -145,11 +145,12 @@ above your terminal at the right edge of the screen (or wherever you drag it),
 non-activating, so typing in the terminal never loses focus. It follows you
 across Spaces and stays on top of a fullscreen terminal.
 
-**It belongs to a session, not to the login.** The lane raises it when opencode
-launches; when the last session exits it steps back after a minute. `RunAtLoad`
-starts it at login, it finds no session and no launch intent, and exits cleanly
-(the agent does not restart a clean exit). `ouc hud show` pins it for as long as
-you leave it open.
+**It belongs to a session, but the process stays resident.** The lane raises it
+when opencode launches; when the last session exits it steps back after a minute.
+With nothing running it waits hidden — a few MB, no window — and raises itself
+within one 2 s tick the moment `opencode` appears. That is why there is no cold
+start: the panel is already built by the time you need it. `ouc hud show` pins it
+open; `✕` keeps it closed until you ask again.
 
 **✕ hides the panel, it does not fold it.** The process stays; the ⚡ menu bar
 item brings it back, and the next `opencode` launch summons it again. The real
@@ -382,6 +383,6 @@ in the repo, so a release can be installed with `./install.sh` or
 
 MIT license. Use it, fork it, just don't sell it to your grandma.
 
-This is `VERSION` 2.0.0 — see [CHANGELOG.md](CHANGELOG.md).
+This is `VERSION` 2.0.1 — see [CHANGELOG.md](CHANGELOG.md).
 
 — ELECTRONBREACH
