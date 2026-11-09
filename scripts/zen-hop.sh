@@ -27,6 +27,16 @@ fi
 SRC_DIR=$(cd "$(dirname "$0")" && pwd)
 if [ -f "$SRC_DIR/zen-identity.sh" ]; then . "$SRC_DIR/zen-identity.sh"; fi
 
+# the WARP window is a separate front-end from the root daemon. if it is open
+# while the registration is deleted, it paints itself into the Zero Trust
+# "Enroll your device" page and stays there after the tunnel is healthy again.
+# put it away for the surgery and bring it back afterwards; the daemon never
+# notices, and the stale page never gets drawn.
+WARP_APP="/Applications/Cloudflare WARP.app"
+gui_running(){ pgrep -f "$WARP_APP/Contents/MacOS/Cloudflare WARP" >/dev/null 2>&1; }
+gui_pause(){ if gui_running; then GUI_WAS_UP=1; osascript -e 'tell application "Cloudflare WARP" to quit' >/dev/null 2>&1 || true; pkill -f "$WARP_APP/Contents/MacOS/Cloudflare WARP" >/dev/null 2>&1 || true; fi; }
+gui_resume(){ [ "${GUI_WAS_UP:-0}" = "1" ] && { sleep 1; open -g -a "$WARP_APP" >/dev/null 2>&1 || open -a "$WARP_APP" >/dev/null 2>&1; GUI_WAS_UP=0; }; }
+
 w(){  sudo -n "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; sudo -n "$WARP" "$@" >/dev/null 2>&1; }
 wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP" "$@" 2>/dev/null; }
 
@@ -155,6 +165,7 @@ wait_egress(){
 }
 
 rotate_once(){
+  gui_pause
   w disconnect
   wait_disconnected || true
   register_fresh || return 1
@@ -164,6 +175,7 @@ rotate_once(){
     w disconnect; sleep 2; w connect
     NIP=$(wait_egress) || NIP=""
   }
+  gui_resume
   return 0
 }
 

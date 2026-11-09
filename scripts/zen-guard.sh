@@ -364,6 +364,15 @@ hop_once(){
 
 _hop_body(){
   pause_keeper
+  # same reason as zen-hop: a GUI that is open while the registration is gone
+  # paints the Zero Trust enrollment page and keeps it. put it away, bring it
+  # back after the tunnel is up again.
+  GUI_WAS_UP=0
+  if pgrep -f "/Applications/Cloudflare WARP.app/Contents/MacOS/Cloudflare WARP" >/dev/null 2>&1; then
+    GUI_WAS_UP=1
+    osascript -e 'tell application "Cloudflare WARP" to quit' >/dev/null 2>&1 || true
+    pkill -f "/Applications/Cloudflare WARP.app/Contents/MacOS/Cloudflare WARP" >/dev/null 2>&1 || true
+  fi
   w disconnect
   clear_registration
   local ok=0 i
@@ -374,6 +383,7 @@ _hop_body(){
   done
   w connect
   resume_keeper
+  [ "$GUI_WAS_UP" = "1" ] && { sleep 1; open -g -a "/Applications/Cloudflare WARP.app" >/dev/null 2>&1 || open -a "/Applications/Cloudflare WARP.app" >/dev/null 2>&1; }
   [ "$ok" = 1 ] || { tunnel_ensure || true; echo ""; return; }
   local V=""
   for i in $(seq 1 20); do
@@ -419,7 +429,17 @@ if [ "${1:-}" = "wall-event" ]; then
   exit 0
 fi
 
+TICKN=0
 while true; do
+  TICKN=$((TICKN + 1))
+  # the WARP front-end occasionally repaints itself into the Zero Trust
+  # enrollment page after a re-register while the daemon is perfectly healthy.
+  # the hop now avoids it by putting the GUI away during the surgery; this is
+  # the net for the paths that do not go through a hop (a GUI restart, sleep,
+  # a daemon self-heal).
+  if [ $((TICKN % 5)) -eq 0 ] && pgrep -f "/Applications/Cloudflare WARP.app/Contents/MacOS/Cloudflare WARP" >/dev/null 2>&1; then
+    bash "$SELF_DIR/warp-gui-heal.sh" >/dev/null 2>&1 && glog "warp gui was showing the enrollment page — relaunched the front-end (tunnel untouched)"
+  fi
   rot_release
   trim_log "$GUARD_LOG"
   # safety net for the machine-wide switch: if the system proxy is pointed at

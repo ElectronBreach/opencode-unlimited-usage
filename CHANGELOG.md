@@ -3,6 +3,32 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.5.6 — 2026-11-09
+
+### The enrollment page, permanently
+
+After a rotation the WARP window kept repainting itself into
+"Enroll your device with Cloudflare One Client — checking your organization
+configuration…" while `warp-cli status` was Connected and egress worked. The
+daemon was fine; the front-end was drawing stale Zero Trust state from the
+window where the registration did not exist.
+
+Fixed at the cause, not the symptom:
+
+- **the GUI is put away for the surgery.** `zen-hop.sh` and the guard's
+  `hop_once` quit the front-end before deregistering and reopen it after the
+  tunnel is back. The daemon never notices, and the enrollment page is never
+  drawn in the first place.
+- **`warp-gui-heal.sh`** is the net for every other path (a GUI restart, a
+  sleep, a daemon self-heal): it reads the visible window, and if the
+  enrollment text is there it relaunches the *app* — never the root daemon, so
+  the tunnel does not blink.
+- **the guard runs it every 30s** while a GUI is up, and logs when it fires.
+
+Verified with a real rotation: `/64 2a09:bac5:497:37f5 → 2a09:bac5:494:15f`,
+tunnel Connected, and the WARP window came back to the normal **Connected**
+home page instead of the enrollment sheet.
+
 ## 2.5.5 — 2026-11-09
 
 ### The MODELS page shows what the probe already knows
