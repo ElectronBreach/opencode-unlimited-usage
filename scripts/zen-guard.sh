@@ -588,6 +588,16 @@ PY
   fi
   glog "wall detected — rotating (was: ${OLD:-?} /64 ${OLD_BLOCK:-?})"
   wall_event "detected"
+  # a wall on a non-console model (river, a local provider) is that provider's
+  # quota, not cloudflare's /64. cutting the tunnel there is a reconnect that
+  # cannot help, and this machine has already paid for that.
+  MPROV=$(model_provider)
+  if [ -n "$MPROV" ] && [ "$MPROV" != "opencode" ]; then
+    glog "the pinned model is on $MPROV — this wall is that provider's quota, not the /64"
+    glog "switch model on the PROV page, or wait for that provider's reset — no tunnel surgery"
+    state_set last_hop "$((NOW + 600))"
+    continue
+  fi
   # the /64 is the bucket, exactly like the linux build. fall back to the v4
   # address only when the tunnel has no v6 address at all.
   [ -n "$OLD_BLOCK" ] && oui_is_egress "$OLD_BLOCK" && blacklist_add "$OLD_BLOCK"

@@ -3,6 +3,20 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.5.3 — 2026-11-09
+
+### A wall on another provider is not a `/64` problem
+
+The guard rotated the tunnel for every wall it saw, including one that arrived
+while the pinned model was `river/…`. That wall is that provider's quota; a
+WARP reconnect cannot clear it, and it costs ten to twenty seconds of internet
+for nothing.
+
+- a wall detected while the pinned model belongs to a non-console provider is
+  recorded, named in the log (`this wall is that provider's quota, not the /64`)
+  and rotations are parked for ten minutes instead of cutting the tunnel;
+- console-provider walls keep the full ladder: model fallback, then `/64`.
+
 ## 2.5.2 — 2026-11-09
 
 ### PROV — a third page on the same sheet
