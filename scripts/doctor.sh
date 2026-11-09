@@ -271,6 +271,30 @@ if st.get("system"):
         print("    ✗ system proxy → 127.0.0.1:8899 but the mux is DOWN — every app is talking to a dead port. HUD → PROXY → OFF (or ON)")
     else:
         print("    ! system flag is set but macOS is not pointed at 127.0.0.1:8899 — HUD → PROXY → OFF then SYS")
+
+# the process that actually opens the sockets is the CLI's `serve --service`
+# child, and it inherits env at spawn. so "proxy on" is only true for the CLI if
+# that service was born after the mux came up.
+try:
+    # pgrep does not see this process (session leader); ps does.
+    listing = subprocess.run(["ps", "-Ao", "pid=,args="],
+                             capture_output=True, text=True, timeout=5).stdout
+except Exception:
+    listing = ""
+pids = [ln.split(None, 1)[0] for ln in listing.splitlines()
+        if "opencode.exe serve --service" in ln]
+if pids:
+    try:
+        envout = subprocess.run(["ps", "eww", pids[0]], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        envout = ""
+    uses = "HTTPS_PROXY=" in envout
+    if uses and alive:
+        print("    ✓ opencode service → 127.0.0.1:8899 (cli traffic rotated)")
+    elif uses:
+        print("    ✗ opencode service points at a stopped mux — restart the CLI, or HUD → PROXY → OFF")
+    elif alive and up:
+        print("    ! opencode service bypasses the mux — restart the CLI so it is born with the proxy env")
 PY
 
 # ---- free-model lever (the wall text itself says "or switch models")

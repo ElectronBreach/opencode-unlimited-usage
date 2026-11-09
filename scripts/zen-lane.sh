@@ -246,6 +246,68 @@ if [ "${OUC_OVERLAY:-1}" != "0" ]; then
   fi
 fi
 
+# ---- proxy: a running mux is a route the CLI must actually take
+#
+# the mux listens on a fixed 127.0.0.1:8899 and rotates upstreams behind it, so
+# a rotation costs the client nothing. but rotate-only means nothing to a client
+# that never points at the door: PROXY ON has to change the CLI's egress, or the
+# sheet is spinning a pool nobody uses. the system-wide switch is for everything
+# else; this one is for opencode.
+#
+# bun's fetch honours HTTP(S)_PROXY, so the export is the whole wiring — but the
+# process that actually opens the sockets is `opencode.exe serve --service`,
+# a child of this CLI that lives for hours. a service started before the proxy
+# came up keeps its old env and silently bypasses the mux, which is exactly the
+# "proxy says on, quota still burns" bug. at launch (a new terminal, so there is
+# no live TUI to interrupt) a stale service is restarted, and only when its
+# parent is already gone — an orphan is safe to replace, a live one is not.
+# OUC_NO_PROXY=1 opts out; a dead pool still fails closed (502) by design.
+OUC_MUX_STATE="$HOME/.local/share/opencode-unlimited/guard/proxy-state.json"
+OUC_MUX_ON=0
+if [ "${OUC_NO_PROXY:-0}" != "1" ] && python3 - "$OUC_MUX_STATE" <<'PY' 2>/dev/null
+import json,os,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+pid=d.get("pid") or 0
+alive=False
+if pid:
+    try:
+        os.kill(int(pid), 0); alive=True
+    except Exception:
+        alive=False
+sys.exit(0 if (d.get("up") and alive and int(d.get("pool") or 0) > 0) else 1)
+PY
+then
+  OUC_MUX_ON=1
+  export HTTP_PROXY="http://127.0.0.1:8899"
+  export HTTPS_PROXY="$HTTP_PROXY"
+  export ALL_PROXY="$HTTP_PROXY"
+  export NO_PROXY="localhost,127.0.0.1,::1"
+fi
+
+# a service left over from the other state is just as wrong as a missing one:
+# started before the proxy came up it bypasses the mux, started before the proxy
+# went down it points at a dead port. only orphans are touched.
+STALE=0
+# pgrep cannot see this one (it is a session leader), so enumerate ps instead.
+for sp in $(ps -Ao pid=,args= 2>/dev/null | awk '/opencode[.]exe serve --service/ {print $1}'); do
+  sppid=$(ps -o ppid= -p "$sp" 2>/dev/null | tr -d ' ')
+  [ -n "$sppid" ] && [ "$sppid" != "1" ] && kill -0 "$sppid" 2>/dev/null && continue
+  if ps eww "$sp" 2>/dev/null | grep -q "HTTPS_PROXY="; then svc=1; else svc=0; fi
+  [ "$svc" = "$OUC_MUX_ON" ] && continue
+  kill -TERM "$sp" 2>/dev/null && STALE=$((STALE + 1))
+done
+
+if [ "$OUC_MUX_ON" = "1" ] && [ -z "${OUC_QUIET:-}" ]; then
+  if [ "$STALE" -gt 0 ]; then
+    printf '\033[2m  ⇄ egress via proxy mux 127.0.0.1:8899 (rotated %s stale service)\033[0m\n' "$STALE" >&2
+  else
+    printf '\033[2m  ⇄ egress via proxy mux 127.0.0.1:8899 (rotating upstreams)\033[0m\n' >&2
+  fi
+fi
+
 # ---- launch the real binary
 #
 # non-interactive `run` invocations get the credit line appended to the

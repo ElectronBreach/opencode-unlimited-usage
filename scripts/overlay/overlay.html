@@ -1089,7 +1089,10 @@ function renderSheet(){
   if (sheetTab() === "proxy") $("pxStat").innerHTML = (p.up
       ? "mux up · <b>" + (p.current || "—") + "</b> · " + (p.rotations || 0) + " rotations · " + (p.served || 0) + " served"
       : "mux down · " + (p.pool || 0) + " upstreams in the pool")
-    + " · system " + (p.system ? "<b>on</b>" : "off");
+    + " · system " + (p.system ? "<b>on</b>" : "off")
+    // the mux rotating is not the same as the CLI using it: the service is
+    // long-lived and inherits env at spawn, so say it out loud.
+    + (p.up && p.cli === 2 ? ' · <b style="color:#fbbf24">restart cli</b>' : "");
   $("btnPxSys").textContent = p.system ? "SYS ON" : "SYS";
   $("btnPxPol").textContent = p.policy === "window" ? "WINDOW" : "CONN";
   $("btnPxPol").title = p.policy === "window"

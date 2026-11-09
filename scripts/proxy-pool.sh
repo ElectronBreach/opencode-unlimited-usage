@@ -169,7 +169,11 @@ PY
 }
 
 probe_one(){
-  local spec="$1" url="https://cdn-cgi/trace"
+  # the target used to be the bare string "cdn-cgi/trace", which is not a host
+  # and never resolved — every upstream probed dead, including good ones. an ip
+  # literal cannot fail on DNS, and two plain-ip services cover the proxies
+  # that refuse CONNECT to 1.1.1.1.
+  local spec="$1" url="https://1.1.1.1/cdn-cgi/trace"
   local px="$spec"
   case "$spec" in
     socks5://*) px="socks5h://${spec#socks5://}" ;;
@@ -178,11 +182,18 @@ probe_one(){
     https://*) px="$spec" ;;
     http://*) px="$spec" ;;
   esac
-  local out ms
+  local out ms u
   ms=$(python3 -c 'import time;print(int(time.time()*1000))')
   out=$(curl -s --connect-timeout 8 --max-time 14 -x "$px" "$url" 2>/dev/null)
+  case "$out" in *ip=*) ;; *)
+    for u in https://api.ipify.org https://ipv4.webshare.io/; do
+      out=$(curl -s --connect-timeout 8 --max-time 14 -x "$px" "$u" 2>/dev/null)
+      case "$out" in *[0-9].[0-9].[0-9].[0-9]*) break ;; esac
+      out=""
+    done ;;
+  esac
   local ok=1
-  case "$out" in *ip=*) ok=0 ;; esac
+  case "$out" in *ip=*|*[0-9].[0-9].[0-9].[0-9]*) ok=0 ;; esac
   ms=$(( $(python3 -c 'import time;print(int(time.time()*1000))') - ms ))
   python3 - "$spec" "$ok" "$ms" "$out" <<'PY'
 import json,sys,re
@@ -191,6 +202,9 @@ ip=""; colo=""
 for line in out.splitlines():
     if line.startswith("ip="): ip=line[3:].strip()
     elif line.startswith("colo="): colo=line[5:].strip()
+if not ip:
+    m=re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", out)
+    if m: ip=m.group(1)
 bucket=""
 if ":" in ip:
     parts=ip.split(":")
@@ -474,7 +488,7 @@ PY
 
 cmd_json(){
   python3 - "$STATE" "$POOL" "$HEALTH" <<'PY'
-import json,os,sys,time
+import json,os,subprocess,sys,time
 state,pool,health=sys.argv[1:4]
 try: d=json.load(open(state))
 except Exception: d={"up":False}
@@ -491,7 +505,21 @@ if os.path.exists(pool):
         rows.append({"slot":i,"masked":line.split("://",1)[-1].split("@")[-1],
                      "state":e.get("state","unknown"),"ip":e.get("ip",""),
                      "bucket":e.get("bucket",""),"ms":e.get("ms",0)})
-d.update({"pool":len(rows),"upstreams":rows,"system":bool(d.get("system"))})
+# does the CLI's long-lived service carry the proxy env? the lane exports it,
+# but the service inherits env at spawn, so a service born before PROXY ON
+# bypasses the mux entirely and burns quota while the sheet says "up".
+cli=0
+try:
+    out=subprocess.run(["ps","-Ao","pid=,args="],capture_output=True,text=True,timeout=5).stdout
+    for ln in out.splitlines():
+        if "opencode.exe serve --service" in ln:
+            p_=ln.split(None,1)[0]
+            env=subprocess.run(["ps","eww",p_],capture_output=True,text=True,timeout=5).stdout
+            cli=1 if "HTTPS_PROXY=" in env else 2   # 1 routed, 2 stale
+            break
+except Exception:
+    pass
+d.update({"pool":len(rows),"upstreams":rows,"system":bool(d.get("system")),"cli":cli})
 print(json.dumps(d,separators=(",",":")))
 PY
 }

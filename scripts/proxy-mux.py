@@ -201,6 +201,7 @@ class Mux:
         self.pool = pool
         self.idx = 0
         self.dead = seed_health(pool)   # index -> unix time it may be retried
+        self.seen = set(self.dead)      # indexes the mux already has a verdict on
         self.window_start = 0.0
         self.rotations = 0
         self.served = 0
@@ -255,6 +256,7 @@ class Mux:
         return self.pick()
 
     def mark_dead(self, i):
+        self.seen.add(i)
         self.dead[i] = time.time() + DEAD_FOR
         self.failed += 1
         self.persist()
@@ -273,9 +275,10 @@ class Mux:
             "pool": len(self.pool),
             # health is a claim, so it only counts upstreams the mux has
             # actually tried. a fresh start with a dead pool used to read
-            # "2 of 2 healthy" until the first connection failed.
-            "healthy": len([i for i in self.dead if self.dead.get(i, 0) <= time.time()]),
-            "tested": len(self.dead),
+            # "2 of 2 healthy" until the first connection failed. healthy used
+            # to count the *expired* dead entries — the inverse of the label.
+            "healthy": max(0, len(self.pool) - len([i for i, u in self.dead.items() if u > time.time()])),
+            "tested": len(self.seen),
             "index": self.idx,
             "current": cur,
             "rotations": self.rotations,
@@ -400,6 +403,8 @@ async def tunnel(mux, client_r, client_w, target_host, target_port):
             mux.mark_dead(i)
             mux.rotate()
             continue
+        mux.seen.add(i)
+        mux.dead.pop(i, None)      # a good connect clears an older parking
         mux.served += 1
         mux.persist()
         client_w.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")

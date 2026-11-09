@@ -256,7 +256,9 @@ problem, and it never switches a model behind a running session.
 
 **What are the proxies for?**
 Optional. The `PROXY` chip (or menu bar → `Proxy & Models…`) runs a local
-`CONNECT` mux on `127.0.0.1:8899`; the
+`CONNECT` mux on `127.0.0.1:8899`. While it is up, `zen-lane.sh` exports
+`HTTP(S)_PROXY` so the CLI's traffic — including its long-lived `serve
+--service` child — goes through the mux and rotates; the
 client points at it once and the mux rotates upstreams behind that fixed
 address, so a rotation costs no restart and no DNS window. Paste webshare-style
 `host:port:user:pass` lines, hit `TEST` to see which are alive, `ON` to start.
@@ -412,6 +414,6 @@ in the repo, so a release can be installed with `./install.sh` or
 
 MIT license. Use it, fork it, just don't sell it to your grandma.
 
-This is `VERSION` 2.4.2 — see [CHANGELOG.md](CHANGELOG.md).
+This is `VERSION` 2.4.3 — see [CHANGELOG.md](CHANGELOG.md).
 
 — ELECTRONBREACH

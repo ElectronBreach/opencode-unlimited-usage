@@ -3,6 +3,42 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.4.3 — 2026-11-09
+
+### PROXY ON now means the CLI, not just the mux
+
+Two bugs stood between the sheet and a real rate-limit bypass, and they hid
+each other.
+
+**The probe URL was not a host.** `proxy-pool test` curled
+`https://cdn-cgi/trace` — no such hostname. Every upstream probed dead,
+including a perfectly good webshare line. Now the probe hits an ip literal
+(`https://1.1.1.1/cdn-cgi/trace`), then two plain-ip services for proxies that
+refuse CONNECT to 1.1.1.1, and reads a bare ip body as a pass.
+
+**The CLI never used the mux.** Rotation only helps a client that points at the
+door, and the process that opens the sockets is `opencode.exe serve --service`
+— a long-lived child of the CLI that inherits env at spawn. So:
+
+- `zen-lane.sh` exports `HTTP(S)_PROXY` → `127.0.0.1:8899` when the mux is up
+  and the pool is non-empty, and skips the export when it is not;
+- a service left over from the other state is restarted at launch — started
+  before PROXY ON it bypasses the mux, started before PROXY OFF it points at a
+  dead port. Only orphans are touched, never a live session's service;
+- `pgrep` cannot see that process (session leader), so both the lane and
+  `doctor` enumerate `ps -Ao pid=,args=` instead. The first cut silently found
+  nothing, which is the worst kind of safety check.
+
+**Honesty:** `healthy` in the mux state counted the *expired* dead entries —
+the inverse of its label — so a good single-upstream pool read `0 of 1`. It now
+counts pool minus parked. `tested` counts upstreams with a verdict. `doctor`
+prints `! opencode service bypasses the mux — restart the CLI`, and the sheet's
+status line shows an amber `restart cli` when it does.
+
+Verified: webshare `198.23.243.226:6361` → `TEST` ok 1030ms → `curl` through
+the mux `198.23.243.226` → bun fetch through the mux `198.23.243.226`,
+`served` incremented.
+
 ## 2.4.2 — 2026-11-09
 
 ### A green tick over a dead port
