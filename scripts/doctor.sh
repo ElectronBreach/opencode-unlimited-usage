@@ -351,6 +351,28 @@ else:
         print("    · burned this run: %d (%s)" % (len(hot), ", ".join(hot[:3])))
 PY
 
+# the model lever keeps a dead cache; when most of the free pool is in it, the
+# wall is account-side and no rotation will help. say it here, once.
+python3 - "$GUARD_DIR/models-dead.json" "$DEST/models.json" <<'PY' 2>/dev/null
+import json,os,sys,time
+deadf,catf=sys.argv[1:3]
+try: dead=json.load(open(deadf))
+except Exception: dead={}
+try: cat=json.load(open(catf))
+except Exception: cat={}
+free=0
+for mid,m in ((cat.get("opencode") or {}).get("models") or {}).items():
+    c=((m.get("cost") or {}).get("text") or {})
+    if (c.get("input") or {}).get("price")==0 and (c.get("output") or {}).get("price")==0 and m.get("type")=="chat":
+        free+=1
+now=time.time()
+live=[k for k,v in dead.items() if (now-float(v.get("ts") or 0)) < (1800 if str(v.get("code"))=="429" else 21600)]
+if free and len(live) >= free:
+    print("    ✗ every free model is walled or unavailable — the free pool is exhausted account-wide; key rotation cannot bypass it")
+elif live:
+    print("    ! %d of %d free models are walled/unavailable right now (model-levers probe)" % (len(live), free))
+PY
+
 # ---- credit system (AGENTS.md)
 [ -f "$HOME/.opencode/AGENTS.md" ] \
   && ok "credit file ~/.opencode/AGENTS.md present (every AI response signs off)" \

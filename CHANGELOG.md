@@ -3,6 +3,30 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.4.7 — 2026-11-09
+
+### Key rotation is not quota rotation
+
+The rotation had a gate that skipped any key whose model probe returned 429 or
+400. That was wrong twice over: a 429 is a fact about the **model**, not the
+credential, and it made a pool of nine valid keys refuse to rotate at all.
+
+- the gate is gone — rotation walks keys that the console accepts, full stop;
+- after the swap it asks the pinned model on the new key, and if that model
+  does not answer it moves the model to one that does (verifying the pick, up
+  to three tries, marking each failure in the dead cache);
+- when nothing answers it says the true thing: **the opencode free pool is
+  exhausted account-wide, key rotation cannot bypass it** — use a provider
+  model or wait for the reset. No more "rotated → Model unavailable".
+
+**`api-keys quota [model]`** is the missing question answered in one pass: for
+the pinned model, how many keys answer, how many are at the wall, how many do
+not serve it. If every key reports the same wall, the command says so.
+
+**`doctor`** now prints the probe verdict: `! 17 of 50 free models are walled
+or unavailable right now`, and calls it a failure when the whole free pool is
+in the dead cache.
+
 ## 2.4.6 — 2026-11-09
 
 ### The pool that emptied itself

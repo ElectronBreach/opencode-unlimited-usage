@@ -18,6 +18,7 @@ set -u
 
 BRAND="opencode-unlimited"
 DEST="$HOME/.local/share/$BRAND"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD="$DEST/guard"
 DB="${OUC_DB:-$HOME/.local/share/opencode/opencode.db}"
 CAP="${OUC_KEY_CAP:-50}"
@@ -519,22 +520,6 @@ cmd_rotate(){
       local ak; ak=$(key_of "$(q "select value from credential where id='$aid';")")
       if [ -n "$ak" ]; then probe_key "$ak"; [ $? = 0 ] && ph=1; fi
     fi
-    if [ "$ph" != "1" ] && [ -n "$MODEL_PIN" ]; then
-      # valid key, but is it allowed to run the model we are about to use?
-      local qr; probe_model "$ck" "${MODEL_PIN#*/}"; qr=$?
-      if [ "$qr" = "1" ]; then
-        local cl2; cl2=$(q "select label from credential where id='$cand';")
-        say "skipping \"$cl2\" — free wall on ${MODEL_PIN#*/}"
-        idx=$(( (idx + step + n) % n ))
-        continue
-      fi
-      if [ "$qr" = "3" ] || [ "$qr" = "4" ]; then
-        local cl3; cl3=$(q "select label from credential where id='$cand';")
-        say "skipping \"$cl3\" — ${MODEL_PIN#*/} is not served on this key"
-        idx=$(( (idx + step + n) % n ))
-        continue
-      fi
-    fi
     if [ "$ph" != "1" ]; then target="$cand"; break; fi
     local cl; cl=$(q "select label from credential where id='$cand';")
     say "skipping \"$cl\" — the console will not serve it"
@@ -572,6 +557,74 @@ cmd_rotate(){
   if [ -f "$cfg" ]; then
     touch "$cfg" 2>/dev/null && say "provider reload requested"
   fi
+
+  # a rotated key is not a rotated quota. ask the model on the new key: if it
+  # answers 429 the wall is account-wide and no amount of key shuffling helps,
+  # so say that here rather than letting the CLI surface it as a model error.
+  if [ -n "${MODEL_PIN:-}" ]; then
+    probe_model "$valk" "${MODEL_PIN#*/}"; local qr=$?
+    case $qr in
+      0) say "quota ok on ${MODEL_PIN#*/}" ;;
+      *)
+        # a rotated key that cannot serve the model is a rotated error, not a
+        # fix. move the model to one the console is actually serving; if none
+        # is, say the true thing instead of handing back a broken session.
+        say "${MODEL_PIN#*/} does not answer on the new key — looking for a model that does"
+        if [ -x "$SELF_DIR/model-levers.sh" ]; then
+          local code2 try=0 nm m2 q2
+          [ "$qr" = "4" ] && code2=400 || code2=429
+          bash "$SELF_DIR/model-levers.sh" dead "${MODEL_PIN#*/}" "$code2" >/dev/null 2>&1
+          # `next` only knows what has been probed, so verify each pick before
+          # handing it over. three tries, then say the pool is out.
+          while [ "$try" -lt 3 ]; do
+            try=$((try + 1))
+            nm=$(bash "$SELF_DIR/model-levers.sh" next 2>/dev/null | tail -1)
+            [ -n "$nm" ] || break
+            m2="${nm#*/}"
+            probe_model "$valk" "$m2"; q2=$?
+            case "$q2" in
+              0) say "switched model → $nm (answers on the new key)"; nm="$nm"; break ;;
+              4) bash "$SELF_DIR/model-levers.sh" dead "$m2" 400 >/dev/null 2>&1 ;;
+              1) bash "$SELF_DIR/model-levers.sh" dead "$m2" 429 >/dev/null 2>&1 ;;
+              *) nm="" ;;
+            esac
+            nm=""
+          done
+          [ -n "${nm:-}" ] || say "no free model answers right now — the opencode free pool is exhausted account-wide; key rotation cannot bypass it. Use a provider model or wait for the reset."
+        fi
+        ;;
+    esac
+  fi
+}
+
+# one pass over the pool for the pinned model: how many keys answer, how many
+# are at the wall, how many do not serve it. rotation is only worth anything if
+# these numbers differ per key.
+cmd_quota(){
+  local model="${1:-}"
+  [ -n "$model" ] || model=$(pinned_model)
+  [ -n "$model" ] || { err "no pinned model — model-levers set <id>"; exit 2; }
+  local m="${model#*/}" ok=0 wall=0 gone=0 dead=0 i=0 id label k code r
+  printf '%-18s %-10s %s\n' "LABEL" "STATE" "MODEL"
+  while IFS=$'\t' read -r id label value active; do
+    [ -n "$id" ] || continue
+    i=$((i+1))
+    k=$(key_of "$value")
+    probe_model "$k" "$m"; r=$?
+    case "$r" in
+      0) ok=$((ok+1));   printf '%-18s %-10s %s\n' "$label" "ok" "$m" ;;
+      1) wall=$((wall+1)); printf '%-18s %-10s %s\n' "$label" "wall" "$m" ;;
+      3) dead=$((dead+1)); printf '%-18s %-10s %s\n' "$label" "rejected" "$m" ;;
+      4) gone=$((gone+1)); printf '%-18s %-10s %s\n' "$label" "unavailable" "$m" ;;
+      *) printf '%-18s %-10s %s\n' "$label" "?" "$m" ;;
+    esac
+  done < <(rows)
+  say ""
+  say "$ok ok · $wall wall · $gone unavailable · $dead rejected"
+  if [ "$ok" = "0" ] && [ "$wall" -gt 1 ]; then
+    say "every key reports the same wall — the free quota is account-wide, key rotation cannot bypass it"
+  fi
+  [ "$ok" -gt 0 ]
 }
 
 cmd_json(){
@@ -618,11 +671,12 @@ case "${1:-list}" in
   remove|rm|del)   shift; cmd_remove "${1:-}" ;;
   rotate|next|hop) shift; cmd_rotate "${1:-}" ;;
   health|probe)    cmd_health ;;
+  quota)           shift; cmd_quota "${1:-}" ;;
   prune|clean)     cmd_prune "${2:-}" ;;
   json)            cmd_json ;;
   *)
     cat >&2 <<EOF
-usage: api-keys list|current|health|add <key>|remove <slot|id>|rotate [next|prev|slot|id]|prune [--dry-run]|json
+usage: api-keys list|current|health|quota [model]|add <key>|remove <slot|id>|rotate [next|prev|slot|id]|prune [--dry-run]|json
        pool cap: $CAP keys (OUC_KEY_CAP to change)
 EOF
     exit 2 ;;
