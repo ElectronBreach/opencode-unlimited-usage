@@ -298,7 +298,7 @@ fi
 # went down it points at a dead port. only orphans are touched.
 STALE=0
 # pgrep cannot see this one (it is a session leader), so enumerate ps instead.
-for sp in $(ps -Ao pid=,args= 2>/dev/null | awk '/opencode[.]exe serve --service/ {print $1}'); do
+for sp in $(ps -Ao pid=,args= 2>/dev/null | awk '/opencode[^ ]* serve --service/ {print $1}'); do
   sppid=$(ps -o ppid= -p "$sp" 2>/dev/null | tr -d ' ')
   [ -n "$sppid" ] && [ "$sppid" != "1" ] && kill -0 "$sppid" 2>/dev/null && continue
   if ps eww "$sp" 2>/dev/null | grep -q "HTTPS_PROXY="; then svc=1; else svc=0; fi

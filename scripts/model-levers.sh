@@ -26,6 +26,8 @@ BRAND=opencode-unlimited
 DEST="$HOME/.local/share/$BRAND"
 GUARD_DIR="$DEST/guard"
 CATALOG="$DEST/models.json"
+DEAD="$DEST/guard/models-dead.json"
+ZEN="https://opencode.ai/inference/openai/v1/models"
 USED="$GUARD_DIR/models-used.json"
 CONF="$HOME/.config/opencode/opencode.json"
 URL="https://models.opencode.ai/experimental/v2.0/api.json"
@@ -169,15 +171,37 @@ cmd_burn_current(){
 
 cmd_reset(){ rm -f "$USED"; printf 'model burn list cleared\n'; }
 
+# a model that answers 429 (free wall) or 400 ("Model is unavailable") is not a
+# rotation target — picking it just moves the error one tap closer to the user.
+mark_dead(){
+  local mid="$1" code="${2:-429}"
+  python3 - "$DEAD" "$mid" "$code" <<'PY' 2>/dev/null
+import json,os,sys,time
+p,mid,code=sys.argv[1],sys.argv[2],sys.argv[3]
+try: d=json.load(open(p))
+except Exception: d={}
+d[mid]={"ts":int(time.time()),"code":code}
+os.makedirs(os.path.dirname(p),exist_ok=True)
+json.dump(d,open(p,"w"),separators=(",",":"))
+PY
+}
+
 cmd_next(){
   ensure_catalog
   local pick
-  pick=$(python3 - "$CATALOG" "$PROVIDER" "$USED" <<'PY'
-import json,sys
-cat,prov,usedf=sys.argv[1:4]
+  pick=$(python3 - "$CATALOG" "$PROVIDER" "$USED" "$DEAD" <<'PY'
+import json,sys,time
+cat,prov,usedf,deadf=sys.argv[1:5]
 d=json.load(open(cat))
 try: used=set(json.load(open(usedf)))
 except Exception: used=set()
+try: dead=json.load(open(deadf))
+except Exception: dead={}
+now=time.time()
+def cooled(mid):
+    e=dead.get(mid) or {}
+    ttl=1800 if str(e.get("code"))=="429" else 21600
+    return (now-float(e.get("ts") or 0)) > ttl
 rows=[]
 for mid,m in ((d.get(prov) or {}).get("models") or {}).items():
     c=((m.get("cost") or {}).get("text") or {})
@@ -185,8 +209,9 @@ for mid,m in ((d.get(prov) or {}).get("models") or {}).items():
        and m.get("type")=="chat":
         rows.append(mid)
 for mid in rows:
-    if mid not in used:
-        print(mid); raise SystemExit
+    if mid in used: continue
+    if not cooled(mid): continue
+    print(mid); raise SystemExit
 raise SystemExit(3)
 PY
 )
@@ -223,6 +248,53 @@ print("%d free · %d burned · %s" % (len(rows), len([r for r in rows if r[0] in
 PY
 }
 
+# ask the console, one token, which free models are actually being served right
+# now. `next` already skips what this writes down, so a single probe turns the
+# model lever from "hope" into "pick one that answers".
+cmd_probe(){
+  local n="${1:-4}" i=0 mid
+  ensure_catalog
+  local key
+  key=$(sqlite3 "$HOME/.local/share/opencode/opencode.db" \
+    "select value from credential where integration_id='opencode' and active=1 limit 1;" 2>/dev/null \
+    | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("key",""))
+except Exception: print("")')
+  [ -n "$key" ] || { printf 'no active opencode credential\n'; exit 4; }
+  for mid in $(python3 - "$CATALOG" "$PROVIDER" "$USED" "$DEAD" <<'PY'
+import json,sys,time
+cat,prov,usedf,deadf=sys.argv[1:5]
+d=json.load(open(cat))
+try: used=set(json.load(open(usedf)))
+except Exception: used=set()
+try: dead=json.load(open(deadf))
+except Exception: dead={}
+now=time.time()
+out=[]
+for mid,m in ((d.get(prov) or {}).get("models") or {}).items():
+    c=((m.get("cost") or {}).get("text") or {})
+    if (c.get("input") or {}).get("price")==0 and (c.get("output") or {}).get("price")==0 \
+       and m.get("type")=="chat" and mid not in used:
+        out.append(mid)
+print("\n".join(out))
+PY
+); do
+    [ "$i" -lt "$n" ] || break
+    i=$((i+1))
+    local code
+    code=$(curl -s -o /dev/null -m 15 \
+      -H "Authorization: Bearer $key" -H "Content-Type: application/json" \
+      -d "{\"model\":\"$mid\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
+      -w '%{http_code}' "${ZEN%/models}/chat/completions" 2>/dev/null)
+    case "$code" in
+      2*)      printf 'ok    %s\n' "$mid" ;;
+      429)     mark_dead "$mid" 429; printf 'wall  %s (429)\n' "$mid" ;;
+      400)     mark_dead "$mid" 400; printf 'gone  %s (model unavailable)\n' "$mid" ;;
+      *)       printf '?     %s (%s)\n' "$mid" "$code" ;;
+    esac
+  done
+}
+
 cmd_json(){
   ensure_catalog
   python3 - "$CATALOG" "$PROVIDER" "$USED" "$(current_id)" <<'PY'
@@ -239,7 +311,9 @@ for mid,m in ((d.get(prov) or {}).get("models") or {}).items():
         rows.append({"id":mid,"name":m.get("name") or mid,
                      "ctx":(m.get("limit") or {}).get("context") or 0,
                      "burned": mid in used, "current": mid==cur})
-print(json.dumps({"provider":prov,"current":cur,"free":len(rows),
+try: dead=json.load(open(sys.argv[5]))
+except Exception: dead={}
+print(json.dumps({"provider":prov,"current":cur,"dead":len(dead),"free":len(rows),
                   "burned":len([r for r in rows if r["burned"]]),
                   "models":rows},separators=(",",":")))
 PY
@@ -252,6 +326,8 @@ case "${1:-list}" in
   next)      cmd_next ;;
   burn)      shift; cmd_burn "${1:-}" ;;
   burn-current|burncur) cmd_burn_current ;;
+  dead)      shift; mark_dead "${1:-}" "${2:-429}"; printf 'marked %s dead (%s)\n' "${1:-}" "${2:-429}" ;;
+  probe)     shift; cmd_probe "${1:-4}" ;;
   reset)     cmd_reset ;;
   refresh)   refresh; printf 'catalog refreshed\n' ;;
   json)      cmd_json ;;

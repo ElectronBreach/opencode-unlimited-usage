@@ -19,6 +19,9 @@ build_payload(){
   mkdir -p "$tmp/payload/scripts"
   cp scripts/*.sh "$tmp/payload/scripts/"
   cp scripts/*.py "$tmp/payload/scripts/" 2>/dev/null || true
+  # the cli shim has no .sh suffix on purpose: it must sit exactly at the
+  # opencode binary path, so it is shipped by name.
+  cp scripts/opencode.shim "$tmp/payload/scripts/" 2>/dev/null || true
   if [ -d scripts/overlay ]; then
     cp -R scripts/overlay "$tmp/payload/scripts/"
   fi

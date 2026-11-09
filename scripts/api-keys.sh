@@ -230,6 +230,43 @@ probe_key(){
   esac
 }
 
+# `/models` answering 200 only means the key is valid — it says nothing about
+# whether that key still has free quota. rotating onto a capped key is the exact
+# path that surfaces as "Model unavailable" in the CLI, because the provider
+# rejects the model call instead of the credential. so ask the model itself,
+# one token, and treat 429/402 as "capped", not "dead" and not "fine".
+QUOTA_BASE="${ZEN%/models}"
+probe_model(){
+  local k="$1" model="${2:-}" code
+  [ -n "$k" ] && [ -n "$model" ] || return 2
+  code=$(curl -s -o /dev/null --connect-timeout 4 --max-time 14 \
+    -H "Authorization: Bearer $k" -H "Content-Type: application/json" \
+    -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
+    -w '%{http_code}' "$QUOTA_BASE/chat/completions" 2>/dev/null)
+  case "$code" in
+    2*)      return 0 ;;                 # the model answers
+    429|402) return 1 ;;                 # free wall / no credit
+    401|403) return 3 ;;                 # credential rejected
+    400)     return 4 ;;                 # "Model is unavailable" upstream
+    '')      return 2 ;;                 # network
+    *)       return 2 ;;                 # 5xx and friends: unknown
+  esac
+}
+
+# which model is pinned, and on which provider — a rotation has to keep the
+# credential pool aligned with the model or it swaps the CLI off its provider.
+pinned_model(){
+  python3 - "$HOME/.config/opencode/opencode.json" <<'PY2' 2>/dev/null
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+m=d.get("model") or ""
+print(m)
+PY2
+}
+
 # hitting /models right after a rotation fills the CLI's per-credential console
 # cache. otherwise the next prompt pays that fetch, and a slow one surfaces as
 # "Model unavailable".
@@ -471,6 +508,7 @@ cmd_rotate(){
   case "$want" in prev|back|-) step=-1 ;; esac
   [ "$start_idx" -ge 0 ] || step=1
 
+  MODEL_PIN=$(pinned_model)
   local target="" idx="$start_idx" seen
   for ((seen=0; seen<n; seen++)); do
     local cand="${ids[$(( (idx + n) % n ))]}"
@@ -481,12 +519,35 @@ cmd_rotate(){
       local ak; ak=$(key_of "$(q "select value from credential where id='$aid';")")
       if [ -n "$ak" ]; then probe_key "$ak"; [ $? = 0 ] && ph=1; fi
     fi
+    if [ "$ph" != "1" ] && [ -n "$MODEL_PIN" ]; then
+      # valid key, but is it allowed to run the model we are about to use?
+      local qr; probe_model "$ck" "${MODEL_PIN#*/}"; qr=$?
+      if [ "$qr" = "1" ]; then
+        local cl2; cl2=$(q "select label from credential where id='$cand';")
+        say "skipping \"$cl2\" — free wall on ${MODEL_PIN#*/}"
+        idx=$(( (idx + step + n) % n ))
+        continue
+      fi
+      if [ "$qr" = "3" ] || [ "$qr" = "4" ]; then
+        local cl3; cl3=$(q "select label from credential where id='$cand';")
+        say "skipping \"$cl3\" — ${MODEL_PIN#*/} is not served on this key"
+        idx=$(( (idx + step + n) % n ))
+        continue
+      fi
+    fi
     if [ "$ph" != "1" ]; then target="$cand"; break; fi
     local cl; cl=$(q "select label from credential where id='$cand';")
     say "skipping \"$cl\" — the console will not serve it"
     idx=$(( (idx + step + n) % n ))
   done
-  [ -n "$target" ] || { err "every key in the pool is rejected — add a working one"; exit 7; }
+  if [ -z "$target" ]; then
+    if [ -n "$MODEL_PIN" ]; then
+      err "every key in the pool is at the free wall for ${MODEL_PIN#*/} — rotate the model (HUD → PROXY → MODELS) or add a key with quota"
+    else
+      err "every key in the pool is rejected — add a working one"
+    fi
+    exit 7
+  fi
 
   if [ "$target" = "$aid" ]; then
     local lbl; lbl=$(q "select label from credential where id='$target';")

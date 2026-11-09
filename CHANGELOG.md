@@ -3,6 +3,43 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.4.5 — 2026-11-09
+
+### The restart button was a lie, and the rotation walked off its provider
+
+**The CLI shim.** `serve --service` inherits env from the CLI that spawned it,
+so killing it never helped: the new one was born with the same old env. The fix
+is at the binary path — `scripts/opencode.shim` sits at `opencode.exe`, reads
+the mux state, exports `HTTP(S)_PROXY`, then execs `opencode.real`. Every
+future service is born proxied, including in a session that started before the
+proxy existed. Verified: a service spawned by a CLI with **no** proxy env came
+up with `HTTPS_PROXY=http://127.0.0.1:8899`, and `served` on the mux moved.
+
+- `proxy-pool shim on|off|status`, and `proxy-pool cli` self-heals the shim
+  before it restarts the service, because an npm update drops it.
+- the shim resolves `$0` through the `~/.npm-global/bin` symlink first — the
+  first cut used `dirname $0` and every launch died with "cannot execute".
+- lane, doctor and pool matchers now accept `opencode.real`, since the shim
+  execs the real binary and the process name changes with it.
+
+**Rotation stays on the model's provider.** Rotating credentials is not
+model-agnostic: the pool holds `nvidia` keys next to `opencode` console keys,
+and rotating onto the wrong provider is exactly `Model unavailable`. Rotation
+now asks the console about the pinned model, one token, and skips a key that
+answers 429 (free wall) or 400 (model not served there), saying which and why
+instead of landing on it.
+
+**The model lever remembers.** `model-levers dead <id> [429|400]` records a
+model the console is not serving, `next` skips it (30 min for a wall, 6 h for
+"unavailable"), `probe [n]` fills the cache by asking, and `zen-guard` marks
+the active model when the CLI reports `ModelUnavailableError`.
+
+**Smaller honesty fixes**
+
+- a fresh mux no longer says "nothing probed yet" when the last TEST wrote a
+  verdict a second earlier: `seen` is seeded from the health file, live or dead;
+- `doctor` now prints `✓ cli shim installed` and `✓ opencode service → mux`.
+
 ## 2.4.4 — 2026-11-09
 
 ### 502 as a transient, not a verdict

@@ -507,9 +507,73 @@ cmd_policy(){
 # inherits env at spawn. after PROXY ON, a service born earlier keeps going
 # direct. this kills it so the CLI spawns a fresh one with the current env.
 # pgrep cannot see it (session leader), so enumerate ps.
+# the real auto-restart: the service is spawned by the CLI, so the only place
+# that can guarantee its env is the binary path itself. a 2KB shim sits there,
+# reads the mux state, exports the proxy vars, then execs the real binary. every
+# future `serve --service` is born proxied even in a session that started
+# before the proxy existed — no TUI restart, no stale env.
+SHIM_MARK="opencode shim — born proxied"
+
+# `command -v opencode` is usually the lane wrapper in ~/.local/bin, and the
+# shim must sit at the *real* binary or the service spawn walks past it. try the
+# known installs first, and refuse anything whose head looks like the lane.
+shim_target(){
+  local cand real
+  for cand in "${OUC_REAL_BIN:-}" "$HOME/.npm-global/bin/opencode" \
+              "$(command -v opencode 2>/dev/null)" \
+              "$(npm root -g 2>/dev/null)/@opencode/cli/bin/opencode.exe"; do
+    [ -n "$cand" ] || continue
+    real=$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$cand" 2>/dev/null)
+    [ -n "$real" ] && [ -f "$real" ] || continue
+    head -3 "$real" 2>/dev/null | grep -q "zen-lane\|OUC_REAL_BIN" && continue
+    printf '%s' "$real"; return 0
+  done
+  return 1
+}
+
+cmd_shim(){
+  local what="${1:-status}" tgt
+  tgt=$(shim_target) || { err "no opencode binary on PATH"; exit 3; }
+  case "$what" in
+    status)
+      if head -5 "$tgt" 2>/dev/null | grep -q "$SHIM_MARK"; then
+        say "shim on — $tgt"
+      elif [ -f "$tgt.real" ]; then
+        say "shim was removed (real binary restored) — $tgt"
+      else
+        say "shim off — $tgt"
+      fi
+      ;;
+    on)
+      if head -5 "$tgt" 2>/dev/null | grep -q "$SHIM_MARK"; then
+        say "shim already on — $tgt"; return 0
+      fi
+      [ -f "$tgt.real" ] || cp -p "$tgt" "$tgt.real" || { err "could not back up $tgt"; exit 4; }
+      cp -p "$DEST/scripts/opencode.shim" "$tgt" 2>/dev/null || {
+        err "shim source missing: $DEST/scripts/opencode.shim"; exit 4; }
+      chmod +x "$tgt"
+      say "shim installed at $tgt — every opencode process is born with the proxy env"
+      ;;
+    off)
+      if [ -f "$tgt.real" ]; then
+        cp -p "$tgt.real" "$tgt" && chmod +x "$tgt" \
+          && say "real binary restored at $tgt"
+      else
+        say "no backup next to $tgt — nothing to restore"
+      fi
+      ;;
+    *) err "usage: proxy-pool shim on|off|status"; exit 2 ;;
+  esac
+}
+
 cmd_cli(){
-  local n=0 p
-  for p in $(ps -Ao pid=,args= 2>/dev/null | awk '/opencode[.]exe serve --service/{print $1}'); do
+  local n=0 p tgt
+  # self-heal first: an npm update or a manual restore drops the shim, and then
+  # a restart would spawn a direct service and look like the button is broken.
+  if [ "$(count)" -gt 0 ] && tgt=$(shim_target); then
+    head -5 "$tgt" 2>/dev/null | grep -q "$SHIM_MARK" || cmd_shim on >/dev/null 2>&1
+  fi
+  for p in $(ps -Ao pid=,args= 2>/dev/null | awk '/opencode[^ ]* serve --service/{print $1}'); do
     kill -TERM "$p" 2>/dev/null && n=$((n + 1))
   done
   if [ "$n" -gt 0 ]; then
@@ -563,7 +627,7 @@ cli=0
 try:
     out=subprocess.run(["ps","-Ao","pid=,args="],capture_output=True,text=True,timeout=5).stdout
     for ln in out.splitlines():
-        if "opencode.exe serve --service" in ln:
+        if "serve --service" in ln and "opencode" in ln:
             p_=ln.split(None,1)[0]
             env=subprocess.run(["ps","eww",p_],capture_output=True,text=True,timeout=5).stdout
             cli=1 if "HTTPS_PROXY=" in env else 2   # 1 routed, 2 stale
@@ -581,6 +645,7 @@ case "${1:-status}" in
   remove|rm|del) shift; cmd_remove "${1:-}" ;;
   import)  shift; cmd_import "${1:-}" ;;
   cli|cli-restart) cmd_cli ;;
+  shim) shift; cmd_shim "${1:-status}" ;;
   test|check) shift; cmd_test "${1:-}" ;;
   on|up)   cmd_on ;;
   sys)     shift; cmd_sys "${1:-}" ;;

@@ -274,6 +274,21 @@ if st.get("system"):
     else:
         print("    ! system flag is set but macOS is not pointed at 127.0.0.1:8899 — HUD → PROXY → OFF then SYS")
 
+# the shim is what makes the service born-proxied. without it a restart of the
+# service inherits the CLI's old env and the sheet's button looks broken.
+try:
+    tgt = os.path.realpath(os.path.expanduser("~/.npm-global/bin/opencode"))
+    head = ""
+    if os.path.exists(tgt):
+        with open(tgt, "r", errors="replace") as f:
+            head = "".join([next(f, "") for _ in range(3)])
+    if "opencode shim" in head:
+        print("    ✓ cli shim installed (every opencode process is born with the proxy env)")
+    elif os.path.exists(tgt + ".real"):
+        print("    ! cli shim removed — proxy-pool shim on reinstalls it")
+except Exception:
+    pass
+
 # the process that actually opens the sockets is the CLI's `serve --service`
 # child, and it inherits env at spawn. so "proxy on" is only true for the CLI if
 # that service was born after the mux came up.
@@ -284,7 +299,7 @@ try:
 except Exception:
     listing = ""
 pids = [ln.split(None, 1)[0] for ln in listing.splitlines()
-        if "opencode.exe serve --service" in ln]
+        if "serve --service" in ln and "opencode" in ln]
 if pids:
     try:
         envout = subprocess.run(["ps", "eww", pids[0]], capture_output=True, text=True, timeout=5).stdout

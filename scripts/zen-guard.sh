@@ -89,6 +89,15 @@ except Exception: print("")' 2>/dev/null)
     *) glog "model unavailable — console answered '${code:-nothing}', leaving it alone"; return 0 ;;
   esac
   cfg="$HOME/.config/opencode/opencode.json"
+  # remember the model that just failed so the lever stops offering it, then
+  # let the next pick land on one the console is actually serving.
+  cur=$(python3 -c "import json,os
+try: print((json.load(open(os.path.expanduser('$cfg'))).get('model') or '').split('/')[-1])
+except Exception: print('')" 2>/dev/null)
+  if [ -n "$cur" ] && [ -x "$SELF_DIR/model-levers.sh" ]; then
+    bash "$SELF_DIR/model-levers.sh" dead "$cur" 400 >/dev/null 2>&1 \
+      && glog "model $cur marked unavailable — the next pick skips it"
+  fi
   if [ -f "$cfg" ]; then
     touch "$cfg" 2>/dev/null && glog "model unavailable while the console answers 200 — forced a provider reload"
   fi

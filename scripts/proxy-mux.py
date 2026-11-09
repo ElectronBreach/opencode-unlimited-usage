@@ -167,6 +167,27 @@ def seed_health(pool):
     return out
 
 
+def seeded_seen(pool):
+    """indexes TEST already has a verdict on, live or dead.
+
+    without this a fresh mux reads "nothing probed yet" even when the last TEST
+    wrote a live verdict a second earlier, which makes doctor nag about work
+    that is already done.
+    """
+    try:
+        with open(HEALTH, "r", encoding="utf-8") as f:
+            rec = json.load(f)
+    except Exception:
+        return set()
+    out = set()
+    for i, p in enumerate(pool):
+        if p["scheme"] == "direct":
+            continue
+        if rec.get("%s:%d" % (p["host"], p["port"])):
+            out.add(i)
+    return out
+
+
 # -------------------------------------------------------------------- state
 def system_flag():
     """whether the machine-wide switch is on, as recorded by proxy-pool sys.
@@ -224,7 +245,7 @@ class Mux:
         self.pool = pool
         self.idx = 0
         self.dead = seed_health(pool)   # index -> unix time it may be retried
-        self.seen = set(self.dead)      # indexes the mux already has a verdict on
+        self.seen = seeded_seen(pool)   # indexes TEST already has a verdict on
         self.fails = {}                 # index -> consecutive connect failures
         self.window_start = 0.0
         self.rotations = 0
