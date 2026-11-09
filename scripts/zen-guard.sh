@@ -150,6 +150,21 @@ blacklist_add(){ oui_bl_add "${1:-}"; }
 
 is_burnt(){ oui_bl_has "${1:-}"; }
 
+# ---- the cheap identity: the console key ----------------------------------
+# a wall can be keyed on the console account instead of the ip — but on this
+# machine the ip is what has actually cleared walls, every time. so the key is
+# a fallback used only when the /64 pool is out of fresh blocks: it costs
+# nothing, it touches no tunnel. one wall after a swap is the verdict, and the
+# verdict is remembered for the rest of the run.
+KEYS_SCRIPT="$DEST/scripts/api-keys.sh"
+
+keys_json(){ bash "$KEYS_SCRIPT" json 2>/dev/null || true; }
+keys_live(){ keys_json | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print(0); raise SystemExit
+print(int(d.get("live") or 0))' 2>/dev/null || echo 0
+}
+
 
 dns_ok(){ [ -n "$(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null)" ]; }
 
@@ -251,6 +266,11 @@ if [ ! -f "$STATE" ]; then
 fi
 
 glog "zen-guard up (cooldown ${COOLDOWN}s, macOS, warp=$WARP)"
+# a fresh run gets a fresh verdict on the key lever: the pool may have had a
+# working key added since the last one gave up on it.
+state_set key_fails 0
+state_set key_pending 0
+state_set last_key_hop 0
 
 # one-time repair of a blacklist written before the identity rule existed.
 # it holds the tunnel's inside leg and bare v4 duplicates on this box, and
@@ -300,6 +320,28 @@ while true; do
 
   [ "$WALL" = 1 ] || continue
 
+  # ---- the key lever is a fallback, not the first move -------------------
+  # ip rotation is the lever that has actually cleared walls on this machine,
+  # so it stays the default. but if a swap of the console key did happen, the
+  # next wall is the verdict: the key was not it. record that, park, and stop
+  # spending the running CLI's credential on a hypothesis that already failed.
+  if [ "$(state_get key_pending)" = "1" ]; then
+    state_set key_pending 0
+    state_set key_fails 2
+    glog "the wall came back after the key swap — the key is not the lever; key rotation off for this run"
+    glog "parking rotations 15 min (pool dry and the account is not it)"
+    state_set last_hop "$(( $(date +%s) + 900 ))"
+    continue
+  fi
+
+  # parked rotations put last_hop in the future, which makes AGE negative.
+  # that is not "a wall zero seconds after a rotation" — read it as parked and
+  # stay quiet, or every wall during a park refills the counter and re-parks.
+  if [ "$AGE" -lt 0 ]; then
+    glog "wall seen while rotations are parked ($(( -AGE / 60 ))m left) — waiting"
+    continue
+  fi
+
   # jitter the cooldown so repeated walls do not align to the same tick
   COOLDOWN_J=$(( COOLDOWN + (RANDOM % 10) ))
   # a wall that lands within three minutes of a rotation means the fresh
@@ -310,7 +352,7 @@ while true; do
 
   # count walls that arrive while the identity is still brand new. one is bad
   # luck, three in a row is the account — and no amount of /64s fixes that.
-  if [ "$AGE" -lt 60 ]; then
+  if [ "$AGE" -ge 0 ] && [ "$AGE" -lt 60 ]; then
     FW=$(state_get fastwalls); case "$FW" in ''|*[!0-9]*) FW=0 ;; esac
     FW=$((FW + 1))
     state_set fastwalls "$FW"
@@ -356,6 +398,7 @@ while true; do
   NEW=""
   NEW_BUCKET=""
   TRY=0
+  COLLISIONS=0
   while [ "$TRY" -lt "$MAX_HOP_TRIES" ]; do
     TRY=$((TRY + 1))
     V=$(hop_with_timeout)
@@ -373,6 +416,18 @@ while true; do
     # green tick.
     if [ "$NB" = "$OLD_BLOCK" ]; then
       glog "try $TRY: same /64 ($NB) — bucket did not move"
+      COLLISIONS=$((COLLISIONS + 1))
+      continue
+    fi
+    # an already-burned block is not a fresh identity either, and this is the
+    # check the loop was missing: it compared against the block we just left
+    # and against nothing else, so it happily accepted a block burned hours
+    # ago. b40:8 took a wall at 01:05 and took another one three minutes after
+    # we landed back on it at 10:05 — nine hours apart, still burnt. a burnt
+    # block is a guaranteed wall, not a gamble worth taking.
+    if oui_bl_has "$NB"; then
+      glog "try $TRY: /64 $NB is already burned — not a fresh identity"
+      COLLISIONS=$((COLLISIONS + 1))
       continue
     fi
     NEW="$V"
@@ -380,13 +435,40 @@ while true; do
     break
   done
 
-  # upstream parity: when every block is burnt, recycle the oldest — these
-  # buckets reset around midnight anyway
-  if [ -z "$NEW" ]; then
-    glog "every block blacklisted — recycling oldest block"
-    V=$(hop_with_timeout)
-    NB=$(oui_bucket 2>/dev/null || true)
-    if [ -n "$V" ] && [ -n "$NB" ]; then NEW="$V"; NEW_BUCKET="$NB"; fi
+  # upstream recycles the oldest block here, on the theory that buckets reset
+  # around midnight. this machine measured otherwise: b40:8 was walled at
+  # 01:05 and walled again three minutes after we landed back on it at 10:05.
+  # a burnt block stays burnt for the better part of a day, so "recycle the
+  # oldest" is a guaranteed second wall wearing a rescue's clothes.
+  #
+  # when every try lands on a burned block, the pool is saturated right now.
+  # that is a fact about cloudflare's allocation, not a bug in this loop, and
+  # hammering the same eight blocks does not change it. keep the tunnel up so
+  # dns stays alive, say so once, and let time hand out a different slice.
+  if [ -z "$NEW" ] && [ "$COLLISIONS" -gt 0 ]; then
+    state_set collisions "$COLLISIONS"
+    # last resort, and only here: the /64 pool is out of fresh blocks, so the
+    # one thing left worth trying is whether the wall is keyed on the console
+    # account instead. it costs nothing and it does not touch the tunnel. if a
+    # wall comes back afterwards, key_pending turns the lever off for good.
+    KF=$(state_get key_fails); case "$KF" in ''|*[!0-9]*) KF=0 ;; esac
+    if [ "$KF" -lt 2 ]; then
+      KCOUNT=$(keys_json | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print(0); raise SystemExit
+print(int(d.get("count") or 0))' 2>/dev/null || echo 0)
+      case "$KCOUNT" in ''|*[!0-9]*) KCOUNT=0 ;; esac
+      if [ "$KCOUNT" -ge 2 ] && bash "$KEYS_SCRIPT" rotate next >/dev/null 2>&1; then
+        state_set key_pending 1
+        state_set last_key_hop "$NOW"
+        glog "pool saturated ($COLLISIONS burned) — swapped the console key as the last lever (no tunnel surgery)"
+        continue
+      fi
+    fi
+    glog "every try landed on a burned /64 ($COLLISIONS wasted) — pool saturated, parking rotations 15 min"
+    state_set last_hop "$((NOW + 900))"
+    state_set pool_dry "$NOW"
+    continue
   fi
   if [ -z "$NEW" ]; then
     FAILS=$(( $(state_get fails 2>/dev/null || echo 0) + 1 ))
@@ -406,6 +488,7 @@ while true; do
   if [ -n "$NEW" ]; then
     state_set last_hop "$NOW"
     state_set current "$NEW"
+    state_set collisions 0
     [ -n "$NEW_BUCKET" ] && state_set prefix "$NEW_BUCKET"
     NDEV=$(cur_device)
     [ -n "$NDEV" ] && state_set device "$NDEV"

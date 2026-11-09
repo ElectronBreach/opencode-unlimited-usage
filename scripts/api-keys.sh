@@ -242,19 +242,29 @@ warm_console(){
 
 cmd_health(){
   local i=0 aid; aid=$(active_id)
-  printf '%-4s %-22s %-8s %s\n' "#" "LABEL" "STATE" "KEY"
+  printf '%-3s %-17.17s %-7s %s\n' "#" "LABEL" "STATE" "KEY"
   while IFS=$'\t' read -r id label value active _; do
     [ -n "$id" ] || continue
     i=$((i+1))
     local k; k=$(key_of "$value")
-    local st
-    probe_key "$k"; case $? in
+    local st ph fp
+    probe_key "$k"; ph=$?
+    fp=$(printf '%s' "$k" | shasum -a 256 | cut -c1-16)
+    # `check` is the verb that settles the pool, so it has to record what it
+    # saw. a health check that probes but does not write leaves list, rotate
+    # and the HUD trusting a stale "live" from before the key was revoked —
+    # which is exactly how nine 401s kept a green dot.
+    [ "$ph" = "2" ] || _probe_read "$fp" set "$ph"
+    case $ph in
       0) st="live" ;;
       1) st="DEAD" ;;
       *) st="unknown" ;;
     esac
     [ "$id" = "$aid" ] && st="$st *"
-    printf '%-4s %-22s %-8s %s\n' "$i" "$label" "$st" "$(mask "$k")"
+    # the console pane in the HUD is ~48 columns wide. a full mask wrapped
+    # every row onto two lines, which read as noise. short form fits.
+    local short; [ ${#k} -gt 16 ] && short="${k:0:8}…${k: -4}" || short="$k"
+    printf '%-3s %-17.17s %-7s %s\n' "$i" "$label" "$st" "$short"
   done < <(rows)
 }
 
@@ -282,14 +292,27 @@ else:
 PY
 }
 
+# how long a verdict may be trusted depends on which verdict it is. a rejected
+# key does not come back, so caching that for ten minutes is free. a live key
+# can be revoked at any moment, and a ten-minute "live" cache is exactly how a
+# pool of nine revoked keys still painted a green dot — every one of them was
+# answering 401 while the cache insisted otherwise.
+PROBE_ALIVE_TTL=60
+PROBE_DEAD_TTL=600
+
 probe_cached(){
-  local k="$1" fp age st
+  local k="$1" fp age st ttl
   fp=$(printf '%s' "$k" | shasum -a 256 | cut -c1-16)
   age=$(_probe_read "$fp" age)
   case "$age" in ''|*[!0-9-]*) age=-1 ;; esac
-  if [ "$age" -ge 0 ] && [ "$age" -lt 600 ]; then
+  if [ "$age" -ge 0 ]; then
     st=$(_probe_read "$fp" get); case "$st" in ''|*[!0-9]*) st=2 ;; esac
-    return "$st"
+    case "$st" in
+      0) ttl=$PROBE_ALIVE_TTL ;;
+      1) ttl=$PROBE_DEAD_TTL ;;
+      *) ttl=0 ;;
+    esac
+    if [ "$age" -lt "$ttl" ]; then return "$st"; fi
   fi
   probe_key "$k"; st=$?
   [ "$st" = "2" ] || _probe_read "$fp" set "$st"
@@ -493,8 +516,20 @@ cmd_rotate(){
 cmd_json(){
   local data; data=$(rows)
   printf '%s\n' "$data" | python3 -c '
-import json,sys
-cap=int(sys.argv[1])
+import json,sys,time,hashlib,os
+cap=int(sys.argv[1]); probe=sys.argv[2]
+try: cache=json.load(open(probe))
+except Exception: cache={}
+def verdict(raw):
+    if not raw: return "unknown"
+    e=cache.get(hashlib.sha256(raw.encode()).hexdigest()[:16])
+    if not e: return "unknown"
+    try: age=time.time()-float(e.get("ts") or 0)
+    except Exception: return "unknown"
+    st=e.get("st")
+    if st==0 and age<60: return "live"
+    if st==1: return "dead"
+    return "unknown"
 rows=[]
 for line in sys.stdin:
     parts=line.rstrip("\n").split("\t")
@@ -503,13 +538,16 @@ for line in sys.stdin:
     try: key=json.loads(value).get("key","")
     except Exception: key=""
     masked=(key[:14]+"\u2026"+key[-4:]) if len(key)>18 else (key[:4]+"\u2026" if key else "")
-    rows.append({"id":cid,"label":label,"masked":masked,
+    rows.append({"id":cid,"label":label,"masked":masked,"state":verdict(key),
                  "active":active.strip()=="1","created":int(created or 0)})
 cur=next((r for r in rows if r["active"]),None)
+cnt={s:sum(1 for r in rows if r["state"]==s) for s in ("live","dead","unknown")}
 print(json.dumps({"count":len(rows),"cap":cap,"active":cur["label"] if cur else None,
-                  "activeMasked":cur["masked"] if cur else None,"keys":rows},
-                 separators=(",",":")))
-' "$CAP"
+                  "activeMasked":cur["masked"] if cur else None,
+                  "activeLive":(cur["state"]=="live") if cur else None,
+                  "live":cnt["live"],"dead":cnt["dead"],"unknown":cnt["unknown"],
+                  "keys":rows}, separators=(",",":")))
+' "$CAP" "$PROBE_CACHE"
 }
 
 case "${1:-list}" in

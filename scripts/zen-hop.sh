@@ -192,8 +192,15 @@ echo "new egress: ${NIP:-?}"
 NB=$(oui_bucket 2>/dev/null || true)
 NEW_DEV=$(cur_device)
 
-if [ -n "$NB" ] && [ "$NB" = "$OLD_BUCKET" ]; then
-  echo "  same /64 ($NB) as before — one more rotation"
+if [ -n "$NB" ] && { [ "$NB" = "$OLD_BUCKET" ] || oui_bl_has "$NB"; }; then
+  # a burned block is no better than the one we just left — both are walls we
+  # have already hit. b40:8 measured a wall at 01:05 and another three minutes
+  # after we landed back on it at 10:05, so reuse is a guaranteed second wall.
+  if [ "$NB" = "$OLD_BUCKET" ]; then
+    echo "  same /64 ($NB) as before — one more rotation"
+  else
+    echo "  landed on a burned /64 ($NB) — one more rotation"
+  fi
   rotate_once || true
   NB=$(oui_bucket 2>/dev/null || true)
   NEW_DEV=$(cur_device)
@@ -209,6 +216,11 @@ fi
 if [ "$NB" = "$OLD_BUCKET" ]; then
   echo "== same bucket ($NB) — cloudflare did not hand out a different /64 =="
   echo "== the registration moved, the quota key did not. run me again =="
+  exit 1
+fi
+if oui_bl_has "$NB"; then
+  echo "== burned bucket ($NB) — that block already took a wall, it is not a fresh identity =="
+  echo "== try again: cloudflare hands out a different /64 on the next registration =="
   exit 1
 fi
 

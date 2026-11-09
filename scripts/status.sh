@@ -95,7 +95,7 @@ export OUC_NOW="$now" OUC_IP="${c_ip:-}" OUC_DNS="$c_dns" OUC_TUNNEL="$tunnel" \
        OUC_CTX_TS="$ctx_ts" OUC_BRAND="$BRAND" OUC_DEST="$DEST"
 
 python3 - <<'PY'
-import json, os, sqlite3, time, datetime
+import json, os, sqlite3, time, datetime, hashlib
 
 def env(k, d=""):
     return os.environ.get(k, d)
@@ -317,7 +317,36 @@ out["tokens"] = tok
 # ---- opencode console key pool (the same credential table `opencode auth
 # list` reads). one row is active; that is the key the CLI authenticates with.
 keys = {"count": 0, "cap": num(env("OUC_KEY_CAP"), 50), "active": None,
-        "activeMasked": None, "activeId": None, "keys": []}
+        "activeMasked": None, "activeId": None, "keys": [],
+        "live": 0, "dead": 0, "unknown": 0, "activeLive": None,
+        "activeState": "unknown"}
+
+# the console rejects a revoked key instantly, and a ten-minute "live" cache is
+# how nine 401s still painted a green dot. a verdict counts as live only while
+# it is younger than the same 60s window api-keys.sh trusts.
+PROBE = os.path.join(os.path.expanduser("~/.local/share/opencode-unlimited/guard"),
+                     "key-probe.json")
+try:
+    probes = json.load(open(PROBE))
+except Exception:
+    probes = {}
+
+def key_verdict(raw):
+    if not raw:
+        return "unknown"
+    e = probes.get(hashlib.sha256(raw.encode()).hexdigest()[:16])
+    if not e:
+        return "unknown"
+    try:
+        age = time.time() - float(e.get("ts") or 0)
+    except Exception:
+        return "unknown"
+    st = e.get("st")
+    if st == 0 and age < 60:
+        return "live"
+    if st == 1:
+        return "dead"
+    return "unknown"
 if os.path.exists(db):
     try:
         con = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=3)
@@ -331,10 +360,19 @@ if os.path.exists(db):
                 k = ""
             masked = (k[:14] + "\u2026" + k[-4:]) if len(k) > 18 else (k[:4] + "\u2026" if k else "")
             item = {"id": cid, "label": label, "masked": masked,
-                    "active": active == 1, "created": created or 0}
+                    "active": active == 1, "created": created or 0,
+                    "state": key_verdict(k)}
             keys["keys"].append(item)
+            if item["state"] == "live":
+                keys["live"] += 1
+            elif item["state"] == "dead":
+                keys["dead"] += 1
+            else:
+                keys["unknown"] += 1
             if item["active"]:
-                keys.update(active=label, activeMasked=masked, activeId=cid)
+                keys.update(active=label, activeMasked=masked, activeId=cid,
+                            activeLive=(item["state"] == "live"),
+                            activeState=item["state"])
         keys["count"] = len(keys["keys"])
         con.close()
     except Exception as e:

@@ -52,7 +52,9 @@ Every button runs a real script. There is nothing decorative.
   bucket fresh or burnt, how many walls it has seen, how many buckets have
   burned. red dot on the tab when the current bucket is on the blacklist
 - **KEYS** — the pool (add / prev / next / check / clean / delete), count in
-  the tab label
+  the tab label. the header reads `9/50 · 9 live` from the probe cache, because
+  pool size is not capacity: the dot is red only when the console rejects the
+  active key and amber when it has not been asked yet
 - **STATS** — session burn and the top three models by tokens
 - **SESSION BURN** — the last 24 sessions that spent anything, newest last. Bar
   height is real tokens; the green tick above a bar is that session's cache share

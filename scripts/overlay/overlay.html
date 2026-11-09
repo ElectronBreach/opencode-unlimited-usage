@@ -701,15 +701,26 @@ function render(d){
   // api key pool
   const kk = d.apiKeys;
   if (kk) {
-    $("keyCount").textContent = (kk.count || 0) + "/" + (kk.cap || 50);
+    // the pool size is not capacity — nine revoked keys are nine dead rows and
+    // nine unprobed keys are nine question marks. say which it is.
+    const liveN = (kk.live || 0), deadN = (kk.dead || 0), unkN = (kk.unknown || 0);
+    const known = liveN + deadN;
+    $("keyCount").textContent = (kk.count || 0) + "/" + (kk.cap || 50)
+      + (known ? " · " + liveN + " live" : "");
+    $("keyCount").title = deadN
+      ? deadN + " key" + (deadN === 1 ? "" : "s") + " rejected by the console"
+      : (known ? "pool size · keys the console answers" : "run CHECK to probe the pool");
   const tk = $("tabKeys");
   if (tk) tk.textContent = kk.count ? String(kk.count) : "";
     const act = $("keyActive");
     const dot = $("keyDot");
+    const st = kk.activeState || (kk.activeLive ? "live" : "unknown");
     act.textContent = kk.active || "no key";
-    act.title = kk.active ? kk.active + "  " + (kk.activeMasked || "") : "no active key";
-    dot.className = kk.active ? "" : "bad";
-    act.style.color = kk.active ? "#c4b5fd" : "var(--bad)";
+    act.title = kk.active ? kk.active + "  " + (kk.activeMasked || "")
+      + (st === "dead" ? "  — rejected by the console"
+        : st === "unknown" ? "  — not probed yet" : "") : "no active key";
+    dot.className = st === "dead" ? "bad" : (st === "unknown" ? "warn" : "");
+    act.style.color = st === "dead" ? "var(--bad)" : (st === "live" ? "#c4b5fd" : "var(--mut)");
   }
 
   // bubble

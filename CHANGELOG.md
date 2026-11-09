@@ -3,6 +3,55 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.3.0 — 2026-11-09
+
+### A burnt bucket is not a fresh identity
+
+The retry loop compared each landing against the block it had just left — and
+against nothing else. So it accepted a block burned hours earlier and printed a
+green tick. The log proves the cost: `b40:8` took a wall at **01:05** and took
+another at **10:08**, three minutes after we landed back on it. Nine hours
+apart, still burnt.
+
+- every landing is now checked against the blacklist, not just against the old
+  block
+- collisions are counted, and eight tries that all land on burned blocks are
+  reported as a **saturated pool** instead of a rotation
+- upstream's "recycle the oldest block" fallback is gone — measured wrong here,
+  it was a second wall wearing a rescue's clothes
+- parked rotations (`last_hop` in the future) no longer read as "a wall zero
+  seconds after a rotation", which was refilling the fast-wall counter and
+  re-parking on every tick
+
+### The key pool lied about being a lever
+
+`api-keys list` cached a **live** verdict for ten minutes. A key revoked a
+minute after a probe still painted a green dot and `rotate` would pick it.
+`health` probed every key but never wrote the verdict, so the cache never
+learned anything.
+
+- alive verdicts expire in **60 s**; rejected ones stay 10 min (a dead key does
+  not come back)
+- `health` now records what it saw
+- `status.sh` and the HUD publish **live / dead / unknown**, and the KEYS header
+  reads `9/50 · 9 live` instead of the pool size pretending to be capacity
+- the dot is red only when the console rejects the active key, amber when it has
+  not been asked
+- `doctor.sh` says "none verified yet" rather than claiming every key is
+  rejected when it simply has not probed
+
+### The key lever is a fallback, not the first move
+
+Wall handling stays ip-first, because the ip is what has cleared walls on this
+machine every single time. When the `/64` pool is saturated, the guard makes one
+console-key swap as the last lever — no registration, no tunnel, no window where
+dns is in flux — and if a wall comes back after it, the verdict is recorded and
+the lever is off for the rest of the run.
+
+Measured here: a fresh bucket lasts **20–30 minutes** of active use, and the
+WARP pool hands out a new `/64` most registrations but repeats often enough that
+collision handling matters more than retry count.
+
 ## 2.2.0 — 2026-11-09
 
 ### The rotation was lying about half the time

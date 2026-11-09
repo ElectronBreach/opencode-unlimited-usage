@@ -70,6 +70,35 @@ else
   warn "warp ipv6 /64: none — falling back to the 4 v4 addresses"
 fi
 
+# ---- api-key pool. the pool size is not capacity: a revoked key answers 401
+# and keeps its row forever, so nine keys can mean nine dead ones.
+if [ -x "$DEST/scripts/api-keys.sh" ]; then
+  KJ=$(bash "$DEST/scripts/api-keys.sh" json 2>/dev/null)
+  read -r KN KLIVE KDEAD KACT KACTLIVE <<EOF
+$(printf '%s' "$KJ" | python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print("0 0 0 - None"); raise SystemExit
+print(d.get("count",0), d.get("live",0), d.get("dead",0),
+      (d.get("active") or "-").replace(" ","_"), d.get("activeLive"))
+' 2>/dev/null)
+EOF
+  KN=${KN:-0}; KLIVE=${KLIVE:-0}; KDEAD=${KDEAD:-0}
+  KUNK=$(printf '%s' "$KJ" | python3 -c 'import json,sys
+try: print(int(json.load(sys.stdin).get("unknown") or 0))
+except Exception: print(0)' 2>/dev/null)
+  KUNK=${KUNK:-0}
+  if [ "$KN" -gt 0 ] && [ "$KLIVE" -eq 0 ] && [ "$KDEAD" -gt 0 ]; then
+    warn "api keys: $KN in the pool, $KLIVE live — the console rejects every one (a working key is the only fix)"
+  elif [ "$KN" -gt 0 ] && [ "$KLIVE" -eq 0 ]; then
+    warn "api keys: $KN in the pool, none verified yet — bash $DEST/scripts/api-keys.sh health"
+  elif [ "$KDEAD" -gt 0 ]; then
+    ok "api keys: $KLIVE live of $KN ($KDEAD rejected — clean them from the KEYS tab)"
+  else
+    ok "api keys: $KLIVE live of $KN"
+  fi
+fi
+
 # ---- leak guard (opt-in)
 if [ -f /etc/pf.anchors/OUC_LEAKGUARD ]; then
   RULES=$(sudo -n /sbin/pfctl -a OUC_LEAKGUARD -s rules 2>/dev/null | grep -c . )

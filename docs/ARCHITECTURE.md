@@ -71,6 +71,18 @@ the registration id. `zen-identity.sh` holds that rule once:
 - `oui_bl_migrate` repairs a blacklist written before the rule existed.
 - `oui_ledger` keeps `guard/identities.json`: per bucket, walls, hops, first
   and last seen. the HUD and `doctor.sh` read it.
+- a landing is accepted only when the bucket is new **and** absent from the
+  blacklist. a burnt block stays burnt for the better part of a day — `b40:8`
+  walled at 01:05 and walled again three minutes after we re-landed on it at
+  10:05 — so reuse is a guaranteed wall, not a gamble.
+- eight tries that all land on burned blocks mean the pool is saturated right
+  now. the guard says so and parks 15 min instead of churning the tunnel.
+
+The console key is a *fallback* lever, not the first move: it is only spent
+when the `/64` pool is out of fresh blocks, because rotating the active key
+costs nothing (no registration, no tunnel, no dns window) but on this machine
+the ip is what has actually cleared every wall. one wall after a key swap is
+the verdict, and it is remembered for the run.
 
 The guard and the manual hop both judge success by `oui_bucket` changing. A new
 registration id on the same /64 is a no-op, and treating it as a rotation is
