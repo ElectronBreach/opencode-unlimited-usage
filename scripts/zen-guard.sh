@@ -10,6 +10,7 @@ set -u
 
 LOGF="$HOME/.local/share/opencode/log/opencode.log"
 DEST="$HOME/.local/share/opencode-unlimited"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="$DEST/guard"
 STATE="$STATE_DIR/state.json"
 GUARD_LOG="$STATE_DIR/guard.log"
@@ -283,6 +284,24 @@ fi
 while true; do
   rot_release
   trim_log "$GUARD_LOG"
+  # safety net for the machine-wide switch: if the system proxy is pointed at
+  # the mux and the mux is not running, every app on the box is talking to a
+  # dead port. put the baseline back before anything else.
+  if [ -f "$GUARD_DIR/proxy-state.json" ]; then
+    DEAD_SYS=$(python3 - "$GUARD_DIR/proxy-state.json" <<'PY' 2>/dev/null
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+print(1 if d.get("system") and not d.get("up") else 0)
+PY
+)
+    if [ "${DEAD_SYS:-0}" = "1" ] && [ -x "$SELF_DIR/proxy-pool.sh" ]; then
+      bash "$SELF_DIR/proxy-pool.sh" sys off >/dev/null 2>&1 \
+        && glog "system proxy was pointed at a stopped mux — restored the baseline"
+    fi
+  fi
   sleep 6
 
   [ -f "$LOGF" ] || continue

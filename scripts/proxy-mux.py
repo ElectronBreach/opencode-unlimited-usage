@@ -25,6 +25,8 @@ import asyncio
 import base64
 import json
 import os
+import signal
+import subprocess
 import sys
 import time
 
@@ -173,6 +175,25 @@ def system_flag():
             return bool(json.load(f).get("system"))
     except Exception:
         return False
+
+
+def restore_system():
+    """put the machine-wide proxy back if we are the one holding it down.
+
+    the mux never sets the system proxy; proxy-pool.sh does. but the mux is the
+    thing whose death strands every app on a dead port, so the mux is the thing
+    that undoes it on the way out. bounded: 15s, no output, no exceptions.
+    """
+    if not system_flag():
+        return
+    cli = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy-pool.sh")
+    if not os.path.exists(cli):
+        return
+    try:
+        subprocess.run(["bash", cli, "sys", "off"], timeout=15,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 
 
 class Mux:
@@ -473,8 +494,17 @@ async def main():
     server = await asyncio.start_server(lambda r, w: handle(mux, r, w), HOST, PORT)
     print("proxy-mux: %d upstreams on %s:%d (policy %s)" % (len(pool), HOST, PORT, POLICY))
     asyncio.ensure_future(watch_commands(mux))
+    # a SIGTERM is how the CLI stops us. turn it into an exit so the finally
+    # below runs — a machine pointed at a stopped mux is a dead internet.
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    except Exception:
+        pass
     async with server:
-        await server.serve_forever()
+        try:
+            await server.serve_forever()
+        finally:
+            restore_system()
 
 
 if __name__ == "__main__":

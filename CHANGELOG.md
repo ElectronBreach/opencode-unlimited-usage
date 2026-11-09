@@ -3,6 +3,23 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.4.2 — 2026-11-09
+
+### A green tick over a dead port
+
+`SYS` points every app on the machine at `127.0.0.1:8899`. If the mux is not
+running that is not "routed through the mux", it is a dead internet with a ✓
+next to it — and `doctor` printed exactly that ✓, because it checked
+`scutil --proxy` and never checked for a listener.
+
+- **doctor** now needs both: macOS pointed at the mux *and* the mux alive. A
+  pointed-but-dead config prints `✗ … every app is talking to a dead port`.
+- **proxy-mux** restores the saved system baseline on the way out. `SIGTERM`
+  is turned into a clean exit so the `finally` runs.
+- **zen-guard** is the net under that: if the state file says `system:true`
+  and `up:false`, it puts the baseline back within one 6s tick and logs it.
+  A `kill -9` cannot skip a `finally`; it still cannot skip the guard.
+
 ## 2.4.1 — 2026-11-09
 
 ### Three doors to the sheet

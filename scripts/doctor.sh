@@ -256,14 +256,19 @@ elif pool:
 else:
     print("    ✓ proxy layer off (opt-in) — HUD → PROXY to add webshare-style upstreams")
 
-# the system toggle is a claim about the os, so check the os.
+# the system toggle is a claim about the os, so check the os. pointing the
+# machine at a stopped listener is not "routed through the mux", it is a dead
+# internet with a green tick next to it.
 if st.get("system"):
     try:
         out=subprocess.run(["scutil","--proxy"],capture_output=True,text=True,timeout=5).stdout
     except Exception:
         out=""
-    if "127.0.0.1" in out and "8899" in out:
+    pointed = "127.0.0.1" in out and "8899" in out
+    if pointed and alive:
         print("    ✓ system proxy → 127.0.0.1:8899 (every app routed through the mux)")
+    elif pointed:
+        print("    ✗ system proxy → 127.0.0.1:8899 but the mux is DOWN — every app is talking to a dead port. HUD → PROXY → OFF (or ON)")
     else:
         print("    ! system flag is set but macOS is not pointed at 127.0.0.1:8899 — HUD → PROXY → OFF then SYS")
 PY
