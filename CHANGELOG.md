@@ -3,6 +3,32 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.4.8 — 2026-11-09
+
+### Rotation was judging the wrong provider
+
+With a provider model pinned (`river/DeepSeek-V4.1-Flash-1017`), the console
+key rotation probed that model id against the **opencode console** endpoint,
+got `400 unavailable` for all nine keys, and refused to rotate a pool that was
+perfectly healthy. The pool owns one provider; a model from another one is not
+its business.
+
+- rotation gates (pre-flight and post-swap verify) now run only when the pinned
+  model's provider matches the credential provider;
+- `model-levers set <provider>/<model>` pins any model that exists in the
+  config, so escaping an exhausted free tier is one command, not a hand-edited
+  json;
+- the pre-flight pass still stops the pointless case: when every key reports
+  the *same* verdict for a console model, it says "this pool shares one quota,
+  rotation cannot bypass it" and leaves the pool alone;
+- the fallback no longer leaves the session on a model that just failed — it
+  commits only a model that answered, and otherwise restores the previous pin.
+
+Verified end to end: `rotate next` with the river model pinned moves
+`OpenCode Console 4 → 5` and stops there; with the free model pinned it says
+"every key reports … as unavailable — that is the model, not the key"; and
+`opencode run` answers on the river pin.
+
 ## 2.4.7 — 2026-11-09
 
 ### Key rotation is not quota rotation

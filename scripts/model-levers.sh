@@ -94,7 +94,35 @@ PY
 
 cmd_set(){
   local want="${1:-}"
-  [ -n "$want" ] || die "usage: model-levers set <id|index>"
+  [ -n "$want" ] || die "usage: model-levers set <id|index|provider/model>"
+  # a full provider/model reference is set verbatim: the free pool is not the
+  # only place a session can run, and pinning a provider model must not need a
+  # hand-edited config.
+  case "$want" in
+    */*)
+      python3 - "$CONF" "$want" <<'PY2'
+import json,os,sys
+conf,ref=sys.argv[1:3]
+try:
+    d=json.load(open(conf))
+except Exception:
+    d={}
+prov,_,mid=ref.partition("/")
+have=((d.get("provider") or d.get("providers") or {}).get(prov) or {})
+if not have:
+    print("no such provider in config: %s" % prov, file=sys.stderr); sys.exit(3)
+if not mid:
+    print("usage: provider/model", file=sys.stderr); sys.exit(3)
+d["model"]=ref
+tmp=conf+".tmp"
+with open(tmp,"w") as f:
+    json.dump(d,f,indent=2)
+os.replace(tmp,conf)
+PY2
+      [ $? -eq 0 ] || exit 3
+      printf 'model → %s\n' "$want"
+      return 0 ;;
+  esac
   ensure_catalog
   local id
   id=$(python3 - "$want" "$CATALOG" "$PROVIDER" <<'PY'

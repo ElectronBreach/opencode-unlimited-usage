@@ -510,6 +510,48 @@ cmd_rotate(){
   [ "$start_idx" -ge 0 ] || step=1
 
   MODEL_PIN=$(pinned_model)
+  # before walking: if every key reports the same verdict for the pinned model,
+  # rotating is theatre. one pass tells us, and it stops the "rotated but the
+  # wall stayed" loop that looks like a broken rotation.
+  MODEL_PIN=$(pinned_model)
+  # the pool only owns the console provider. a model pinned to another provider
+  # (river, etc.) has nothing to do with these credentials, and probing it here
+  # is how rotation got blocked by a working session.
+  MODEL_PROV="${MODEL_PIN%%/*}"
+  [ -n "$MODEL_PROV" ] || MODEL_PROV="$INTEGRATION"
+  if [ -n "$MODEL_PIN" ] && [ "$MODEL_PROV" = "$INTEGRATION" ]; then
+    local m samp verdict=""
+    m="${MODEL_PIN#*/}"
+    local verdicts=""
+    while IFS=$'\t' read -r id _ value active; do
+      [ -n "$id" ] || continue
+      probe_model "$(key_of "$value")" "$m"
+      verdicts="$verdicts$?"
+    done < <(rows)
+    # all identical and not "ok" -> the pool shares one wall
+    case "$verdicts" in
+      ''|*'0'*) : ;;
+      *)
+        case "$verdicts" in
+          *[!0]*) ;;
+        esac
+        local first="${verdicts:0:1}" same=1 c
+        for ((c=0; c<${#verdicts}; c++)); do
+          [ "${verdicts:$c:1}" = "$first" ] || same=0
+        done
+        if [ "$same" = "1" ]; then
+          case "$first" in
+            1) say "every key reports the same free wall for $m — this pool shares one quota, rotation cannot bypass it" ;;
+            4) say "every key reports $m as unavailable — that is the model, not the key" ;;
+            *) say "every key reports $m as $first — rotation would change nothing" ;;
+          esac
+          say "try: model-levers set <provider>/<model> (a provider model), or wait for the reset"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+
   local target="" idx="$start_idx" seen
   for ((seen=0; seen<n; seen++)); do
     local cand="${ids[$(( (idx + n) % n ))]}"
@@ -561,7 +603,7 @@ cmd_rotate(){
   # a rotated key is not a rotated quota. ask the model on the new key: if it
   # answers 429 the wall is account-wide and no amount of key shuffling helps,
   # so say that here rather than letting the CLI surface it as a model error.
-  if [ -n "${MODEL_PIN:-}" ]; then
+  if [ -n "${MODEL_PIN:-}" ] && [ "${MODEL_PROV:-$INTEGRATION}" = "$INTEGRATION" ]; then
     probe_model "$valk" "${MODEL_PIN#*/}"; local qr=$?
     case $qr in
       0) say "quota ok on ${MODEL_PIN#*/}" ;;
@@ -590,7 +632,11 @@ cmd_rotate(){
             esac
             nm=""
           done
-          [ -n "${nm:-}" ] || say "no free model answers right now — the opencode free pool is exhausted account-wide; key rotation cannot bypass it. Use a provider model or wait for the reset."
+          if [ -z "${nm:-}" ]; then
+            bash "$SELF_DIR/model-levers.sh" set "${MODEL_PIN#*/}" >/dev/null 2>&1 \
+              && say "left the model on ${MODEL_PIN#*/} — no free model answered"
+            say "no free model answers right now — the opencode free pool is exhausted account-wide; key rotation cannot bypass it. Use a provider model or wait for the reset."
+          fi
         fi
         ;;
     esac
