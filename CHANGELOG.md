@@ -3,6 +3,64 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.2.0 — 2026-11-09
+
+### The rotation was lying about half the time
+
+The quota is keyed on the **egress IPv6 /64** cloudflare hands the server —
+not on the device id, and not on the v4 address in front of it. The old check
+accepted "registration id changed" as proof of a rotation, so a fresh
+registration that landed inside the *same* /64 printed a green tick, you
+re-sent the message, and hit the same wall. It looked like the tool was broken
+because half the time it was a no-op with good manners.
+
+- New `scripts/zen-identity.sh` — one shared definition of identity, used by
+  both `zen-guard.sh` and `zen-hop.sh`. A rotation is real when the egress /64
+  changes; anything else is evidence, never the key.
+- `zen-hop.sh` now verifies the bucket, and takes one more swing when
+  cloudflare hands back the block it just gave you.
+- The guard's retry loop judges the bucket too, so a same-/64 registration
+  costs one retry instead of a false success.
+- `zen-hop.sh --where` prints the live bucket, both egress families, the
+  device id and the blacklist without touching the tunnel.
+
+### The blacklist had three kinds of junk in it
+
+`state.json` was holding the tunnel's **inside leg** (`2606:4700:110:*`), bare
+v4 duplicates of blocks already listed, and entries twice over. None of them
+could ever match a bucket, and they occupied the cap forever.
+
+- `oui_bl_migrate` repairs it once at guard start (14 → 5 entries here).
+- Only egress blocks are accepted into the list now; everything else is refused.
+
+### Fewer wasted registrations
+
+- A `connect` that has not settled yet used to be probed once and declared
+  dead — six "failures" in a row on a tunnel that was still coming up. The
+  guard now waits up to 12 s for a real egress before spending another one.
+- Three walls inside a minute of a fresh identity is the **account**, not the
+  ip. The guard parks rotations for 15 minutes instead of burning the /64 pool.
+- Cooldown escalates to 60 s when a wall lands within three minutes of a hop,
+  and the "waiting" line is logged once per episode instead of every 6 s.
+
+### The panel stopped growing
+
+- Three tabs — **IDENTITY · KEYS · STATS** — sharing one fixed 118 px pane.
+  Adding a card later costs a row inside a pane, not another 90 px of window.
+- The console sits *below* the tabs and keeps the leftover height, so it can
+  never be squeezed out by a new card again. Panel 736 → 642 px.
+- Identity gained the three facts that matter: which bucket we are on, whether
+  it is burnt, and how many have burned. Stats gained the top three models.
+- The identity tab carries a red dot when the current bucket is on the
+  blacklist — the one thing you should see without opening the tab.
+
+### Also
+
+- `status.sh` publishes `bucket`, `burnt`, `bucketWalls` and `bucketHops`;
+  `doctor.sh` prints them.
+- `guard/identities.json` — a small per-bucket ledger (walls, hops, first/last
+  seen), bounded at 400 buckets.
+
 ## 2.1.0 — 2026-11-09
 
 ### Statistics

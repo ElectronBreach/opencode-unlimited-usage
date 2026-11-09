@@ -41,7 +41,7 @@ func crashLog(_ msg: String) {
     }
 }
 
-let EXPANDED = NSSize(width: 366, height: 736)
+let EXPANDED = NSSize(width: 366, height: 642)
 let COLLAPSED = NSSize(width: 78, height: 78)
 
 final class Panel: NSPanel {

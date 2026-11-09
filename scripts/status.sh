@@ -91,7 +91,7 @@ fi
 
 export OUC_NOW="$now" OUC_IP="${c_ip:-}" OUC_DNS="$c_dns" OUC_TUNNEL="$tunnel" \
        OUC_MODE="$mode" OUC_KEEPER="$keeper" OUC_GUARD="$guard" OUC_CREDIT="$credit" \
-       OUC_LEAK="$leak" OUC_STATE="$STATE" OUC_DB="$DB" OUC_CTX_DIR="$ctx_dir" \
+       OUC_LEAK="$leak" OUC_STATE="$STATE" OUC_LEDGER="$GUARD/identities.json" OUC_DB="$DB" OUC_CTX_DIR="$ctx_dir" \
        OUC_CTX_TS="$ctx_ts" OUC_BRAND="$BRAND" OUC_DEST="$DEST"
 
 python3 - <<'PY'
@@ -131,7 +131,20 @@ out["identity"] = {
     "device": (st.get("device") or "")[:8],
     "hops": num(st.get("hops")),
     "blacklist": len([x for x in (st.get("blacklist") or []) if x]),
+    # the bucket is the quota key. burnt is the honest answer to "have we
+    # already been walled on this one", which is what the HUD has to show.
+    "bucket": st.get("prefix") or "",
+    "burnt": bool(st.get("prefix") and st.get("prefix") in (st.get("blacklist") or [])),
+    "bucketWalls": 0, "bucketHops": 0,
 }
+try:
+    with open(env("OUC_LEDGER")) as f:
+        led = json.load(f).get("buckets", {})
+    e = led.get(st.get("prefix") or "", {}) or {}
+    out["identity"]["bucketWalls"] = num(e.get("walls"))
+    out["identity"]["bucketHops"] = num(e.get("hops"))
+except Exception:
+    pass
 
 # ---- tokens (opencode.db, read-only; WAL is active so never copy the file)
 #

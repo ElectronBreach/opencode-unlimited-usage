@@ -30,6 +30,7 @@ launchd daemon  launchd agent 6 s loop          OpencodeOverlay.app
 |---|---|---|---|
 | `scripts/warp-keeper.sh` | root, launchd daemon | always | keeps the WARP tunnel carrying traffic, repairs DNS, enforces `TunnelOnly` |
 | `scripts/zen-guard.sh` | user, launchd agent | always | watches the opencode log for the usage wall and rotates identity |
+| `scripts/zen-identity.sh` | sourced | — | the one definition of identity: what a rotation has to change |
 | `scripts/zen-lane.sh` | user, per opencode launch | session | pins the edge, registers the session, raises the HUD |
 | `scripts/overlay/main.swift` | user, launchd agent | session | the panel; starts only when a session exists |
 | `scripts/status.sh` | user, on demand | — | one JSON snapshot of everything |
@@ -50,10 +51,30 @@ guard/
   overlay-intent                   "summon|show <ts>" — how a cold start knows why
   overlay-state.json               what the window is actually doing
   overlay-crash.log                one line per surprise
+  identities.json                  per-bucket ledger: walls, hops, first/last
   key-probe.json                   10 min cache of console key verdicts
   status-cache.json                12 s cache of the network probes
   keeper.log guard-daemon.log overlay-daemon.log
 ```
+
+## What a rotation has to change
+
+The quota is keyed on the **egress IPv6 /64** cloudflare hands the server, as
+seen from the far side (`2a09:bac*`), not the utun leg on this machine and not
+the registration id. `zen-identity.sh` holds that rule once:
+
+- `oui_bucket` probes `cdn-cgi/trace` over v6 (v4 only when the tunnel has no
+  v6 path) and returns the /64.
+- `oui_is_egress` refuses anything outside cloudflare's egress ranges, which is
+  what keeps the tunnel's inside leg and a direct ISP address out of the blacklist.
+- `oui_bl_add` / `oui_bl_has` store and match nothing but egress buckets.
+- `oui_bl_migrate` repairs a blacklist written before the rule existed.
+- `oui_ledger` keeps `guard/identities.json`: per bucket, walls, hops, first
+  and last seen. the HUD and `doctor.sh` read it.
+
+The guard and the manual hop both judge success by `oui_bucket` changing. A new
+registration id on the same /64 is a no-op, and treating it as a rotation is
+what made the tool look broken half the time.
 
 Token numbers come from `~/.local/share/opencode/opencode.db` (`session_v2`),
 read-only, every call — never cached. Only network probes are cached, because

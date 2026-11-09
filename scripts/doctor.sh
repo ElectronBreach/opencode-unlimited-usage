@@ -138,14 +138,21 @@ fi
 
 # ---- guard state
 if [ -f "$GUARD_DIR/state.json" ]; then
-  python3 - "$GUARD_DIR/state.json" <<'PY'
+  python3 - "$GUARD_DIR/state.json" "$GUARD_DIR/identities.json" <<'PY'
 import json,sys
 try:
     d=json.load(open(sys.argv[1]))
-    print(f"    rotations so far: {d.get('hops',0)} · blacklisted blocks: {len([x for x in d.get('blacklist',[]) if x])}")
-    print(f"    identity: {d.get('current') or '?'} · egress /64 {d.get('prefix') or '?'} · device {(d.get('device') or '?')[:8]}…")
+    bl=[x for x in d.get('blacklist',[]) if x]
+    bucket=d.get('prefix') or '?'
+    burnt = d.get('prefix') in bl
+    led={}
+    try: led=json.load(open(sys.argv[2])).get('buckets',{}).get(d.get('prefix') or '',{})
+    except Exception: led={}
+    print(f"    rotations so far: {d.get('hops',0)} · blacklisted buckets: {len(bl)}")
+    print(f"    identity: {d.get('current') or '?'} · bucket {bucket} · device {(d.get('device') or '?')[:8]}…")
     if d.get('seen6'):
         print(f"    ipv6 exit: {d.get('seen6')}")
+    print(f"    bucket state: {'BURNT' if burnt else 'fresh'} · walls {led.get('walls',0)} · hops {led.get('hops',0)}")
 except Exception as e:
     print(f"    guard state unreadable: {e}")
 PY

@@ -22,8 +22,27 @@ if [ -z "$WARP" ]; then
 fi
 [ -n "$WARP" ] || { echo "warp-cli not found"; exit 1; }
 
+# the identity rule lives in one file, shared with the guard. a rotation is
+# real when the egress /64 changes — not when the device id does.
+SRC_DIR=$(cd "$(dirname "$0")" && pwd)
+if [ -f "$SRC_DIR/zen-identity.sh" ]; then . "$SRC_DIR/zen-identity.sh"; fi
+
 w(){  sudo -n "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; sudo -n "$WARP" "$@" >/dev/null 2>&1; }
 wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP" "$@" 2>/dev/null; }
+
+# read-only diagnosis: what bucket are we on right now, and is it burnt.
+if [ "${1:-}" = "--where" ] || [ "${1:-}" = "--dry-run" ]; then
+  B=$(oui_bucket 2>/dev/null || true)
+  printf 'bucket   %s\n' "${B:-none}"
+  printf 'v6       %s\n' "$(oui_probe6 2>/dev/null || true)"
+  printf 'v4       %s\n' "$(oui_probe4 2>/dev/null || true)"
+  printf 'device   %s\n' "$(wo registration show 2>/dev/null | awk '/^ID:/{print $2; exit}')"
+  printf 'state    %s\n' "$(oui_state_get prefix)"
+  if [ -n "$B" ] && oui_bl_has "$B"; then printf 'burnt    yes\n'; else printf 'burnt    no\n'; fi
+  printf 'blacklist\n'
+  oui_bl_list | sed 's/^/         /'
+  exit 0
+fi
 
 pause_keeper(){ mkdir -p "$GUARD_DIR"; printf '%s' "$$" > "$PAUSE" 2>/dev/null; }
 resume_keeper(){ rm -f "$PAUSE" 2>/dev/null; }
@@ -71,7 +90,11 @@ OLD_DEV=$(cur_device)
 OLD_PFX=$(seen6_prefix 2>/dev/null || true)
 [ -n "$OLD_PFX" ] || OLD_PFX=$(warp_prefix)
 OLD_SEEN4=$(seen4 2>/dev/null || true)
-echo "old egress: ${OLD:-?}  /64 ${OLD_PFX:-none}"
+# the bucket is what the quota is actually keyed on. probes first, cached
+# state second, utun prefix last (a tunnel with no egress path yet).
+OLD_BUCKET=$(oui_bucket 2>/dev/null || true)
+[ -n "$OLD_BUCKET" ] || OLD_BUCKET="$OLD_PFX"
+echo "old egress: ${OLD:-?}  /64 ${OLD_PFX:-none}  bucket ${OLD_BUCKET:-?}"
 
 # a plain `registration delete` then `registration new` is a race: the daemon
 # re-creates or keeps the blob for a moment and `new` answers "Old registration
@@ -159,48 +182,48 @@ if ! rotate_once; then
 fi
 echo "new egress: ${NIP:-?}"
 
-# four addresses exist in this pool, so landing back on the one you started
-# from is common. take one more swing when that happens: a fresh identity
-# either way, but a different address is what you actually asked for.
-FIRST_DEV=$(cur_device)
-FIRST_PFX=$(seen6_prefix 2>/dev/null || true)
-# a repeated v4 is only a problem when the /64 is also unchanged. cloudflare's
-# pool has four v4 addresses, so demanding a different one turned a fresh
-# identity into a second 12-second rotation 25% of the time.
-if [ -n "$NIP" ] && [ "$NIP" = "$OLD" ] && is_warp_ip "$OLD" \
-   && [ -n "$FIRST_DEV" ] && [ "$FIRST_DEV" != "$OLD_DEV" ] \
-   && { [ -z "$FIRST_PFX" ] || [ -z "$OLD_PFX" ] || [ "$FIRST_PFX" = "$OLD_PFX" ]; }; then
-  echo "  same address and same /64 as before — one more rotation"
+# ---- verdict --------------------------------------------------------------
+# the bucket is the egress /64 the server keys the quota on. four v4
+# addresses and two edges live in that pool, so landing back on the block you
+# started from is common — and a fresh device id sitting on the same /64 is
+# NOT a new identity, however clean the registration looks. that was the bug:
+# the old check accepted "device id changed" and printed a green tick while
+# the quota key had not moved at all.
+NB=$(oui_bucket 2>/dev/null || true)
+NEW_DEV=$(cur_device)
+
+if [ -n "$NB" ] && [ "$NB" = "$OLD_BUCKET" ]; then
+  echo "  same /64 ($NB) as before — one more rotation"
   rotate_once || true
-  echo "new egress: ${NIP:-?}"
+  NB=$(oui_bucket 2>/dev/null || true)
+  NEW_DEV=$(cur_device)
 fi
 resume_keeper
 
-if [ -z "$NIP" ]; then
-  echo "-- tunnel connected but no egress — disconnect + let keeper repair --"
+if [ -z "$NB" ]; then
+  echo "-- tunnel connected but no cloudflare egress — disconnecting, keeper repairs --"
   w disconnect
   exit 1
 fi
-if ! is_warp_ip "$NIP"; then
-  echo "-- egress is not cloudflare ($NIP) — the tunnel did not come up; not a rotation --"
-  w disconnect
+
+if [ "$NB" = "$OLD_BUCKET" ]; then
+  echo "== same bucket ($NB) — cloudflare did not hand out a different /64 =="
+  echo "== the registration moved, the quota key did not. run me again =="
   exit 1
 fi
-NEW_DEV=$(cur_device)
-# cloudflare's free pool is four addresses. the quota follows the registration
-# (device id), not the address, so a repeated ip with a new device id is still
-# a fresh identity.
-if [ -n "$NEW_DEV" ] && [ "$NEW_DEV" != "$OLD_DEV" ]; then
-  # record the whole identity. `current` alone left doctor and the guard
-  # showing a /64 and device that no longer existed, so a rotation looked
-  # like a no-op and the stale /64 was never blacklisted.
-  PFX_NOW=$(seen6_prefix 2>/dev/null || true)
-  [ -n "$PFX_NOW" ] || PFX_NOW=$(warp_prefix)
-  SEEN6_NOW=$(seen6 2>/dev/null || true)
-  SEEN4_NOW=$(seen4 2>/dev/null || true)
-  [ -n "$SEEN4_NOW" ] || SEEN4_NOW="$NIP"
-  if [ -f "$GUARD_DIR/state.json" ]; then
-    python3 - "$GUARD_DIR/state.json" "$SEEN4_NOW" "$PFX_NOW" "$NEW_DEV" "$SEEN6_NOW" <<'PY' 2>/dev/null
+
+# real rotation. burn the old bucket, credit the new one, publish the state
+# the HUD and doctor read.
+oui_bl_add "$OLD_BUCKET" 2>/dev/null || true
+oui_ledger "$OLD_BUCKET" wall 2>/dev/null || true
+oui_ledger "$NB" hop 2>/dev/null || true
+
+PFX_NOW="$NB"
+SEEN6_NOW=$(seen6 2>/dev/null || true)
+SEEN4_NOW=$(seen4 2>/dev/null || true)
+[ -n "$SEEN4_NOW" ] || SEEN4_NOW="$NIP"
+if [ -f "$GUARD_DIR/state.json" ]; then
+  python3 - "$GUARD_DIR/state.json" "$SEEN4_NOW" "$PFX_NOW" "$NEW_DEV" "$SEEN6_NOW" <<'PY' 2>/dev/null
 import json,sys,os,time
 p,ip,pfx,dev,s6 = sys.argv[1:6]
 try: d=json.load(open(p))
@@ -217,17 +240,8 @@ t=p+".tmp"
 with open(t,"w") as f: json.dump(d,f,separators=(",",":"))
 os.replace(t,p)
 PY
-  fi
-  echo "== FRESH IDENTITY ✓  device ${OLD_DEV:0:8}… → ${NEW_DEV:0:8}…  egress $NIP  /64 $PFX_NOW =="
-  if [ -n "$OLD_PFX" ] && [ "$PFX_NOW" = "$OLD_PFX" ]; then
-    echo "   (egress /64 unchanged — the registration moved but the exit did not)"
-  fi
-  echo "   re-send your message"
-  exit 0
 fi
-if [ "$NIP" != "$OLD" ]; then
-  echo "== new egress $NIP, but the device id did not change — run me again =="
-  exit 1
-fi
-echo "== cloudflare handed back the same block and device — run me again =="
-exit 1
+echo "== FRESH BUCKET ✓  ${OLD_BUCKET:-?} → ${NB}  device ${OLD_DEV:0:8}… → ${NEW_DEV:0:8}… =="
+echo "   egress ${SEEN4_NOW:-$NIP}"
+echo "   re-send your message"
+exit 0

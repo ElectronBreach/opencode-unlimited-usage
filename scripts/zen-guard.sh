@@ -135,38 +135,21 @@ warp_prefix(){
 # must never be blacklisted or rotated
 is_warp_ip(){ case "${1:-}" in 104.28.*|162.159.*|172.64.*|188.114.*|2a09:*|2606:*) return 0;; *) return 1;; esac; }
 
-bl_norm(){ python3 -c "
-import sys
-a=sys.argv[1]
-print(':'.join(a.split(':')[:4]) if ':' in a else a)" "$1" 2>/dev/null; }
+# ---- identity rule, shared with the manual hop -----------------------------
+# a rotation is real when the egress /64 changes. device id, v4 address and
+# edge are evidence about how we got there, never the quota key.
+SRC_DIR=$(cd "$(dirname "$0")" && pwd)
+if [ -f "$SRC_DIR/zen-identity.sh" ]; then . "$SRC_DIR/zen-identity.sh"; fi
 
-blacklist_add(){
-  python3 - "$STATE" "$1" <<'PY' 2>/dev/null
-import json,os,sys
-p, a = sys.argv[1], sys.argv[2]
-def n(x): return ":".join(x.split(":")[:4]) if ":" in x else x
-try: d=json.load(open(p))
-except: d={"blacklist":[],"offset":0,"last_hop":0,"hops":0,"current":""}
-m=n(a)
-d["blacklist"]=[x for x in d.get("blacklist",[]) if x and n(x)!=m]+[m]
-d["blacklist"]=d["blacklist"][-200:]
-t=p+".tmp"
-with open(t,"w") as f: json.dump(d,f)
-os.replace(t,p)
-PY
-}
+bl_norm(){ oui64 "${1:-}"; }
 
-is_burnt(){
-  python3 - "$STATE" "$1" <<'PY' 2>/dev/null
-import json,sys
-p, a = sys.argv[1], sys.argv[2]
-def n(x): return ":".join(x.split(":")[:4]) if ":" in x else x
-try: d=json.load(open(p))
-except: sys.exit(1)
-m=n(a)
-sys.exit(0 if any(x and n(x)==m for x in d.get("blacklist",[])) else 1)
-PY
-}
+# only egress blocks are stored. the old writer happily pushed the tunnel's
+# inside leg (2606:4700:110:*) and bare v4 duplicates into this list, where
+# they occupied slots forever and never matched anything.
+blacklist_add(){ oui_bl_add "${1:-}"; }
+
+is_burnt(){ oui_bl_has "${1:-}"; }
+
 
 dns_ok(){ [ -n "$(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null)" ]; }
 
@@ -201,6 +184,19 @@ clear_registration(){
     w registration delete
     sleep 1
     reg_present || return 0
+  done
+  return 1
+}
+
+# the tunnel does not come up the instant `connect` returns. probing once and
+# declaring "no egress" spends a whole registration on a tunnel that was still
+# settling — six of those in a row is what the log called six failures.
+wait_bucket(){
+  local i b
+  for i in $(seq 1 "${1:-12}"); do
+    b=$(oui_bucket 2>/dev/null || true)
+    [ -n "$b" ] && { printf '%s' "$b"; return 0; }
+    sleep 1
   done
   return 1
 }
@@ -256,6 +252,14 @@ fi
 
 glog "zen-guard up (cooldown ${COOLDOWN}s, macOS, warp=$WARP)"
 
+# one-time repair of a blacklist written before the identity rule existed.
+# it holds the tunnel's inside leg and bare v4 duplicates on this box, and
+# neither can ever match a bucket.
+if [ -n "$(command -v oui_bl_migrate)" ]; then
+  MIG=$(oui_bl_migrate 2>/dev/null || true)
+  [ -n "$MIG" ] && glog "blacklist $MIG"
+fi
+
 while true; do
   rot_release
   trim_log "$GUARD_LOG"
@@ -298,6 +302,29 @@ while true; do
 
   # jitter the cooldown so repeated walls do not align to the same tick
   COOLDOWN_J=$(( COOLDOWN + (RANDOM % 10) ))
+  # a wall that lands within three minutes of a rotation means the fresh
+  # bucket did not help — it is the account or a cached session, not the ip.
+  # burning another registration on a 30 s cadence just empties the pool of
+  # fresh /64s for the moment you actually need one.
+  if [ "$AGE" -lt 180 ]; then COOLDOWN_J=60; fi
+
+  # count walls that arrive while the identity is still brand new. one is bad
+  # luck, three in a row is the account — and no amount of /64s fixes that.
+  if [ "$AGE" -lt 60 ]; then
+    FW=$(state_get fastwalls); case "$FW" in ''|*[!0-9]*) FW=0 ;; esac
+    FW=$((FW + 1))
+    state_set fastwalls "$FW"
+    [ "$FW" = 1 ] && glog "wall ${AGE}s after a rotation — the identity is seconds old; waiting ${COOLDOWN_J}s"
+    if [ "$FW" -ge 3 ]; then
+      glog "three walls inside a minute of a fresh identity — account-side, parking rotations for 15 min"
+      state_set last_hop "$((NOW + 900))"
+      state_set fastwalls 0
+      continue
+    fi
+  elif [ "$AGE" -ge 300 ]; then
+    state_set fastwalls 0
+  fi
+
   if [ "$AGE" -lt "$COOLDOWN_J" ]; then
     glog "wall seen but in cooldown (${AGE}s < ${COOLDOWN_J}s) — waiting"
     continue
@@ -311,11 +338,11 @@ while true; do
   fi
 
   OLD=$(cur_ip)
-  # the quota key is the address the server sees, not the tunnel's inside leg
-  OLD_BLOCK=$(seen6_prefix 2>/dev/null || true)
-  [ -n "$OLD_BLOCK" ] || OLD_BLOCK=$(warp_prefix)
-  [ -n "$OLD_BLOCK" ] || OLD_BLOCK="$OLD"
   OLD_SEEN4=$(seen4 2>/dev/null || true)
+  # the quota key is the egress /64 the server sees, never the utun leg
+  OLD_BLOCK=$(oui_bucket 2>/dev/null || true)
+  [ -n "$OLD_BLOCK" ] || OLD_BLOCK=$(seen6_prefix 2>/dev/null || true)
+  [ -n "$OLD_BLOCK" ] || OLD_BLOCK="$OLD"
   if ! rot_acquire; then
     glog "wall seen but another rotation has owned the tunnel for 5 minutes — not stacking a second one"
     continue
@@ -323,37 +350,34 @@ while true; do
   glog "wall detected — rotating (was: ${OLD:-?} /64 ${OLD_BLOCK:-?})"
   # the /64 is the bucket, exactly like the linux build. fall back to the v4
   # address only when the tunnel has no v6 address at all.
-  [ -n "$OLD_BLOCK" ] && is_warp_ip "$OLD_BLOCK" && blacklist_add "$OLD_BLOCK"
+  [ -n "$OLD_BLOCK" ] && oui_is_egress "$OLD_BLOCK" && blacklist_add "$OLD_BLOCK"
+  oui_ledger "$OLD_BLOCK" wall 2>/dev/null || true
 
   NEW=""
-  DEV_BEFORE=$(cur_device)
+  NEW_BUCKET=""
   TRY=0
   while [ "$TRY" -lt "$MAX_HOP_TRIES" ]; do
     TRY=$((TRY + 1))
     V=$(hop_with_timeout)
-    # the free pool is four addresses; the quota key is the registration.
-    # a new device id with a repeated ip is a successful rotation.
-    DEV_AFTER=$(cur_device)
-    NEWPFX=$(seen6_prefix 2>/dev/null || true)
-    NEWSEEN4=$(seen4 2>/dev/null || true)
-    if [ -n "$DEV_AFTER" ] && [ "$DEV_AFTER" != "$DEV_BEFORE" ] && [ -n "$V" ] && is_warp_ip "$V"; then
-      # a new device id that lands on the same exit is not a new bucket.
-      if [ "$NEWPFX" = "$OLD_BLOCK" ] && [ -n "$NEWSEEN4" ] && [ "$NEWSEEN4" = "$OLD_SEEN4" ]; then
-        glog "try $TRY: new device but identical exit ($NEWPFX) — retrying"
-        continue
-      fi
-      if is_burnt "$V"; then glog "try $TRY: new device on a known block ($V) — still a fresh identity"; fi
-      NEW="$V"; break
+    NB=$(oui_bucket 2>/dev/null || true)
+    if [ -z "$NB" ]; then
+      NB=$(wait_bucket 12 2>/dev/null || true)
     fi
-    if [ -z "$V" ]; then glog "try $TRY: tunnel repair failed"; continue; fi
-    # if WARP never came back up, cur_ip falls through to the ISP address.
-    # counting that as a rotation tells you you are covered while you are not.
-    if ! is_warp_ip "$V"; then
-      glog "try $TRY: egress is not cloudflare ($V) — tunnel is not up, not a rotation"
+    if [ -z "$NB" ]; then
+      glog "try $TRY: no cloudflare egress after rotation"
       continue
     fi
-    if is_burnt "$V"; then glog "try $TRY: cloudflare returned a blacklisted block ($V) — again"; continue; fi
-    NEW="$V"; break
+    # a fresh registration sitting on the old /64 is the old wall. this is
+    # the check that used to be "device id changed" — and a new device id on
+    # an unchanged block is not a new quota bucket, it is a no-op with a
+    # green tick.
+    if [ "$NB" = "$OLD_BLOCK" ]; then
+      glog "try $TRY: same /64 ($NB) — bucket did not move"
+      continue
+    fi
+    NEW="$V"
+    NEW_BUCKET="$NB"
+    break
   done
 
   # upstream parity: when every block is burnt, recycle the oldest — these
@@ -361,7 +385,8 @@ while true; do
   if [ -z "$NEW" ]; then
     glog "every block blacklisted — recycling oldest block"
     V=$(hop_with_timeout)
-    if [ -n "$V" ] && is_warp_ip "$V"; then NEW="$V"; fi
+    NB=$(oui_bucket 2>/dev/null || true)
+    if [ -n "$V" ] && [ -n "$NB" ]; then NEW="$V"; NEW_BUCKET="$NB"; fi
   fi
   if [ -z "$NEW" ]; then
     FAILS=$(( $(state_get fails 2>/dev/null || echo 0) + 1 ))
@@ -381,16 +406,15 @@ while true; do
   if [ -n "$NEW" ]; then
     state_set last_hop "$NOW"
     state_set current "$NEW"
-    NPFX=$(seen6_prefix 2>/dev/null || true)
-    [ -n "$NPFX" ] || NPFX=$(warp_prefix)
-    [ -n "$NPFX" ] && state_set prefix "$NPFX"
+    [ -n "$NEW_BUCKET" ] && state_set prefix "$NEW_BUCKET"
     NDEV=$(cur_device)
     [ -n "$NDEV" ] && state_set device "$NDEV"
     NS6=$(seen6 2>/dev/null || true)
     [ -n "$NS6" ] && state_set seen6 "$NS6"
     H=$(state_get hops); H=${H:-0}; H=$((H + 1))
     state_set hops "$H"
-    glog "rotated #$H: ${OLD:-?} → $NEW ✓"
+    oui_ledger "$NEW_BUCKET" hop 2>/dev/null || true
+    glog "rotated #$H: ${OLD_BLOCK:-?} → $NEW_BUCKET ✓"
     if ! dns_ok; then
       glog "dns broken after rotation — repairing"
       restore_dns

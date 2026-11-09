@@ -150,7 +150,10 @@ header:active{cursor:grabbing}
 .card.vi b{color:#c4b5fd}
 
 /* ---------- health ---------- */
-.health{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;position:relative;z-index:2}
+.health{display:flex;flex-wrap:nowrap;gap:5px;margin-top:7px;position:relative;z-index:2;
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.health::-webkit-scrollbar{display:none}
+.health .chip{flex:0 0 auto}
 .chip.pointer{cursor:pointer}
 .chip{
   display:flex;align-items:center;gap:4px;padding:3px 6px;border-radius:20px;
@@ -264,6 +267,42 @@ button.act.ghost:disabled{color:var(--mut);border-color:rgba(255,255,255,.08);ba
 button.act.busy .spin{display:block}
 button.act.busy .dot{display:none}
 @keyframes sp{to{transform:rotate(360deg)}}
+
+/* ---------- tabs ---------- */
+/* the panel stopped growing the day the cards moved into tabs. identity,
+   keys and stats share one fixed-height pane, so adding a card later costs
+   a row inside a pane instead of another 90px of window, and the console
+   below never loses its height to it. */
+.tabs{display:flex;gap:4px;margin-top:7px;position:relative;z-index:2;
+  background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.055);
+  border-radius:9px;padding:3px}
+.tab{flex:1;height:20px;border:0;border-radius:6px;background:transparent;cursor:pointer;
+  font:700 8px var(--mono);letter-spacing:.14em;color:#6b8497;
+  transition:color .15s,background .15s;display:flex;align-items:center;justify-content:center;gap:3px}
+.tab:hover{color:#a9c6d8}
+.tab.on{background:rgba(34,211,238,.12);color:#bff3ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.28)}
+.tab b{font-weight:600;color:rgba(167,139,250,.9)}
+.tab i{width:4px;height:4px;border-radius:50%;background:var(--bad);display:none}
+.tab.alert i{display:inline-block;box-shadow:0 0 5px var(--bad)}
+.panes{position:relative;z-index:2;margin-top:6px;height:118px;flex:0 0 auto;overflow:hidden}
+.pane{display:none;height:100%;overflow-y:auto;overflow-x:hidden;padding-right:1px}
+.pane.on{display:block}
+.pane::-webkit-scrollbar{width:3px}
+.pane::-webkit-scrollbar-thumb{background:rgba(34,211,238,.28);border-radius:2px}
+.pane .grid,.pane .keys,.pane .spark{margin-top:0}
+/* one line, because the identities pane is 114px and the cards already
+   own most of it. three rows here pushed the third one under the HOP bar. */
+.meta{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+  margin-top:6px;font-size:7.5px;letter-spacing:.1em;color:#5d7486;white-space:nowrap}
+.meta span b{color:#c8e6f5;font-weight:600;letter-spacing:.03em;margin-left:3px}
+.meta b.ok{color:var(--ok)} .meta b.bad{color:var(--bad)}
+.models{display:flex;flex-direction:column;gap:4px;margin-top:7px}
+.models .m{display:flex;align-items:center;gap:6px;font-size:8.5px;color:#9db4c6}
+.models .m i{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.06);overflow:hidden;position:relative}
+.models .m i s{position:absolute;inset:0;width:0;border-radius:2px;
+  background:linear-gradient(90deg,rgba(34,211,238,.9),rgba(167,139,250,.9));text-decoration:none}
+.models .m span{flex:0 0 auto;max-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.models .m b{flex:0 0 42px;text-align:right;font-weight:600;color:#cfe4f0}
 
 /* ---------- log ---------- */
 .log{
@@ -397,44 +436,62 @@ body.collapsed #bubble{display:grid}
     </div>
   </section>
 
-  <div class="seclabel"><span>IDENTITY</span><i></i></div>
-
-  <section class="grid">
-    <div class="card cy"><b id="egress">—</b><span>EGRESS · v4</span></div>
-    <div class="card vi"><b id="prefix">—</b><span>QUOTA /64</span></div>
-    <div class="card"><b id="hops">0</b><span>ROTATIONS</span></div>
-    <div class="card"><b id="device">—</b><span>DEVICE</span></div>
-  </section>
-
-  <section class="keys">
-    <div class="kh">
-      <span class="kt">API KEYS</span>
-      <b id="keyCount">0/50</b>
-      <span class="klive"><i id="keyDot"></i><span id="keyActive" title="">no key</span></span>
-    </div>
-    <div class="kb">
-      <input id="keyInput" placeholder="paste oc_sk_… key" autocomplete="off" spellcheck="false">
-      <button class="act mini" id="btnKeyAdd">ADD</button>
-    </div>
-    <div class="kr">
-      <button class="act mini key" id="btnKeyPrev" title="previous key">&#9664; PREV</button>
-      <button class="act mini key" id="btnKeyNext" title="next key">NEXT &#9654;</button>
-    </div>
-    <div class="kr">
-      <button class="act mini ghost2" id="btnKeyList" title="probe every key">CHECK</button>
-      <button class="act mini ghost3" id="btnKeyPrune" title="drop duplicates and dead keys">CLEAN</button>
-      <button class="act mini del" id="btnKeyDel" title="delete the active key">DEL</button>
-    </div>
-  </section>
-
-  <div class="seclabel"><span>STATUS</span><i></i></div>
-
   <section class="health" id="health"></section>
 
-  <section class="spark">
-    <div class="spark-top"><span>SESSION BURN · <b id="sparkN">—</b></span><span id="lastAge">—</span></div>
-    <canvas id="spark" width="680" height="68"></canvas>
-  </section>
+  <nav class="tabs" id="tabs">
+    <button class="tab on" data-tab="id">IDENTITY<i></i></button>
+    <button class="tab" data-tab="keys">KEYS<b id="tabKeys"></b></button>
+    <button class="tab" data-tab="stats">STATS</button>
+  </nav>
+
+  <div class="panes">
+
+    <div class="pane on" data-pane="id">
+      <section class="grid">
+        <div class="card cy"><b id="egress">—</b><span>EGRESS · v4</span></div>
+        <div class="card vi"><b id="prefix">—</b><span>QUOTA /64</span></div>
+        <div class="card"><b id="hops">0</b><span>ROTATIONS</span></div>
+        <div class="card"><b id="device">—</b><span>DEVICE</span></div>
+      </section>
+      <div class="meta">
+        <span>BUCKET<b id="mBucket">—</b></span>
+        <span>WALLS<b id="mWalls">0</b></span>
+        <span>BURNED<b id="mBurned">0</b></span>
+      </div>
+    </div>
+
+    <div class="pane" data-pane="keys">
+      <section class="keys">
+        <div class="kh">
+          <span class="kt">API KEYS</span>
+          <b id="keyCount">0/50</b>
+          <span class="klive"><i id="keyDot"></i><span id="keyActive" title="">no key</span></span>
+        </div>
+        <div class="kb">
+          <input id="keyInput" placeholder="paste oc_sk_… key" autocomplete="off" spellcheck="false">
+          <button class="act mini" id="btnKeyAdd">ADD</button>
+        </div>
+        <div class="kr">
+          <button class="act mini key" id="btnKeyPrev" title="previous key">&#9664; PREV</button>
+          <button class="act mini key" id="btnKeyNext" title="next key">NEXT &#9654;</button>
+        </div>
+        <div class="kr">
+          <button class="act mini ghost2" id="btnKeyList" title="probe every key">CHECK</button>
+          <button class="act mini ghost3" id="btnKeyPrune" title="drop duplicates and dead keys">CLEAN</button>
+          <button class="act mini del" id="btnKeyDel" title="delete the active key">DEL</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="stats">
+      <section class="spark">
+        <div class="spark-top"><span>SESSION BURN · <b id="sparkN">—</b></span><span id="lastAge">—</span></div>
+        <canvas id="spark" width="680" height="68"></canvas>
+      </section>
+      <div class="models" id="models"></div>
+    </div>
+
+  </div>
 
   <section class="actions">
     <button class="act" id="btnHop"><span class="dot"></span><span class="spin"></span>HOP</button>
@@ -562,7 +619,25 @@ function render(d){
   $("egress").textContent = d.egress4 || "—";
   $("prefix").textContent = id.prefix || "—";
   $("hops").textContent = id.hops || 0;
+  // the identity tab carries a dot when the current bucket is one we have
+  // already been walled on — that is the one thing you need to see without
+  // opening the tab.
+  const idTab = document.querySelector('.tab[data-tab="id"]');
+  if (idTab) idTab.classList.toggle("alert", !!id.burnt);
+  if (idTab) idTab.title = id.burnt
+    ? "this /64 is on the blacklist — hop"
+    : "bucket " + (id.bucket || id.prefix || "?") + " · fresh";
   $("device").textContent = id.device ? id.device + "…" : "—";
+
+  // the quota key, stated plainly: which bucket we are on, whether it is one
+  // we have already been walled on, and how many have burned in total.
+  const mb = $("mBucket");
+  if (mb) {
+    mb.textContent = id.burnt ? "burnt — hop" : "fresh";
+    mb.className = id.burnt ? "bad" : "ok";
+  }
+  if ($("mWalls")) $("mWalls").textContent = String(id.bucketWalls || 0);
+  if ($("mBurned")) $("mBurned").textContent = String(id.blacklist || 0);
 
   const chips = [
     healthChip("WARP", w.connected ? true : false,
@@ -594,6 +669,20 @@ function render(d){
   const burn = (t.recent || []).slice().reverse()
     .filter(r => (r.tokens || 0) > 0).slice(-24);
   drawSpark(burn);
+  window._burn = burn;
+
+  // top models, biggest first — the four rows the snapshot already carries.
+  const mx = (t.models || []).slice(0, 3);
+  const top = mx.reduce((m, x) => Math.max(m, x.tokens || 0), 1);
+  const modelsEl = $("models");
+  if (modelsEl) {
+    modelsEl.innerHTML = mx.length ? mx.map(x => {
+      const name = (x.name || "?").split("/").pop();
+      const pct = Math.max(3, Math.round(100 * (x.tokens || 0) / top));
+      return `<div class="m" title="${(x.name || "")} · ${fmt(x.tokens)} tokens · ${x.sessions} sessions">`
+        + `<span>${name}</span><i><s style="width:${pct}%"></s></i><b>${fmt(x.tokens)}</b></div>`;
+    }).join("") : `<div class="m"><span>no sessions yet</span></div>`;
+  }
   $("sparkN").textContent = burn.length ? burn.length + " sessions" : "no burn yet";
 
   // last session
@@ -613,6 +702,8 @@ function render(d){
   const kk = d.apiKeys;
   if (kk) {
     $("keyCount").textContent = (kk.count || 0) + "/" + (kk.cap || 50);
+  const tk = $("tabKeys");
+  if (tk) tk.textContent = kk.count ? String(kk.count) : "";
     const act = $("keyActive");
     const dot = $("keyDot");
     act.textContent = kk.active || "no key";
@@ -856,6 +947,22 @@ setInterval(() => {
   $("clock").textContent = [d.getHours(), d.getMinutes(), d.getSeconds()]
     .map(x => String(x).padStart(2, "0")).join(":");
 }, 1000);
+
+/* tabs — one pane at a time. the console lives outside them on purpose:
+   whatever you are looking at, the log is still there. */
+(function(){
+  const tabs = [...document.querySelectorAll(".tab")];
+  const panes = [...document.querySelectorAll(".pane")];
+  function showTab(name){
+    tabs.forEach(t => t.classList.toggle("on", t.dataset.tab === name));
+    panes.forEach(p => p.classList.toggle("on", p.dataset.pane === name));
+    // a canvas inside a display:none pane has no layout box, so it draws at
+    // zero size and stays blank until the next data tick. redraw on reveal.
+    if (name === "stats") { try { drawSpark(window._burn || []); } catch (e) {} }
+  }
+  tabs.forEach(t => t.addEventListener("click", () => showTab(t.dataset.tab)));
+  window.oucShowTab = showTab;
+})();
 
 /* expand on load */
 document.body.classList.remove("collapsed");

@@ -44,6 +44,16 @@ Every button runs a real script. There is nothing decorative.
 - **IDENTITY** — the address the server sees, and the `/64` that is the actual quota key
 - **API KEYS** — pool size, which key is live, and `●` for the console's verdict
 - **STATUS** — one chip per subsystem; green means the thing it names is live
+- **tabs — IDENTITY · KEYS · STATS.** one fixed 118 px pane shared by all
+  three, so a new card costs a row inside a pane instead of another slice of
+  window. the console sits below the tabs and owns the remaining height, which
+  is why it can never be squeezed out again
+- **IDENTITY** — egress, quota /64, rotations, device, plus one line: is this
+  bucket fresh or burnt, how many walls it has seen, how many buckets have
+  burned. red dot on the tab when the current bucket is on the blacklist
+- **KEYS** — the pool (add / prev / next / check / clean / delete), count in
+  the tab label
+- **STATS** — session burn and the top three models by tokens
 - **SESSION BURN** — the last 24 sessions that spent anything, newest last. Bar
   height is real tokens; the green tick above a bar is that session's cache share
 - **CONSOLE** — the raw output of whatever you just ran

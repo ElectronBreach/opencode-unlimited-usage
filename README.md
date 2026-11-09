@@ -121,6 +121,8 @@ scripts you would run by hand and reads the same database opencode writes.
   `~/.local/share/opencode/opencode.db` (read-only, never cached)
 - **today · rate/min · cache hit · session time** — the four numbers that say
   what this actually cost to run
+- **tabs** — IDENTITY · KEYS · STATS share one fixed pane, and the console sits
+  below them with the leftover height, so it is never squeezed out
 - **identity** — egress address, the server-seen `/64` (the actual quota key),
   device id, rotation count
 - **health** — warp / DNS / keeper / guard / credit / leak-guard, one dot each
@@ -386,6 +388,6 @@ in the repo, so a release can be installed with `./install.sh` or
 
 MIT license. Use it, fork it, just don't sell it to your grandma.
 
-This is `VERSION` 2.1.0 — see [CHANGELOG.md](CHANGELOG.md).
+This is `VERSION` 2.2.0 — see [CHANGELOG.md](CHANGELOG.md).
 
 — ELECTRONBREACH
