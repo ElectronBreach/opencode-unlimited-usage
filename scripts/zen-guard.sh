@@ -287,8 +287,8 @@ while true; do
   # safety net for the machine-wide switch: if the system proxy is pointed at
   # the mux and the mux is not running, every app on the box is talking to a
   # dead port. put the baseline back before anything else.
-  if [ -f "$GUARD_DIR/proxy-state.json" ]; then
-    DEAD_SYS=$(python3 - "$GUARD_DIR/proxy-state.json" <<'PY' 2>/dev/null
+  if [ -f "$STATE_DIR/proxy-state.json" ]; then
+    DEAD_SYS=$(python3 - "$STATE_DIR/proxy-state.json" <<'PY' 2>/dev/null
 import json,sys
 try:
     d=json.load(open(sys.argv[1]))
