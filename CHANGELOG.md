@@ -3,6 +3,36 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.5.0 — 2026-11-09
+
+### Every wall is now evidence
+
+Guessing which lever moves the limit is how a rotation gets pressed forty times
+for nothing. `zen-guard` writes one json line per wall into
+`guard/walls.jsonl` — model, provider, egress `/64`, proxy upstream, rotation
+count, and a `landed` record for every successful rotation.
+
+**`wall-report.sh`** turns that into an answer:
+
+```
+walls: 12   landings: 4
+window: 3.2h   rate: 3.8 walls/h
+by model: …   by bucket: …   by proxy: …
+landings followed by a wall within 10 min: 3/4
+  verdict: rotations are not clearing this wall — try model or provider levers first
+```
+
+### The guard reads its own history
+
+Before it touches the tunnel, the guard asks whether the last rotations ever
+bought anything. Three landings in a row that take a wall inside ten minutes
+means the `/64` is not the bucket: it goes to the model lever instead, and if
+no free model answers it parks rotations for ten minutes rather than
+disconnecting the machine for another green tick.
+
+That is the difference between a bypass attempt and a bypass: the cheap levers
+run first, and the tunnel is only cut when the evidence says it matters.
+
 ## 2.4.9 — 2026-11-09
 
 ### The health row was being eaten by the console

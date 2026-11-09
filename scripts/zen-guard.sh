@@ -128,6 +128,70 @@ os.replace(t,p)" "$2" 2>/dev/null; }
 
 cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }
 cur_device(){ wo registration show 2>/dev/null | awk '/^ID:/{print $2; exit}'; }
+# every wall gets a record: which model, which provider, which key, which
+# egress, and which proxy upstream carried it. without this, "which lever
+# actually moves the wall" is an opinion; with it, it is a count.
+# three landings in a row that take a wall inside ten minutes means the /64 is
+# not the bucket any more. rotating then is a reconnect with a green tick, and
+# this machine has paid for that lesson twice.
+rotation_is_useless(){
+  [ -s "$STATE_DIR/walls.jsonl" ] || return 1
+  python3 - "$STATE_DIR/walls.jsonl" <<'PY' 2>/dev/null
+import json,sys
+try:
+    ev=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+except Exception:
+    raise SystemExit(1)
+det=[e for e in ev if e.get("what")=="detected"]
+land=[e for e in ev if e.get("what")=="landed"]
+if len(land) < 3:
+    raise SystemExit(1)
+bad=0
+for l in land:
+    if any(0 <= d["ts"]-l["ts"] <= 600 for d in det):
+        bad+=1
+raise SystemExit(0 if bad*2 >= len(land) else 1)
+PY
+}
+
+wall_event(){
+  local what="$1" extra="${2:-}"
+  python3 - "$STATE_DIR/walls.jsonl" "$what" "$extra" <<'PY' 2>/dev/null
+import json,os,sys,subprocess,time
+path,what,extra=sys.argv[1],sys.argv[2],sys.argv[3]
+h=os.path.expanduser("~")
+def jload(p, d=None):
+    try: return json.load(open(p))
+    except Exception: return d if d is not None else {}
+conf=jload(os.path.join(h,".config/opencode/opencode.json"))
+model=conf.get("model") or ""
+prov=model.split("/")[0] if "/" in model else ""
+mid=model.split("/")[-1] if "/" in model else model
+st=jload(os.path.join(h,".local/share/opencode-unlimited/guard/state.json"))
+px=jload(os.path.join(h,".local/share/opencode-unlimited/guard/proxy-state.json"))
+rec={
+ "ts":int(time.time()),
+ "what":what,
+ "extra":extra,
+ "model":mid,
+ "provider":prov,
+ "bucket":st.get("current_block") or st.get("bucket") or "",
+ "ip":st.get("current") or "",
+ "proxy_up":bool(px.get("up")),
+ "proxy_current":px.get("current") or "",
+ "proxy_pool":px.get("pool") or 0,
+ "rotations":st.get("hops") or 0,
+}
+try:
+    with open(path,"a") as f: f.write(json.dumps(rec,separators=(",",":"))+"\n")
+    if os.path.getsize(path) > 1000000:
+        lines=open(path).readlines()[-2000:]
+        open(path,"w").writelines(lines)
+except Exception:
+    pass
+PY
+}
+
 model_provider(){
   python3 - <<'PY' 2>/dev/null
 import json,os
@@ -515,10 +579,25 @@ PY
     continue
   fi
   glog "wall detected — rotating (was: ${OLD:-?} /64 ${OLD_BLOCK:-?})"
+  wall_event "detected"
   # the /64 is the bucket, exactly like the linux build. fall back to the v4
   # address only when the tunnel has no v6 address at all.
   [ -n "$OLD_BLOCK" ] && oui_is_egress "$OLD_BLOCK" && blacklist_add "$OLD_BLOCK"
   oui_ledger "$OLD_BLOCK" wall 2>/dev/null || true
+
+  if rotation_is_useless; then
+    glog "the last rotations did not clear a wall — this is not the /64, going to the model lever first"
+    if [ "$(model_provider)" = "opencode" ] && [ -x "$SELF_DIR/model-levers.sh" ]; then
+      if nm=$(bash "$SELF_DIR/model-levers.sh" fallback 6 2>/dev/null); then
+        [ -n "$nm" ] && glog "switched model to $nm instead of rotating"
+        state_set last_hop "$((NOW + 600))"
+        continue
+      fi
+    fi
+    glog "no free model answers either — parking rotations 10 min instead of burning the tunnel"
+    state_set last_hop "$((NOW + 600))"
+    continue
+  fi
 
   NEW=""
   NEW_BUCKET=""
@@ -557,6 +636,7 @@ PY
     fi
     NEW="$V"
     NEW_BUCKET="$NB"
+    wall_event "landed" "$NB"
     break
   done
 

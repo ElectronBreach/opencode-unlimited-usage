@@ -373,6 +373,23 @@ elif live:
     print("    ! %d of %d free models are walled/unavailable right now (model-levers probe)" % (len(live), free))
 PY
 
+# wall telemetry: how many walls, and did rotations ever clear one
+python3 - "$GUARD_DIR/walls.jsonl" <<'PY' 2>/dev/null
+import json,os,sys,time
+p=sys.argv[1]
+if not os.path.exists(p):
+    print("    · no walls recorded yet — guard/walls.jsonl starts on the next one")
+    raise SystemExit
+try: ev=[json.loads(l) for l in open(p) if l.strip()]
+except Exception: ev=[]
+det=[e for e in ev if e.get("what")=="detected"]; land=[e for e in ev if e.get("what")=="landed"]
+if det:
+    bad=sum(1 for l in land if any(0 <= d["ts"]-l["ts"] <= 600 for d in det))
+    print("    · walls recorded: %d · landings: %d · landings walled again in 10 min: %d" % (len(det), len(land), bad))
+    if len(land)>=3 and bad*2>=len(land):
+        print("    ! rotations are not clearing this wall — model/provider levers first (wall-report.sh)")
+PY
+
 # ---- credit system (AGENTS.md)
 [ -f "$HOME/.opencode/AGENTS.md" ] \
   && ok "credit file ~/.opencode/AGENTS.md present (every AI response signs off)" \
