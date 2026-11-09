@@ -3,6 +3,14 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.5.1 — 2026-11-09
+
+### `zen-guard.sh wall-event` — prove the telemetry without waiting for a wall
+
+One-shot verb that appends a real record and exits, so the json path, the
+context fields (model, provider, egress, proxy) and `wall-report.sh` can be
+checked in a second instead of on the next rate-limit.
+
 ## 2.5.0 — 2026-11-09
 
 ### Every wall is now evidence

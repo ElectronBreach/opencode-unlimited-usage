@@ -411,6 +411,14 @@ if [ -n "$(command -v oui_bl_migrate)" ]; then
   [ -n "$MIG" ] && glog "blacklist $MIG"
 fi
 
+# a one-shot way to prove the telemetry path without waiting for a wall.
+# `zen-guard.sh wall-event detected manual` appends and exits.
+if [ "${1:-}" = "wall-event" ]; then
+  wall_event "${2:-detected}" "${3:-manual}"
+  echo "appended to $STATE_DIR/walls.jsonl"
+  exit 0
+fi
+
 while true; do
   rot_release
   trim_log "$GUARD_LOG"
