@@ -142,6 +142,7 @@ header:active{cursor:grabbing}
 
 /* ---------- health ---------- */
 .health{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;position:relative;z-index:2}
+.chip.pointer{cursor:pointer}
 .chip{
   display:flex;align-items:center;gap:4px;padding:3px 6px;border-radius:20px;
   font-size:8.5px;letter-spacing:.09em;color:var(--mut);
@@ -338,8 +339,8 @@ body.collapsed #bubble{display:grid}
     <div class="brand"><span class="glyph">◈</span>OLLIE<span class="dim">//</span>UNLTD</div>
     <div class="hdr-spacer"></div>
     <button class="hbtn" id="btnDock" title="dock to other side">⇄</button>
-    <button class="hbtn" id="btnMin" title="collapse">−</button>
-    <button class="hbtn close" id="btnClose" title="close">✕</button>
+    <button class="hbtn" id="btnMin" title="collapse to bubble">−</button>
+    <button class="hbtn close" id="btnClose" title="hide — reopen from the menu bar">✕</button>
   </header>
 
   <div class="project"><i class="pdot"></i><span class="pname" id="project">idle — no session</span></div>
@@ -473,9 +474,11 @@ const age = (s) => {
 /* ---------- state ---------- */
 let S = {};
 
-function healthChip(label, state, hint){
+function healthChip(label, state, hint, act){
   const cls = state === true ? "ok" : state === "warn" ? "warn" : "bad";
-  return `<span class="chip ${cls}" title="${hint||""}"><i></i>${label}</span>`;
+  const attr = act ? ` data-act="${act}"` : "";
+  const cur = act ? " pointer" : "";
+  return `<span class="chip ${cls}${cur}" id="chip${label}"${attr} title="${hint||""}"><i></i>${label}</span>`;
 }
 
 function render(d){
@@ -514,7 +517,8 @@ function render(d){
   $("device").textContent = id.device ? id.device + "…" : "—";
 
   const chips = [
-    healthChip("WARP", w.connected ? true : false, w.mode || ""),
+    healthChip("WARP", w.connected ? true : false,
+               (w.mode || "") + " — click to open Cloudflare WARP", "warp"),
     healthChip("DNS", !!d.dns, "opencode.ai resolution"),
     healthChip("KEEPER", !!d.keeper, "root launchd"),
     healthChip("GUARD", !!d.guard, "user launchagent"),
@@ -723,10 +727,10 @@ $("btnDoctor").addEventListener("click", () => bridge("doctor"));
 $("btnClear").addEventListener("click", () => { $("logBody").innerHTML = ""; });
 $("btnDock").addEventListener("click", () => bridge("dock"));
 $("btnMin").addEventListener("click", () => bridge("collapse"));
-// the close button folds the HUD into the bubble. an always-on overlay that
-// vanishes on a stray click is the bug, not the feature — `opencode-unlimited-
-// overlay close` is the real quit.
-$("btnClose").addEventListener("click", () => bridge("collapse"));
+// X puts the panel away. it is not a quit: the process stays resident, the
+// menu bar item brings it back, and the lane raises it on the next opencode
+// launch. the − button is the softer version (bubble, still on screen).
+$("btnClose").addEventListener("click", () => bridge("hide"));
 $("bubble").addEventListener("click", () => {
   // a drag that ends on the circle is not a click — don't swallow it in expand
   if (dragMoved) { dragMoved = false; return; }
@@ -734,6 +738,12 @@ $("bubble").addEventListener("click", () => {
 });
 $("bubble").addEventListener("dblclick", () => bridge("hop"));
 $("lastSession").addEventListener("click", () => bridge("copy"));
+// a chip is a shortcut, not decoration: WARP opens the Cloudflare WARP window
+$("health").addEventListener("click", (e) => {
+  const c = e.target.closest(".chip[data-act]");
+  if (!c) return;
+  bridge(c.dataset.act);
+});
 
 /* drag: native timer owns the motion, js only says start/stop */
 let dragging = false, dragMoved = false, dragOrigin = { x: 0, y: 0 };

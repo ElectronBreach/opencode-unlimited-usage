@@ -85,6 +85,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     var reassertWork: DispatchWorkItem?
     var blankTicks = 0
     var lastStatus: String = "{}"
+    // hidden means the user put the panel away. nothing may order it front
+    // while this is true — not a space switch, not an app activation, not the
+    // health tick. the lane clears it on the next opencode launch.
+    var hidden = false
+    var statusItem: NSStatusItem?
 
     // ---------------------------------------------------------------- boot
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -106,10 +111,14 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         buildWindow()
         buildWebView()
         restoreFrame()
+        // a panel the user dismissed stays dismissed across a relaunch.
+        // the lane opens it again when opencode starts.
+        hidden = defaults.bool(forKey: "hidden")
+        buildStatusItem()
         // an NSWindow that is created is not on screen until it is ordered in,
         // and `open -g` never activates us. orderFrontRegardless is the only
         // call that puts a non-activating panel in front without stealing focus.
-        window.orderFrontRegardless()
+        if !hidden { window.orderFrontRegardless() }
 
         // every space switch and every app activation is a chance for the window
         // server to leave a panel behind. re-order it front, without activating.
@@ -156,7 +165,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             "level": window.level.rawValue,
             "alpha": Double(window.alphaValue),
             "collapsed": collapsed,
+            "dismissed": hidden,
             "policy": NSApp.activationPolicy().rawValue,
+            "statusItem": statusItem?.button != nil,
             "hidden": NSApp.isHidden,
             "webLoaded": !web.isLoading && web.url != nil,
             "ts": Int(Date().timeIntervalSince1970)
@@ -208,7 +219,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
 
     func measureControls() {
-        let js = "JSON.stringify(Array.from(document.querySelectorAll('button,#bubble,#drag')).map(e=>{const r=e.getBoundingClientRect();return {id:e.id,x:r.x,y:r.y,w:r.width,h:r.height}}))"
+        let js = "JSON.stringify(Array.from(document.querySelectorAll('button,#bubble,#drag,.chip[data-act]')).map(e=>{const r=e.getBoundingClientRect();return {id:e.id,x:r.x,y:r.y,w:r.width,h:r.height}}))"
         web.evaluateJavaScript(js) { res, err in
             var body: [String: Any] = ["frame": NSStringFromRect(self.window.frame)]
             if let s = res as? String { body["controls"] = s }
@@ -366,6 +377,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         reassertWork?.cancel()
         let w = DispatchWorkItem { [weak self] in
             guard let self = self, self.window != nil else { return }
+            guard !self.hidden else { self.dumpState(); return }
             if !self.window.isVisible { self.window.orderFrontRegardless() }
             self.window.orderFrontRegardless()
             self.dumpState()
@@ -387,7 +399,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // cheap liveness: a web process that died leaves an empty page, and a
     // window that was ordered out never comes back on its own.
     func healthTick() {
-        if !window.isVisible { window.orderFrontRegardless() }
+        if !hidden, !window.isVisible { window.orderFrontRegardless() }
         if web.url == nil && !web.isLoading {
             blankTicks += 1
             if blankTicks >= 3 { blankTicks = 0; reloadPage() }
@@ -407,13 +419,91 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
 
     func setCollapsed(_ v: Bool, animate: Bool) {
+        // asking for a panel is asking to see it.
+        if !v && hidden { setHidden(false) }
         if collapsed == v {
-            window.orderFrontRegardless()
+            if !hidden { window.orderFrontRegardless() }
             return
         }
         collapsed = v
         applyShape(animate: animate)
-        window.orderFrontRegardless()
+        if !hidden { window.orderFrontRegardless() }
+    }
+
+    // the only real close the panel has. the process stays resident so the
+    // lane can raise it again without a relaunch, but nothing re-orders it
+    // while hidden is set.
+    func setHidden(_ v: Bool) {
+        hidden = v
+        defaults.set(v, forKey: "hidden")
+        if v {
+            window.orderOut(nil)
+        } else {
+            window.orderFrontRegardless()
+        }
+        updateStatusItem()
+        dumpState()
+        push("window", ["collapsed": collapsed, "hidden": hidden])
+    }
+
+    func buildStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let btn = item.button {
+            btn.image = NSImage(systemSymbolName: "bolt.horizontal.circle",
+                                accessibilityDescription: "opencode unlimited")
+            btn.image?.isTemplate = true
+            btn.toolTip = "opencode unlimited"
+        }
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Show HUD", action: #selector(menuShow), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Hide HUD", action: #selector(menuHide), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Collapse to bubble", action: #selector(menuBubble), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Reload HUD", action: #selector(menuReload), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Open Cloudflare WARP", action: #selector(menuWarp), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Restart Cloudflare WARP UI", action: #selector(menuRestartWarp), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Quit HUD", action: #selector(menuQuit), keyEquivalent: "q"))
+        for mi in menu.items { mi.target = self }
+        item.menu = menu
+        statusItem = item
+        updateStatusItem()
+    }
+
+    func updateStatusItem() {
+        guard let btn = statusItem?.button else { return }
+        btn.appearsDisabled = hidden
+    }
+
+    @objc func menuShow() { setHidden(false); setCollapsed(false, animate: true) }
+    @objc func menuHide() { setHidden(true) }
+    @objc func menuBubble() { setHidden(false); setCollapsed(true, animate: true) }
+    @objc func menuReload() { setHidden(false); reloadPage() }
+    @objc func menuQuit() { NSApp.terminate(nil) }
+    @objc func menuWarp() { openWarp() }
+
+    // the WARP GUI is a menu bar app. it can come back from a sleep or a crash
+    // with a zero-size window: the daemon keeps the tunnel up, so nothing looks
+    // broken, but clicking the app does nothing. activating is enough when the
+    // window exists; when it does not, the GUI has to be relaunched (the root
+    // daemon is untouched, so the tunnel never drops).
+    func openWarp() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-a", "Cloudflare WARP"]
+        try? p.run()
+    }
+
+    @objc func menuRestartWarp() {
+        let kill = Process()
+        kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        kill.arguments = ["-f", "Cloudflare WARP.app/Contents/MacOS/"]
+        try? kill.run()
+        kill.waitUntilExit()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.openWarp()
+        }
     }
 
     func saveFrame() {
@@ -484,6 +574,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "dragEnd": endDrag()
         case "collapse": setCollapsed(true, animate: true)
         case "expand":
+            setHidden(false)
             setCollapsed(false, animate: true)
             window.orderFrontRegardless()
         case "dock": dockSide()
@@ -493,8 +584,13 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "keylist": keyCmd(["health"])
         case "rect": measureControls()
         case "dom": probeDom()
-        // never a real quit: folding to the bubble is the only close the HUD
-        // offers, so a stray click (or a stale command) cannot take it down.
+        // the panel's X puts it away for real. the process is still there, the
+        // menu bar item brings it back, and the lane raises it on the next
+        // opencode launch — so a stray click cannot lose it, but it also
+        // cannot sit on top of everything forever.
+        case "hide": setHidden(true)
+        case "show": setHidden(false)
+        case "warp": openWarp()
         case "close": setCollapsed(true, animate: true)
         case "refresh": refresh(force: true)
         case "copy": copySummary()
@@ -697,7 +793,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         lastCmdText = cmd
         switch cmd {
         case "toggle": setCollapsed(!collapsed, animate: true)
-        case "expand": setCollapsed(false, animate: true)
+        case "expand": setHidden(false); setCollapsed(false, animate: true)
         case "collapse": setCollapsed(true, animate: true)
         case "hop": runCommand("hop")
         case "doctor": runCommand("doctor")
@@ -718,6 +814,10 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         // never a real quit: folding to the bubble is the only close the HUD
         // offers, so a stray click (or a stale command) cannot take it down.
         case "close": setCollapsed(true, animate: true)
+        case "hide": setHidden(true)
+        case "show": setHidden(false)
+        case "warp": openWarp()
+        case "quit": NSApp.terminate(nil)
         default: break
         }
     }

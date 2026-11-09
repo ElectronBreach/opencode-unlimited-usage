@@ -8,7 +8,9 @@
 #   opencode-unlimited-overlay hop        run a rotation from the HUD
 #   opencode-unlimited-overlay doctor     run the health check
 #   opencode-unlimited-overlay reload     reload the HUD's page (self-heal)
-#   opencode-unlimited-overlay close      quit the HUD
+#   opencode-unlimited-overlay hide       put the panel away (menu bar brings it back)
+#   opencode-unlimited-overlay close      collapse to the bubble
+#   opencode-unlimited-overlay quit       terminate the HUD process
 #
 # launching is a no-op when it is already up: `open -g` reuses the running
 # instance (one HUD per login session, always).
@@ -48,11 +50,14 @@ show(){
 action="${1:-show}"
 case "$action" in
   show)     show ;;
+  hide)     printf 'hide\n' > "$CMD" ;;
+  quit)     printf 'quit\n' > "$CMD" ;;
   close)    printf 'close\n' > "$CMD" ;;
   hop|doctor|toggle|expand|collapse|reload)
             ctx
             running || open -g "$APP" --args --session-dir "${OUC_SESSION_DIR:-$PWD}"
             sleep 0.4
             printf '%s\n' "$action" > "$CMD" ;;
-  *)        echo "usage: $(basename "$0") [show|toggle|collapse|expand|hop|doctor|reload|close]" >&2; exit 2 ;;
+  warp)     printf 'warp\n' > "$CMD" ;;
+  *)        echo "usage: $(basename "$0") [show|hide|quit|toggle|collapse|expand|hop|doctor|reload|close|warp]" >&2; exit 2 ;;
 esac
