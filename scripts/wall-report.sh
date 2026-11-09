@@ -31,36 +31,53 @@ for l in raw:
     except Exception: pass
 if not ev:
     print("no parsable events"); raise SystemExit
-now=time.time()
-det=[e for e in ev if e.get("what")=="detected"]
-land=[e for e in ev if e.get("what")=="landed"]
+det=sorted([e for e in ev if e.get("what")=="detected"], key=lambda e:e["ts"])
+land=sorted([e for e in ev if e.get("what")=="landed"], key=lambda e:e["ts"])
 
 print("walls: %d   landings: %d" % (len(det), len(land)))
-if det:
-    span=(det[-1]["ts"]-det[0]["ts"])/3600 if len(det)>1 else 0
+if len(det)>1:
+    span=(det[-1]["ts"]-det[0]["ts"])/3600
     if span>0: print("window: %.1fh   rate: %.1f walls/h" % (span, len(det)/span))
 
-def top(key, n=5):
-    c=Counter(e.get(key) or "-" for e in det)
-    return c.most_common(n)
+def summary(title, items, key, n=5):
+    c=Counter(e.get(key) or "-" for e in items)
+    if not c or (len(c)==1 and c.most_common(1)[0][0]=="-"): return
+    print("\nby %s:" % title)
+    for k,v in c.most_common(n): print("  %-34s %d" % (k[:34], v))
 
-for label,key in (("model","model"),("provider","provider"),("bucket","bucket"),("proxy","proxy_current")):
-    c=top(key)
-    if not c or (len(c)==1 and c[0][0]=="-"): continue
-    print("\nby %s:" % label)
-    for k,v in c: print("  %-34s %d" % (k[:34], v))
+summary("model", det, "model")
+summary("provider", det, "provider")
+summary("bucket", det, "bucket")
+summary("proxy", det, "proxy_current")
 
-# did a wall come back soon after a landing? that lever bought nothing.
+# lever effectiveness: after each lever event, did a wall arrive inside 10 min?
+print("\nlevers:")
+rows=[]
+for lever in ("model","key","proxy"):
+    acts=[e for e in ev if e.get("what")==lever]
+    if not acts: continue
+    good=0; gaps=[]
+    for a in acts:
+        nxt=[d for d in det if d["ts"]>a["ts"]]
+        if not nxt:
+            good+=1; continue
+        gap=nxt[0]["ts"]-a["ts"]
+        gaps.append(gap)
+        if gap>600: good+=1
+    med=sorted(gaps)[len(gaps)//2] if gaps else None
+    rows.append((lever,len(acts),good,med))
+for lever,n,good,med in rows:
+    meds = "%dm" % (med//60) if med is not None else "—"
+    print("  %-6s %2d applied · %2d held >10min · median next wall %s" % (lever,n,good,meds))
+if not rows:
+    print("  none recorded yet — model/key/proxy events land here as they happen")
+
 if land:
-    failed=0
-    for l in land:
-        if any(0 <= d["ts"]-l["ts"] <= 600 for d in det):
-            failed+=1
-    print("\nlandings followed by a wall within 10 min: %d/%d" % (failed, len(land)))
-    if len(land) >= 3 and failed*2 >= len(land):
-        print("  verdict: rotations are not clearing this wall — try model or provider levers first")
+    bad=sum(1 for l in land if any(0 <= d["ts"]-l["ts"] <= 600 for d in det))
+    print("\nlandings followed by a wall within 10 min: %d/%d" % (bad, len(land)))
+    if len(land)>=3 and bad*2>=len(land):
+        print("  verdict: rotations are not clearing this wall — model/provider levers first")
 
-# per hour, last 12 buckets
 if det:
     hours=Counter(time.strftime("%m-%d %H:00", time.localtime(e["ts"])) for e in det)
     print("\nlast hours:")

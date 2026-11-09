@@ -3,6 +3,25 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.5.4 — 2026-11-09
+
+### The report now scores the levers
+
+`walls.jsonl` used to see walls and rotations. Model switches, key rotations and
+proxy rotations now log themselves through `wall-log.sh`, so the report can
+answer the only useful question: **did that lever buy ten quiet minutes?**
+
+```
+levers:
+  model   4 applied ·  3 held >10min · median next wall 42m
+  key     2 applied ·  0 held >10min · median next wall 3m
+  proxy   1 applied ·  1 held >10min · median next wall —
+```
+
+anything with a median under ten minutes is a placebo on this machine and the
+ladder should skip it. `wall-log.sh <lever> <detail>` is usable from a shell
+too, so a manual experiment is recorded the same way as an automatic one.
+
 ## 2.5.3 — 2026-11-09
 
 ### A wall on another provider is not a `/64` problem

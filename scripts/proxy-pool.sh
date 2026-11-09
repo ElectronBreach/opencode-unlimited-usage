@@ -510,6 +510,8 @@ import json,sys
 try: d=json.load(open('$STATE'))
 except Exception: d={}
 print('current:', d.get('current'), '· pool', d.get('pool'), '· healthy', d.get('healthy'))" 2>/dev/null
+  SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  [ -x "$SELF_DIR/wall-log.sh" ] && bash "$SELF_DIR/wall-log.sh" proxy "slot $want" 2>/dev/null || true
 }
 
 # rotation policy lives in proxy.conf so it survives a mux restart and the HUD

@@ -551,7 +551,7 @@ PY
     # actually answers, and say so. provider models are never touched.
     if [ "$(model_provider)" = "opencode" ] && [ -x "$SELF_DIR/model-levers.sh" ]; then
       if nm=$(bash "$SELF_DIR/model-levers.sh" fallback 6 2>/dev/null); then
-        [ -n "$nm" ] && glog "account-side wall — switched model to $nm"
+        [ -n "$nm" ] && { glog "account-side wall — switched model to $nm"; bash "$SELF_DIR/wall-log.sh" model "$nm" 2>/dev/null; }
       else
         glog "account-side wall and no free model answers — pin a provider model"
       fi
@@ -607,7 +607,7 @@ PY
     glog "the last rotations did not clear a wall — this is not the /64, going to the model lever first"
     if [ "$(model_provider)" = "opencode" ] && [ -x "$SELF_DIR/model-levers.sh" ]; then
       if nm=$(bash "$SELF_DIR/model-levers.sh" fallback 6 2>/dev/null); then
-        [ -n "$nm" ] && glog "switched model to $nm instead of rotating"
+        [ -n "$nm" ] && { glog "switched model to $nm instead of rotating"; bash "$SELF_DIR/wall-log.sh" model "$nm" 2>/dev/null; }
         state_set last_hop "$((NOW + 600))"
         continue
       fi

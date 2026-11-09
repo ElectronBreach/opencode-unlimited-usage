@@ -590,6 +590,7 @@ cmd_rotate(){
   local val valk; val=$(q "select value from credential where id='$target';"); valk=$(key_of "$val")
   warm_console "$valk"
   printf 'rotated → "%s" (%s)\n' "$lbl" "$(mask "$valk")"
+  [ -x "$SELF_DIR/wall-log.sh" ] && bash "$SELF_DIR/wall-log.sh" key "$lbl" 2>/dev/null || true
 
   # the CLI caches the console model list per credential id. swapping the active
   # row invalidates that cache, and the refetch is what surfaced as
