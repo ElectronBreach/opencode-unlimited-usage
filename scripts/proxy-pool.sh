@@ -93,6 +93,19 @@ count(){
   printf '%s' "$n"
 }
 
+# the pool emptied itself twice with no explanation. a mutation log that names
+# the caller is cheaper than guessing: every write records argv, ppid and count.
+pool_log(){
+  local msg="$1"
+  printf '%s n=%s ppid=%s argv=%s\n' \
+    "$(date +%H:%M:%S)" "$(count)" "${PPID:-?}" "$(ps -o args= -p "${PPID:-0}" 2>/dev/null | cut -c1-80)" \
+    >> "$GUARD_DIR/proxy-mutations.log" 2>/dev/null || true
+}
+
+pool_backup(){
+  [ -s "$POOL" ] && cp "$POOL" "$POOL.last" 2>/dev/null || true
+}
+
 cmd_add(){
   local raw="${1:-}" n spec
   [ -n "$raw" ] || { err "usage: proxy-pool add host:port:user:pass"; exit 2; }
@@ -113,7 +126,9 @@ cmd_add(){
       say "already in the pool: $k"; return 0
     fi
   fi
+  pool_backup
   printf '%s\n' "$spec" >> "$POOL"
+  pool_log "add $(printf '%s' "$spec" | sed 's#://.*@#://***@#')"
   say "added $(printf '%s' "$spec" | sed 's#://.*@#://***@#') — $(( $(count) ))/$CAP"
 }
 
@@ -178,10 +193,15 @@ PY
 }
 
 cmd_remove(){
-  local n="${1:-}"
-  case "$n" in ''|*[!0-9]*) err "usage: proxy-pool remove <n>"; exit 2 ;; esac
+  local n="${1:-}" force="${2:-}"
+  case "$n" in ''|*[!0-9]*) err "usage: proxy-pool remove <n> [--force]"; exit 2 ;; esac
   local total; total=$(count)
   [ "$n" -ge 1 ] && [ "$n" -le "$total" ] || { err "no slot $n (pool has $total)"; exit 4; }
+  if [ "$total" -le 1 ] && [ "$force" != "--force" ]; then
+    err "that is the last upstream — removing it leaves the mux with nothing to rotate (use --force if you mean it)"
+    exit 6
+  fi
+  pool_backup
   python3 - "$POOL" "$n" <<'PY'
 import sys
 p,n=sys.argv[1],int(sys.argv[2])
@@ -194,6 +214,7 @@ for l in lines:
     out.append(l)
 open(p,"w").write("\n".join(out).rstrip("\n")+"\n")
 PY
+  pool_log "remove slot $n"
   say "removed slot $n — $(count) left"
   [ -S /dev/null ] 2>/dev/null || true
   printf 'reload\n' > "$CMD" 2>/dev/null || true
@@ -317,6 +338,10 @@ PY
 }
 
 cmd_on(){
+  if [ "$(count)" -eq 0 ] && [ -s "$POOL.last" ]; then
+    cp "$POOL.last" "$POOL" 2>/dev/null
+    say "pool file was empty — restored $(count) upstream(s) from the last good copy"
+  fi
   [ "$(count)" -gt 0 ] || { err "pool is empty — proxy-pool add host:port:user:pass"; exit 3; }
   # a marker, not a memory: the guard restarts a mux that dies while this file
   # exists, and `off` is the only thing that removes it.

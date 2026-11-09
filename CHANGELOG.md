@@ -3,6 +3,32 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.4.6 — 2026-11-09
+
+### The pool that emptied itself
+
+`proxies.txt` went empty twice with no explanation, taking the mux with it. It
+now has a paper trail and a seatbelt:
+
+- every add and remove writes `guard/proxy-mutations.log` with the count, the
+  parent pid and the parent's argv, so the next disappearance names its caller;
+- `remove` refuses to delete the **last** upstream unless `--force`, because a
+  pool of zero is a mux that cannot start;
+- every add keeps `proxies.last`, and `on` restores from it when the pool file
+  arrives empty instead of dying.
+
+### restart cli told the truth, finally
+
+The service inherits env from the **CLI process**; killing the service only
+helps when the CLI already carries the proxy env. So the amber hint now says
+`restart opencode`, and the button's toast says what to do if the hint stays.
+`proxy-pool cli` is still there for the case it does fix, and it self-heals the
+CLI shim first.
+
+`scripts/opencode.shim` now logs its decision when `OUC_SHIM_DEBUG=1` is set
+(`guard/shim.log`), because "did the shim even run" was not answerable by
+looking at the machine.
+
 ## 2.4.5 — 2026-11-09
 
 ### The restart button was a lie, and the rotation walked off its provider

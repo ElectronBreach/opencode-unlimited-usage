@@ -1094,10 +1094,12 @@ function renderSheet(){
     + " · system " + (p.system ? "<b>on</b>" : "off")
     // the mux rotating is not the same as the CLI using it: the service is
     // long-lived and inherits env at spawn, so say it out loud.
-    + (p.up && p.cli === 2 ? ' · <b class="pxfix" title="restart the CLI service so it is born with the proxy env">restart cli</b>' : "");
+    // the service inherits env from the CLI process. killing the service only
+    // helps if the CLI itself carries the proxy env, so say the true thing.
+    + (p.up && p.cli === 2 ? ' · <b class="pxfix" title="this opencode was started before the proxy — exit it and run opencode again; the lane and the shim keep every new session proxied">restart opencode</b>' : "");
   $("pxStat").onclick = (e) => {
     if (!e.target.classList.contains("pxfix")) return;
-    toast("restarting the cli service…");
+    toast("restarting the service — if the hint stays, exit and run opencode again");
     bridge("proxyCli", {});
   };
   $("btnPxSys").textContent = p.system ? "SYS ON" : "SYS";

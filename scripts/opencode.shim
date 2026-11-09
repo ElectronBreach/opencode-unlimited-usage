@@ -30,6 +30,12 @@ STATE="$HOME/.local/share/opencode-unlimited/guard/proxy-state.json"
 WANT="$HOME/.local/share/opencode-unlimited/guard/proxy-want"
 PORT=8899
 
+SHIM_LOG="$HOME/.local/share/opencode-unlimited/guard/shim.log"
+shim_note(){
+  [ -n "${OUC_SHIM_DEBUG:-}" ] || return 0
+  printf '%s pid=%s %s\n' "$(date +%H:%M:%S)" "$$" "$1" >> "$SHIM_LOG" 2>/dev/null || true
+}
+
 if [ -z "${OUC_NO_PROXY:-}" ] && [ -f "$STATE" ]; then
   # a wanted-but-restarting mux is still the right address: the guard restarts
   # it within one tick, and exporting only on a live pid is how a CLI ends up
@@ -57,6 +63,9 @@ PY
     export HTTPS_PROXY="$HTTP_PROXY"
     export ALL_PROXY="$HTTP_PROXY"
     export NO_PROXY="localhost,127.0.0.1,::1"
+    shim_note "exported proxy for: $*"
+  else
+    shim_note "no export for: $*"
   fi
 fi
 
