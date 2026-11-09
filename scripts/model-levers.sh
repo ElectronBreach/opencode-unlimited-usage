@@ -279,6 +279,54 @@ PY
 # ask the console, one token, which free models are actually being served right
 # now. `next` already skips what this writes down, so a single probe turns the
 # model lever from "hope" into "pick one that answers".
+# failover, not hope: walk the free pool, ask each model one token, and pin the
+# first one that actually answers. the guard calls this after an account-side
+# wall, where rotating the /64 has already been proven pointless.
+cmd_fallback(){
+  local max="${1:-8}" i=0 mid key
+  ensure_catalog
+  key=$(sqlite3 "$HOME/.local/share/opencode/opencode.db" \
+    "select value from credential where integration_id='opencode' and active=1 limit 1;" 2>/dev/null \
+    | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("key",""))
+except Exception: print("")')
+  [ -n "$key" ] || { printf 'no active opencode credential\n' >&2; exit 4; }
+  for mid in $(python3 - "$CATALOG" "$PROVIDER" "$USED" "$DEAD" <<'PY2'
+import json,sys,time
+cat,prov,usedf,deadf=sys.argv[1:5]
+d=json.load(open(cat))
+try: used=set(json.load(open(usedf)))
+except Exception: used=set()
+try: dead=json.load(open(deadf))
+except Exception: dead={}
+now=time.time()
+for mid,m in ((d.get(prov) or {}).get("models") or {}).items():
+    c=((m.get("cost") or {}).get("text") or {})
+    if (c.get("input") or {}).get("price")==0 and (c.get("output") or {}).get("price")==0 \
+       and m.get("type")=="chat" and mid not in used:
+        e=dead.get(mid) or {}
+        ttl=1800 if str(e.get("code"))=="429" else 21600
+        if (now-float(e.get("ts") or 0)) < ttl: continue
+        print(mid)
+PY2
+); do
+    [ "$i" -lt "$max" ] || break
+    i=$((i+1))
+    local code
+    code=$(curl -s -o /dev/null -m 15 \
+      -H "Authorization: Bearer $key" -H "Content-Type: application/json" \
+      -d "{\"model\":\"$mid\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
+      -w '%{http_code}' "${ZEN%/models}/chat/completions" 2>/dev/null)
+    case "$code" in
+      2*) cmd_set "$mid" >/dev/null && { printf '%s/%s\n' "$PROVIDER" "$mid"; exit 0; } ;;
+      429) mark_dead "$mid" 429 >/dev/null 2>&1 ;;
+      400) mark_dead "$mid" 400 >/dev/null 2>&1 ;;
+    esac
+  done
+  printf 'no free model answered (tried %d)\n' "$i" >&2
+  exit 1
+}
+
 cmd_probe(){
   local n="${1:-4}" i=0 mid
   ensure_catalog
@@ -356,6 +404,7 @@ case "${1:-list}" in
   burn-current|burncur) cmd_burn_current ;;
   dead)      shift; mark_dead "${1:-}" "${2:-429}"; printf 'marked %s dead (%s)\n' "${1:-}" "${2:-429}" ;;
   probe)     shift; cmd_probe "${1:-4}" ;;
+  fallback|failover) shift; cmd_fallback "${1:-8}" ;;
   reset)     cmd_reset ;;
   refresh)   refresh; printf 'catalog refreshed\n' ;;
   json)      cmd_json ;;

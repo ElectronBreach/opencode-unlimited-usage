@@ -3,6 +3,59 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.4.9 — 2026-11-09
+
+### The health row was being eaten by the console
+
+When the console filled up, the `.health` chip row collapsed from 20px to **3px**
+— the chips were sliced in half and the tabs slid up under them. It is a flex
+item in a fixed-height column, and without `flex:0 0 auto` the browser is free
+to shrink it to nothing when the console claims space.
+
+- `.health` now refuses to shrink and carries `min-height:18px`;
+- `#logPanel` keeps `flex:1 1 auto` but gains `min-height:96px`, so the console
+  owns the leftover height without ever crushing the rows above it.
+
+Verified: after a `doctor` fills the pane, `health = 20px`, `log = 178px`,
+`app overflow = 0`.
+
+### The hop pipeline survives its own failures
+
+- **the timeout path said "keeping the tunnel" while the child had already
+  disconnected it.** it now reconnects and waits for a real egress address
+  before returning. a failed rotation can no longer take the machine offline.
+- **a failed registration is not a dead tunnel**: `hop_once` reconnects before
+  it reports failure, so the next attempt starts from a working baseline.
+- **one rotation at a time**, through a `mkdir` lock: the HUD's `HOP` and the
+  guard's watcher firing together used to leave the device unregistered. the
+  lock is released by a wrapper, not a `RETURN` trap — macOS bash is 3.2 and
+  would have leaked it forever.
+- a lock older than 5 minutes is cleared at start, so a killed guard cannot
+  freeze rotations permanently.
+
+### Model failover when the wall is account-side
+
+Rotating a `/64` after an account-side wall is theatre. `model-levers fallback
+[n]` walks the free pool, asks each model one token, and pins the first that
+answers — and `zen-guard` calls it the moment it decides the wall is not about
+the ip, but only when the pinned model belongs to the console provider. Provider
+models are never touched, and a dead pool says so:
+
+```
+no free model answered (tried 3)
+```
+
+### The bypass levers, in the order they should be tried
+
+| lever | cost | when |
+|---|---|---|
+| switch free model | one config key | the wall text says "or switch models" |
+| `model-levers fallback` | a few 1-token probes | automatic, on an account-side verdict |
+| provider model (`river/…`) | real quota, works today | the free pool is exhausted |
+| key rotation (`api-keys rotate`) | free | a key is rejected — **not** for quota, which is account-wide |
+| proxy mux (`PROXY`) | free-ish | the ISP or an ip-keyed limit is the problem |
+| `/64` rotation (`HOP`) | a WARP reconnect | the quota really is keyed on the egress ip |
+
 ## 2.4.8 — 2026-11-09
 
 ### Rotation was judging the wrong provider

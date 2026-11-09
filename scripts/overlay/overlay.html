@@ -150,8 +150,11 @@ header:active{cursor:grabbing}
 .card.vi b{color:#c4b5fd}
 
 /* ---------- health ---------- */
+/* the row is a flex item in a fixed-height column: without flex:0 0 auto it
+   shrinks to a few pixels whenever the console grows, and the chips get sliced
+   in half. refusal to shrink is the whole fix. */
 .health{display:flex;flex-wrap:nowrap;gap:5px;margin-top:7px;position:relative;z-index:2;
-  overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  flex:0 0 auto;min-height:18px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
 .health::-webkit-scrollbar{display:none}
 .health .chip{flex:0 0 auto}
 .chip.pointer{cursor:pointer}
@@ -321,6 +324,7 @@ button.act.busy .dot{display:none}
   color:#9db4c6;white-space:pre-wrap;word-break:break-word;
   -webkit-user-select:text;user-select:text;
 }
+#logPanel{flex:1 1 auto;min-height:96px}
 #logBody::-webkit-scrollbar{width:4px}
 #logBody::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
 #logBody .ok{color:var(--ok)}

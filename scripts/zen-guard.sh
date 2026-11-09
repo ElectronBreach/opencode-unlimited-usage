@@ -128,6 +128,17 @@ os.replace(t,p)" "$2" 2>/dev/null; }
 
 cur_ip(){ curl -4 -s -m 8 https://api64.ipify.org 2>/dev/null; }
 cur_device(){ wo registration show 2>/dev/null | awk '/^ID:/{print $2; exit}'; }
+model_provider(){
+  python3 - <<'PY' 2>/dev/null
+import json,os
+try:
+    d=json.load(open(os.path.expanduser("~/.config/opencode/opencode.json")))
+    print((d.get("model") or "").split("/")[0])
+except Exception:
+    print("")
+PY
+}
+
 seen4(){ curl -4 -sS -m 8 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | awk -F= '/^ip=/{print $2; exit}'; }
 seen6(){ curl -6 -sS -m 8 'https://[2606:4700:4700::1111]/cdn-cgi/trace' 2>/dev/null | awk -F= '/^ip=/{print $2; exit}'; }
 seen6_prefix(){ local a; a=$(seen6); [ -n "$a" ] || return 1; printf '%s' "$a" | awk -F: '{print $1":"$2":"$3":"$4}'; }
@@ -227,6 +238,26 @@ wait_bucket(){
 }
 
 # a rotation that never returns is a dead guard. bound it hard.
+# is the tunnel actually up, not just "we did not kill it".
+tunnel_ensure(){
+  local st i ip
+  st=$(w status 2>/dev/null | tr -d '\r')
+  case "$st" in
+    *Connected*) ;;
+    *)
+      glog "tunnel is down after a hop — reconnecting before moving on"
+      w connect >/dev/null 2>&1 || true
+      ;;
+  esac
+  for i in $(seq 1 20); do
+    ip=$(cur_ip)
+    if [ -n "$ip" ]; then return 0; fi
+    sleep 1
+  done
+  glog "tunnel did not come back within 20s — the keeper will keep trying (lanes stay fail-open)"
+  return 1
+}
+
 hop_with_timeout(){
   local out p i
   out=$(mktemp /tmp/ouc-hop.XXXXXX 2>/dev/null) || { hop_once; return; }
@@ -236,8 +267,12 @@ hop_with_timeout(){
   while kill -0 "$p" 2>/dev/null; do
     i=$((i + 1))
     if [ "$i" -ge 90 ]; then
-      glog "rotation exceeded 180s — killing it and keeping the tunnel"
+      # the old comment said "keeping the tunnel" while the child had already
+      # disconnected it. reconnecting is the difference between a failed
+      # rotation and a dead machine.
+      glog "rotation exceeded 180s — killing it and restoring the tunnel"
       kill -TERM "$p" 2>/dev/null; sleep 2; kill -KILL "$p" 2>/dev/null
+      tunnel_ensure || true
       break
     fi
     sleep 2
@@ -247,7 +282,23 @@ hop_with_timeout(){
   rm -f "$out"
 }
 
+# the HUD's HOP and the guard's watcher can fire together. a second rotation
+# while the first is mid-registration leaves the device unregistered, so take
+# the lock or stand down. the lock is released by the wrapper below, not by a
+# trap: macOS bash is 3.2 and has no RETURN trap, so a trap would leak the lock
+# and freeze every future rotation.
 hop_once(){
+  if ! mkdir "$ROT_LOCK" 2>/dev/null; then
+    echo ""
+    return
+  fi
+  _hop_body
+  local rc=$?
+  rmdir "$ROT_LOCK" 2>/dev/null
+  return $rc
+}
+
+_hop_body(){
   pause_keeper
   w disconnect
   clear_registration
@@ -259,7 +310,7 @@ hop_once(){
   done
   w connect
   resume_keeper
-  [ "$ok" = 1 ] || { echo ""; return; }
+  [ "$ok" = 1 ] || { tunnel_ensure || true; echo ""; return; }
   local V=""
   for i in $(seq 1 20); do
     sleep 1
@@ -273,6 +324,12 @@ hop_once(){
 if [ ! -f "$STATE" ]; then
   OFF=0; [ -f "$LOGF" ] && OFF=$(wc -c < "$LOGF")
   printf '{"blacklist":[],"offset":%s,"last_hop":0,"hops":0,"current":""}' "$OFF" > "$STATE"
+fi
+
+# a lock left behind by a killed guard would freeze every future rotation.
+if [ -d "$ROT_LOCK" ]; then
+  AGE=$(( $(date +%s) - $(stat -f %m "$ROT_LOCK" 2>/dev/null || echo 0) ))
+  [ "$AGE" -gt 300 ] && rmdir "$ROT_LOCK" 2>/dev/null
 fi
 
 glog "zen-guard up (cooldown ${COOLDOWN}s, macOS, warp=$WARP)"
@@ -417,6 +474,16 @@ PY
       # a stale session may not pick up a config change, so the guard never
       # switches models behind a running client.
       glog "the wall is not the ip right now — HUD → PROXY → MODELS, pick a free model"
+    # a wall that survives a rotation is not about the ip. if the pinned model
+    # is a free console model, try the pool once: pin the first model that
+    # actually answers, and say so. provider models are never touched.
+    if [ "$(model_provider)" = "opencode" ] && [ -x "$SELF_DIR/model-levers.sh" ]; then
+      if nm=$(bash "$SELF_DIR/model-levers.sh" fallback 6 2>/dev/null); then
+        [ -n "$nm" ] && glog "account-side wall — switched model to $nm"
+      else
+        glog "account-side wall and no free model answers — pin a provider model"
+      fi
+    fi
       state_set last_hop "$((NOW + 900))"
       state_set fastwalls 0
       continue
