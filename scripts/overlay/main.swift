@@ -905,6 +905,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "proxyRotate":
             if let slot = body["slot"] as? String, !slot.isEmpty { proxyCmd(["rotate", slot]) }
             else { proxyCmd(["rotate"]) }
+        case "proxyCli": proxyCmd(["cli"])
         case "proxyOn": proxyCmd(["on"])
         case "proxyOff": proxyCmd(["off"])
         case "proxyTest": proxyCmd(["test"])

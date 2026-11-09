@@ -363,6 +363,8 @@ button.act.busy .dot{display:none}
 .sheet-status{font:9px/1.5 var(--mono);color:var(--mut);letter-spacing:.06em;
   border-top:1px solid rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.05);padding:4px 0}
 .sheet-status b{color:#c8e6f5;font-weight:600}
+.sheet-status .pxfix{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;color:#fbbf24}
+.sheet-status .pxfix:hover{color:#fde68a}
 .px-list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:3px}
 .px-list::-webkit-scrollbar{width:3px}
 .px-list::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
@@ -1092,7 +1094,12 @@ function renderSheet(){
     + " · system " + (p.system ? "<b>on</b>" : "off")
     // the mux rotating is not the same as the CLI using it: the service is
     // long-lived and inherits env at spawn, so say it out loud.
-    + (p.up && p.cli === 2 ? ' · <b style="color:#fbbf24">restart cli</b>' : "");
+    + (p.up && p.cli === 2 ? ' · <b class="pxfix" title="restart the CLI service so it is born with the proxy env">restart cli</b>' : "");
+  $("pxStat").onclick = (e) => {
+    if (!e.target.classList.contains("pxfix")) return;
+    toast("restarting the cli service…");
+    bridge("proxyCli", {});
+  };
   $("btnPxSys").textContent = p.system ? "SYS ON" : "SYS";
   $("btnPxPol").textContent = p.policy === "window" ? "WINDOW" : "CONN";
   $("btnPxPol").title = p.policy === "window"

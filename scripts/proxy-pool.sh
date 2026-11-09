@@ -117,6 +117,37 @@ cmd_add(){
   say "added $(printf '%s' "$spec" | sed 's#://.*@#://***@#') — $(( $(count) ))/$CAP"
 }
 
+# a webshare export is one proxy per line, often with a header row and often
+# with commas. rotation only changes the egress when there is more than one
+# upstream, so bulk import is the difference between "rotating" and "one ip".
+cmd_import(){
+  local src="${1:-}" tmp added=0 skipped=0 line spec out
+  [ -n "$src" ] || { err "usage: proxy-pool import <file|url>"; exit 2; }
+  tmp=$(mktemp)
+  case "$src" in
+    http://*|https://*) curl -fsSL --max-time 30 "$src" -o "$tmp" || { err "could not fetch $src"; rm -f "$tmp"; exit 3; } ;;
+    *) [ -f "$src" ] || { err "no such file: $src"; exit 3; }; cp "$src" "$tmp" ;;
+  esac
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    case "$line" in ''|'#'*|';'*) continue ;; esac
+    # csv header
+    case "$line" in *[Pp][Rr][Oo][Xx][Yy]*|*[Ii][Pp]*,*) case "$line" in *,*) continue ;; esac ;; esac
+    line=$(printf '%s' "$line" | tr ',' ':')
+    spec=$(norm "$line")
+    [ -n "$spec" ] || { skipped=$((skipped + 1)); continue; }
+    out=$(bash "$0" add "$spec" 2>&1)
+    case "$out" in
+      *already\ in\ the\ pool*) skipped=$((skipped + 1)) ;;
+      *) added=$((added + 1)) ;;
+    esac
+  done < "$tmp"
+  rm -f "$tmp"
+  say "imported $added · skipped $skipped · pool $(count)/$CAP"
+  [ "$(count)" -ge 2 ] || say "note: one upstream means rotation cannot change your egress ip — add more lines"
+}
+
 cmd_list(){
   local i=0
   printf '%-4s %-52s %s\n' "#" "UPSTREAM" "LAST"
@@ -287,6 +318,9 @@ PY
 
 cmd_on(){
   [ "$(count)" -gt 0 ] || { err "pool is empty — proxy-pool add host:port:user:pass"; exit 3; }
+  # a marker, not a memory: the guard restarts a mux that dies while this file
+  # exists, and `off` is the only thing that removes it.
+  : > "$GUARD_DIR/proxy-want"
   pkill -f "proxy-mux.py" 2>/dev/null; sleep 0.4
   OUC_PROXY_PORT="$PORT" OUC_DEST="$DEST" nohup python3 "$MUX" >>"$LOG" 2>&1 &
   local i=0
@@ -385,6 +419,7 @@ EOF
 }
 
 cmd_off(){
+  rm -f "$GUARD_DIR/proxy-want"
   pkill -f "proxy-mux.py" 2>/dev/null && say "mux stopped" || say "mux was not running"
   if [ -f "$SYSBASE" ]; then
     python3 - "$SYSBASE" <<'PY'
@@ -468,6 +503,22 @@ cmd_policy(){
   esac
 }
 
+# the CLI's sockets are opened by `opencode.exe serve --service`, a child that
+# inherits env at spawn. after PROXY ON, a service born earlier keeps going
+# direct. this kills it so the CLI spawns a fresh one with the current env.
+# pgrep cannot see it (session leader), so enumerate ps.
+cmd_cli(){
+  local n=0 p
+  for p in $(ps -Ao pid=,args= 2>/dev/null | awk '/opencode[.]exe serve --service/{print $1}'); do
+    kill -TERM "$p" 2>/dev/null && n=$((n + 1))
+  done
+  if [ "$n" -gt 0 ]; then
+    say "restarted $n cli service(s) — the next request spawns one with the current proxy env"
+  else
+    say "no cli service running — the next opencode launch takes the current env"
+  fi
+}
+
 cmd_status(){  python3 - "$STATE" "$POOL" <<'PY'
 import json,os,sys,time
 state,pool=sys.argv[1],sys.argv[2]
@@ -528,6 +579,8 @@ case "${1:-status}" in
   add)     shift; cmd_add "${1:-}" ;;
   list|ls) cmd_list ;;
   remove|rm|del) shift; cmd_remove "${1:-}" ;;
+  import)  shift; cmd_import "${1:-}" ;;
+  cli|cli-restart) cmd_cli ;;
   test|check) shift; cmd_test "${1:-}" ;;
   on|up)   cmd_on ;;
   sys)     shift; cmd_sys "${1:-}" ;;

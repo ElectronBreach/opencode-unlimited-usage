@@ -3,6 +3,58 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.4.4 — 2026-11-09
+
+### 502 as a transient, not a verdict
+
+`ERR_PROXY_TUNNEL: Proxy refused to open a tunnel: 502` was the mux doing the
+honest thing at the wrong moment: one failed connect parked the only upstream
+for a flat **60 seconds**, and every request in those 60s was refused without
+an attempt. A webshare line that drops one connection read as a dead pool.
+
+- **park with backoff, not a flat minute** — 4s, 8s, 16s, 32s, capped at 60,
+  and a good connect clears the record so the ladder starts over.
+- **one retry before parking** — a mid-handshake drop gets a second attempt
+  350ms later, which is what usually lands.
+- **never refuse without trying** — when every upstream is parked the mux
+  probes the one that has sat out longest instead of answering 502 immediately.
+- **every park is logged** with the reason, in `guard/proxy-mux-events.log`.
+
+### The mux stays up while it is wanted
+
+`proxy-pool on` writes `guard/proxy-want`. `zen-guard` restarts a mux that
+died while that marker exists, so a crash or a stray `pkill` cannot silently
+drop the CLI back to direct egress. `proxy-pool off` removes the marker and is
+still the only thing that stops it on purpose.
+
+### The lane stops being a coin flip
+
+`zen-lane.sh` exported the proxy only when the mux pid was live. A CLI launched
+during a 6s restart window was born **direct** and stayed direct for hours.
+It now exports whenever the pool is non-empty and the mux is either up or
+wanted — the guard covers the window in between.
+
+### Bulk import, because rotation needs two
+
+A single upstream means a single egress ip, so "rotate" cannot change identity
+no matter how often it is pressed. `proxy-pool import <file|url>` takes a whole
+webshare export (csv or `host:port:user:pass`, header rows skipped, duplicates
+dropped) and `doctor` says out loud when the pool is one line.
+
+### One tap to restart the CLI service
+
+`proxy-pool cli` stops the `serve --service` child so the CLI spawns a fresh
+one with the current env, and the amber `restart cli` in the sheet's status
+line is now a button that runs it. It cannot rewrite the env of a CLI that was
+already born without it — the TUI has to be relaunched once — but after that
+first relaunch the lane keeps every future service proxied, so the hint stops
+appearing on its own.
+
+### docs
+
+`doctor` and the sheet keep naming the two states that matter: pool of one
+cannot rotate, and a CLI service born before PROXY ON keeps its old env.
+
 ## 2.4.3 — 2026-11-09
 
 ### PROXY ON now means the CLI, not just the mux

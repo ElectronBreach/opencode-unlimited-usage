@@ -264,12 +264,12 @@ fi
 # OUC_NO_PROXY=1 opts out; a dead pool still fails closed (502) by design.
 OUC_MUX_STATE="$HOME/.local/share/opencode-unlimited/guard/proxy-state.json"
 OUC_MUX_ON=0
-if [ "${OUC_NO_PROXY:-0}" != "1" ] && python3 - "$OUC_MUX_STATE" <<'PY' 2>/dev/null
+if [ "${OUC_NO_PROXY:-0}" != "1" ] && python3 - "$OUC_MUX_STATE" "$HOME/.local/share/opencode-unlimited/guard/proxy-want" <<'PY' 2>/dev/null
 import json,os,sys
 try:
     d=json.load(open(sys.argv[1]))
 except Exception:
-    sys.exit(1)
+    d={}
 pid=d.get("pid") or 0
 alive=False
 if pid:
@@ -277,7 +277,13 @@ if pid:
         os.kill(int(pid), 0); alive=True
     except Exception:
         alive=False
-sys.exit(0 if (d.get("up") and alive and int(d.get("pool") or 0) > 0) else 1)
+pool=int(d.get("pool") or 0)
+wanted=os.path.exists(sys.argv[2])
+# the guard supervises the mux while it is wanted, so a wanted-but-restarting
+# mux is still the right address: exporting only when the pid is live means a
+# CLI launched during a 6s restart window is born direct and stays direct for
+# hours, which is the exact bug this block exists to kill.
+sys.exit(0 if (pool > 0 and (wanted or (d.get("up") and alive))) else 1)
 PY
 then
   OUC_MUX_ON=1
@@ -300,7 +306,8 @@ for sp in $(ps -Ao pid=,args= 2>/dev/null | awk '/opencode[.]exe serve --service
   kill -TERM "$sp" 2>/dev/null && STALE=$((STALE + 1))
 done
 
-if [ "$OUC_MUX_ON" = "1" ] && [ -z "${OUC_QUIET:-}" ]; then
+case "${OUC_QUIET:-}" in ""|0) OUC_SAY=1 ;; *) OUC_SAY=0 ;; esac
+if [ "$OUC_MUX_ON" = "1" ] && [ "$OUC_SAY" = "1" ]; then
   if [ "$STALE" -gt 0 ]; then
     printf '\033[2m  ⇄ egress via proxy mux 127.0.0.1:8899 (rotated %s stale service)\033[0m\n' "$STALE" >&2
   else

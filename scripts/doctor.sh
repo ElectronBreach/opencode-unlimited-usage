@@ -247,6 +247,8 @@ elif alive:
     print("    %s proxy mux up on %s · %s of %s upstreams healthy · %s rotations · %s served" % (
         mark, st.get("listen") or "127.0.0.1:8899", healthy, pool,
         st.get("rotations",0), st.get("served",0)))
+    if pool == 1:
+        print("    ! one upstream: rotation cannot change your egress ip — proxy-pool import <file|url> takes a whole webshare list")
     if pool and tested==0:
         print("    ! nothing probed yet — a fresh mux cannot know the pool is good; HUD → PROXY → TEST")
     elif pool and healthy==0:

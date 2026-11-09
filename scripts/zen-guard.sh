@@ -301,6 +301,31 @@ PY
       bash "$SELF_DIR/proxy-pool.sh" sys off >/dev/null 2>&1 \
         && glog "system proxy was pointed at a stopped mux — restored the baseline"
     fi
+    # and the other half: the user turned the mux on, so it stays on. a crash,
+    # a kill, a bad reboot of the listener is not a reason to silently go
+    # direct — that is a quota leak with a green sheet.
+    if [ -f "$STATE_DIR/proxy-want" ]; then
+      MUX_LIVE=$(python3 - "$STATE_DIR/proxy-state.json" <<'PY' 2>/dev/null
+import json,os,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+pid=int(d.get("pid") or 0)
+alive=False
+if pid:
+    try:
+        os.kill(pid, 0); alive=True
+    except Exception:
+        alive=False
+print(1 if (d.get("up") and alive) else 0)
+PY
+)
+      if [ "${MUX_LIVE:-1}" = "0" ] && [ -x "$SELF_DIR/proxy-pool.sh" ]; then
+        bash "$SELF_DIR/proxy-pool.sh" on >/dev/null 2>&1 \
+          && glog "proxy mux had stopped while it was wanted — restarted it"
+      fi
+    fi
   fi
   sleep 6
 

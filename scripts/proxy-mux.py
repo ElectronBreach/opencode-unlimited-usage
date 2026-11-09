@@ -70,7 +70,11 @@ ALLOW_DIRECT = os.environ.get("OUC_PROXY_ALLOW_DIRECT", "0") == "1"
 
 CONNECT_TIMEOUT = 9.0      # one upstream, one try
 HEADER_LIMIT = 16384       # a proxy that sends more than this is not a proxy
-DEAD_FOR = 60.0            # how long a failed upstream sits out
+# a failed upstream used to sit out a flat 60s. with a one-line pool that is a
+# minute of 502 for a single blip, which the client sees as "proxy refused to
+# open a tunnel". park short, then longer, and never park longer than a minute.
+PARK_BASE = 4.0
+PARK_MAX = 60.0
 MAX_TRIES = 4              # upstreams tried per client connection
 
 
@@ -159,7 +163,7 @@ def seed_health(pool):
             continue
         age = now - float(r.get("ts") or 0)
         if 0 <= age < HEALTH_TTL:
-            out[i] = now + DEAD_FOR
+            out[i] = now + PARK_BASE
     return out
 
 
@@ -196,12 +200,32 @@ def restore_system():
         pass
 
 
+def event(msg):
+    """one bounded line about a real decision, so a 502 can be explained."""
+    try:
+        line = "%s %s\n" % (time.strftime("%H:%M:%S"), msg)
+        with open(os.path.join(GUARD, "proxy-mux-events.log"), "a") as f:
+            f.write(line)
+        # keep it small: a proxy that fails every second must not fill the disk.
+        try:
+            if os.path.getsize(os.path.join(GUARD, "proxy-mux-events.log")) > 200000:
+                with open(os.path.join(GUARD, "proxy-mux-events.log")) as f:
+                    tail = f.readlines()[-500:]
+                with open(os.path.join(GUARD, "proxy-mux-events.log"), "w") as f:
+                    f.writelines(tail)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 class Mux:
     def __init__(self, pool):
         self.pool = pool
         self.idx = 0
         self.dead = seed_health(pool)   # index -> unix time it may be retried
         self.seen = set(self.dead)      # indexes the mux already has a verdict on
+        self.fails = {}                 # index -> consecutive connect failures
         self.window_start = 0.0
         self.rotations = 0
         self.served = 0
@@ -255,11 +279,33 @@ class Mux:
         self.persist()
         return self.pick()
 
-    def mark_dead(self, i):
+    def mark_dead(self, i, why=""):
         self.seen.add(i)
-        self.dead[i] = time.time() + DEAD_FOR
+        n = self.fails.get(i, 0) + 1
+        self.fails[i] = n
+        park = min(PARK_MAX, PARK_BASE * (2 ** (n - 1)))
+        self.dead[i] = time.time() + park
         self.failed += 1
+        event("park #%d for %.0fs (fail %d) %s" % (i + 1, park, n, why))
         self.persist()
+
+    def revive(self, i):
+        """a good connect clears the record, so the backoff starts over."""
+        self.fails.pop(i, None)
+        self.dead.pop(i, None)
+        self.seen.add(i)
+
+    def stale_pick(self):
+        """when everything is parked, try the one that has sat out longest.
+
+        refusing every connection for a minute because of one blip is how a
+        good pool reads as a broken proxy. one probe on the least-recently-failed
+        upstream is cheaper than 502 and it re-verifies the pool for free.
+        """
+        if not self.pool:
+            return None
+        order = sorted(range(len(self.pool)), key=lambda i: self.dead.get(i, 0))
+        return order[0] if order else None
 
     def persist(self):
         cur = None
@@ -390,21 +436,33 @@ async def tunnel(mux, client_r, client_w, target_host, target_port):
     for _ in range(MAX_TRIES):
         i = mux.pick()
         if i is None:
-            break
+            i = mux.stale_pick()
+            if i is None or i in tried:
+                break
         if i in tried:
             i = mux.rotate()
             if i is None or i in tried:
                 break
         tried.add(i)
         up = mux.pool[i]
-        try:
-            ur, uw = await connect_via(up, target_host, target_port)
-        except Exception as e:
-            mux.mark_dead(i)
+        ur = uw = None
+        last = ""
+        for attempt in (1, 2):
+            try:
+                ur, uw = await connect_via(up, target_host, target_port)
+                last = ""
+                break
+            except Exception as e:
+                last = str(e) or e.__class__.__name__
+                # one retry, short pause: tunnels die mid-handshake all the
+                # time and a second attempt usually lands.
+                if attempt == 1:
+                    await asyncio.sleep(0.35)
+        if uw is None:
+            mux.mark_dead(i, last)
             mux.rotate()
             continue
-        mux.seen.add(i)
-        mux.dead.pop(i, None)      # a good connect clears an older parking
+        mux.revive(i)
         mux.served += 1
         mux.persist()
         client_w.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
