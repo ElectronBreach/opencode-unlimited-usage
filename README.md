@@ -79,7 +79,9 @@ just use `opencode` like always.
 | `warp-keeper` | root daemon — keeps WARP connected, arms/flushes the pf leak guard |
 | `zen-hop` | manual "give me a new identity right now" button |
 | `doctor` | health check — tells you what's alive and what's not |
-| `overlay` | always-on-top HUD: hop + doctor + live token ledger, collapses to a floating circle |
+| `api-keys` | OpenCode Console key pool — add, rotate, probe, prune, 50-key cap |
+| `overlay` | always-on-top HUD: hop + doctor + live token ledger + key pool |
+| `ouc` | one entry point for every one of the above |
 
 ## Daily usage
 
@@ -92,44 +94,48 @@ If you ever see the wall error:
 2. wait ~15 seconds (zen-guard is already rotating)
 3. re-send your message
 
-That's the entire workflow. If you want a new identity *right now*:
+That's the entire workflow. Everything is reachable through one command:
 
 ```bash
-opencode-unlimited-hop
+ouc                   # live status: tunnel, egress, tokens, keys
+ouc doctor            # health check, one line per subsystem
+ouc audit             # feature audit against the linux upstream
+ouc hop               # new identity right now
+ouc keys list         # the key pool
+ouc keys rotate next  # switch active key
+ouc logs keeper       # tail a log (keeper | guard | overlay | lane)
+ouc paths             # every file this install owns
 ```
 
-And the health check:
-
-```bash
-opencode-unlimited-doctor
-```
+`opencode-unlimited-hop` and `opencode-unlimited-doctor` still exist as
+one-word aliases. `ouc help` prints the rest.
 
 ## The overlay HUD
 
-A small always-on-top window opens **by itself** every time `opencode` starts —
-any session, any project. It is not decoration: it runs the same scripts you
-would run by hand and reads the same database opencode writes.
+A small always-on-top window that opens **by itself** every time `opencode`
+starts — any session, any project. It is not decoration: it runs the same
+scripts you would run by hand and reads the same database opencode writes.
 
-- **tokens** — all-time in/out/cache, cost, sessions, and a sparkline of the
-  last 12 sessions, straight out of `~/.local/share/opencode/opencode.db`
+- **tokens** — all-time in/out/cache, cost, sessions, refreshed every 2 s
+  straight out of `~/.local/share/opencode/opencode.db` (read-only, never cached)
 - **identity** — egress address, the server-seen `/64` (the actual quota key),
   device id, rotation count
 - **health** — warp / DNS / keeper / guard / credit / leak-guard, one dot each
-- **HOP** and **DOCTOR** — the two commands, running live, output streaming into
-  the console pane
-- **⇄** docks it to the other screen edge, **−** collapses it
+- **API keys** — the OpenCode Console key pool: add, prev/next, check, clean, delete
+- **HOP** and **DOCTOR** — the two commands, running live, output in the console
+- **session burn** — the last 24 sessions that spent anything, ranked
+- **⇄** docks it to the other screen edge, **−** collapses it, **✕** hides it
 
-Collapsed it becomes a single circular badge that keeps floating on top of
-everything: token count, cache-hit ring, status dot. Click it to expand,
-double-click to fire a rotation. Drag it anywhere — it snaps to the screen
-edges.
+Collapsed it becomes a single circular badge that keeps floating on top:
+token count, cache-hit ring, status dot. Click it to expand, double-click to
+fire a rotation. Drag it anywhere — it snaps to the screen edges.
 
 ```bash
-opencode-unlimited-overlay            # show / raise
-opencode-unlimited-overlay toggle     # circle ⇄ panel
-opencode-unlimited-overlay hop        # rotate from the CLI
-opencode-unlimited-overlay collapse   # just the circle
-opencode-unlimited-overlay close
+ouc hud show          # pin it open
+ouc hud summon        # what a session launch does
+ouc hud hide          # put it away
+ouc hud quit          # stop it — really stop it, KeepAlive cannot revive it
+ouc hud warp          # open the Cloudflare WARP window
 ```
 
 Set `OUC_OVERLAY=0` before launching opencode if you want it to stay shut.
@@ -137,29 +143,34 @@ Set `OUC_OVERLAY=0` before launching opencode if you want it to stay shut.
 **It is a separate floating window, not a pane inside the terminal.** It sits
 above your terminal at the right edge of the screen (or wherever you drag it),
 non-activating, so typing in the terminal never loses focus. It follows you
-across Spaces and stays on top of a fullscreen terminal, and it is not tied to
-opencode at all — it floats over Finder, the browser, a fullscreen video, any
-app you switch to. It also starts at login (`~/Library/LaunchAgents/
-com.opencode-unlimited.overlay.plist`), so it is there before the first session
-and after a reboot.
+across Spaces and stays on top of a fullscreen terminal.
 
-The **×** button folds it into the bubble — it never quits the HUD. The real
-quit is `opencode-unlimited-overlay close`, or a crash will bring it straight
-back (the login agent restarts on a non-zero exit).
+**It belongs to a session, not to the login.** The lane raises it when opencode
+launches; when the last session exits it steps back after a minute. `RunAtLoad`
+starts it at login, it finds no session and no launch intent, and exits cleanly
+(the agent does not restart a clean exit). `ouc hud show` pins it for as long as
+you leave it open.
+
+**✕ hides the panel, it does not fold it.** The process stays; the ⚡ menu bar
+item brings it back, and the next `opencode` launch summons it again. The real
+quit is `ouc hud quit`.
 
 Not seeing it?
 
 ```bash
-opencode-unlimited-overlay show          # raise it now
-opencode-unlimited-overlay expand        # make sure it is the panel, not the circle
-cat ~/.local/share/opencode-unlimited/guard/overlay-state.json   # visible / occluded / frame
+ouc hud show                                   # raise it now
+cat ~/.local/share/opencode-unlimited/guard/overlay-state.json   # visible / frame
+ouc logs overlay | tail -20                    # why it exited
 ```
 
-If `visible` is `true` and `occluded` is `false`, it is on screen — look for a
-366×596 panel at the right edge, or the 78 px circle if it was left collapsed.
+If `visible` is `true`, it is on screen — look for a 366×700 panel at the right
+edge, or the 78 px circle if it was left collapsed.
 
 Reading tokens is read-only (`mode=ro` against the live WAL database) — the
 HUD never writes to opencode's data.
+
+The full control map and the click-coordinate trick used to verify every button
+are in [docs/HUD.md](docs/HUD.md).
 
 ## How it works (for people who read code)
 
@@ -253,7 +264,7 @@ with `bash tools/embed.sh` after any script change.
 ## Audit
 
 ```bash
-bash scripts/audit.sh      # 36 checks, feature-by-feature vs the linux build
+ouc audit                  # feature-by-feature vs the linux build
 ```
 
 Prints `pass / deviation / fail`. Deviations are the documented macOS
@@ -312,19 +323,48 @@ opencode data/sessions are untouched.
 ## Files
 
 ```
-install.sh    — the one-command installer (macOS)
-uninstall.sh  — clean removal (macOS)
-AGENTS.md     — the credit file the installer enforces
+install.sh        one-command installer; carries the whole payload inside itself
+uninstall.sh      clean removal — units, sudoers, pf, DNS baseline, HUD
+VERSION           the version this checkout is
+Makefile          check / build / test / install / release / clean
+CHANGELOG.md      what changed, per release
+
 scripts/
-  warp-keeper.sh  — root daemon: tunnel + fail-open pf leak guard
-  zen-lane.sh     — the lane itself (hosts pin + edge rotation + credit)
-  zen-guard.sh    — wall watcher + auto rotation
-  zen-hop.sh      — manual identity rotation
-  doctor.sh       — health check
-  status.sh       — machine-readable snapshot (JSON) for the HUD
-  overlay-ctl.sh  — show / toggle / drive the HUD
-  overlay/        — the AppKit + WKWebView HUD (main.swift, overlay.html, build.sh)
+  ouc.sh          the one entry point
+  warp-keeper.sh  root daemon: tunnel + fail-open pf leak guard + DNS repair
+  zen-lane.sh     the lane itself (hosts pin + edge rotation + credit + session)
+  zen-guard.sh    wall watcher + auto rotation
+  zen-hop.sh      manual identity rotation
+  api-keys.sh     OpenCode Console key pool
+  doctor.sh       health check
+  audit.sh        feature audit vs the linux build
+  parity.sh       numeric parity against the linux build
+  status.sh       machine-readable snapshot (JSON) for the HUD
+  overlay-ctl.sh  show / summon / hide / quit / warp
+  overlay/        the AppKit + WKWebView HUD (main.swift, overlay.html, build.sh)
+
+docs/
+  ARCHITECTURE.md     the three processes, the state directory, failure modes
+  HUD.md              every control, what it runs, how it was verified
+  TROUBLESHOOTING.md  the failure that looks like "my Mac is broken"
+
+tools/
+  embed.sh        rebuild or verify the payload inside install.sh
 ```
+
+## Building a release
+
+```bash
+make check      # every script parses + the embedded payload is current
+make build      # compile the HUD
+make test       # doctor + audit against this machine
+make release    # dist/opencode-unlimited-mac-<version>.tar.gz + SHA256SUMS
+```
+
+`make release` is deliberately boring: a tarball, a checksum, no signing, no
+network. `install.sh` in the tarball is the same self-contained file as the one
+in the repo, so a release can be installed with `./install.sh` or
+`cat install.sh | bash` exactly like a checkout.
 
 ## Differences from the linux build
 
@@ -341,5 +381,7 @@ scripts/
 | `mode` enforced every tick | `mode` set once (no reconnect flaps) |
 
 MIT license. Use it, fork it, just don't sell it to your grandma.
+
+This is `VERSION` 2.0.0 — see [CHANGELOG.md](CHANGELOG.md).
 
 — ELECTRONBREACH

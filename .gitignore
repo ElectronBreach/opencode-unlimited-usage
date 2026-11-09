@@ -1,0 +1,4 @@
+dist/
+*.log
+.DS_Store
+tools/_patch_*.py

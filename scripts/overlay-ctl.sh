@@ -8,6 +8,7 @@
 #   opencode-unlimited-overlay hop        run a rotation from the HUD
 #   opencode-unlimited-overlay doctor     run the health check
 #   opencode-unlimited-overlay reload     reload the HUD's page (self-heal)
+#   opencode-unlimited-overlay summon    show for a session; steps back when it exits
 #   opencode-unlimited-overlay hide       put the panel away (menu bar brings it back)
 #   opencode-unlimited-overlay close      collapse to the bubble
 #   opencode-unlimited-overlay quit       terminate the HUD process
@@ -38,7 +39,8 @@ json.dump({"dir": d, "ts": int(time.time())}, open(p, "w"))
 PY
 }
 
-AGENT="gui/$(id -u)/com.opencode-unlimited.overlay"
+HUD_LABEL="com.opencode-unlimited.overlay"
+AGENT="gui/$(id -u)/$HUD_LABEL"
 PLIST="$HOME/Library/LaunchAgents/com.opencode-unlimited.overlay.plist"
 
 # `quit` boots the agent out so the app cannot be resurrected by KeepAlive.
@@ -52,20 +54,49 @@ ensure_agent(){
   return 0
 }
 
+# start the app under launchd when the agent is installed, so a crash is
+# recovered by the system instead of by nobody noticing. otherwise launch it
+# directly — same window, no supervisor.
+# kickstart cannot pass argv, so intent goes in a file the app reads at boot
+# (and ignores if it is older than 15s).
+mark_intent(){
+  printf '%s %s\n' "${1:-show}" "$(date +%s)" > "$GUARD/overlay-intent" 2>/dev/null || true
+}
+
+launch_hud(){
+  mark_intent "${1:-show}"
+  if launchctl print "$AGENT" >/dev/null 2>&1; then
+    launchctl kickstart "gui/$(id -u)/$HUD_LABEL" >/dev/null 2>&1 && return 0
+  fi
+  open -g "$APP" --args --session-dir "${OUC_SESSION_DIR:-$PWD}" --"${1:-show}"
+}
+
 show(){
   ctx
   if running; then
     printf 'expand\n' > "$CMD"
-  elif ensure_agent; then
-    :
   else
-    open -g "$APP" --args --session-dir "${OUC_SESSION_DIR:-$PWD}"
+    ensure_agent
+    launch_hud show
+  fi
+}
+
+# the lane's version: same thing, but the HUD knows it was opened for a
+# session and steps back once the last one exits.
+summon(){
+  ctx
+  if running; then
+    printf 'summon\n' > "$CMD"
+  else
+    ensure_agent
+    launch_hud summon
   fi
 }
 
 action="${1:-show}"
 case "$action" in
   show)     show ;;
+  summon)   summon ;;
   hide)     printf 'hide\n' > "$CMD" ;;
   quit)     printf 'quit\n' > "$CMD" ;;
   close)    printf 'close\n' > "$CMD" ;;
@@ -75,5 +106,5 @@ case "$action" in
             sleep 0.4
             printf '%s\n' "$action" > "$CMD" ;;
   warp)     printf 'warp\n' > "$CMD" ;;
-  *)        echo "usage: $(basename "$0") [show|hide|quit|toggle|collapse|expand|hop|doctor|reload|close|warp]" >&2; exit 2 ;;
+  *)        echo "usage: $(basename "$0") [show|summon|hide|quit|toggle|collapse|expand|hop|doctor|reload|close|warp]" >&2; exit 2 ;;
 esac

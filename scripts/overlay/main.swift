@@ -92,8 +92,15 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     var statusItem: NSStatusItem?
     var reloadAttempts = 0
     var warpChecks = 0
+    var warpMiss = 0
     var warpFixAt: TimeInterval = 0
     var lastDump: TimeInterval = 0
+    // the HUD is a companion to a live session: when the lane raised it and the
+    // last session went away, it puts itself back. a panel the user opened by
+    // hand is left alone.
+    var openedByLane = false
+    var idleTicks = 0
+    var bootIntent: String = ""
 
     // ---------------------------------------------------------------- boot
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -107,6 +114,10 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 i += 2
                 continue
             }
+            // launched by the lane: this instance belongs to a session and is
+            // allowed to step back when that session ends.
+            if args[i] == "--summon" { openedByLane = true; bootIntent = "summon" }
+            if args[i] == "--show" { bootIntent = "show" }
             i += 1
         }
 
@@ -119,6 +130,15 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         // a panel the user dismissed stays dismissed across a relaunch.
         // the lane opens it again when opencode starts.
         hidden = defaults.bool(forKey: "hidden")
+        if openedByLane { hidden = false }
+
+        // this app is a companion to a session, not a login item. launchd (or a
+        // reboot) will start it with no session and no intent, and in that case
+        // it goes away again instead of sitting on the desktop. the launcher
+        // leaves an intent marker so a real summon is never mistaken for one.
+        if bootIntent.isEmpty { bootIntent = readIntent() }
+        if openedByLane || bootIntent == "summon" { openedByLane = true; hidden = false }
+        if bootIntent == "show" { hidden = false }
         buildStatusItem()
         // an NSWindow that is created is not on screen until it is ordered in,
         // and `open -g` never activates us. orderFrontRegardless is the only
@@ -140,6 +160,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             self.refresh(force: false)
             self.healthTick()
             self.warpWindowTick()
+            self.sessionTick()
             // the state file is read by tooling, not by a person — 5s is plenty
             // and it keeps a 2s timer from doing two disk writes every tick.
             let now = Date().timeIntervalSince1970
@@ -154,12 +175,41 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         }
         refresh(force: true)
         dumpState()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.settleBoot() }
         if ProcessInfo.processInfo.arguments.contains("--collapsed") {
             setCollapsed(true, animate: false)
         }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
+
+    // the launcher writes "summon <unix ts>" or "show <unix ts>" and then starts
+    // the app. launchctl kickstart cannot pass arguments, so this marker is how
+    // a cold start knows it was asked for. stale markers are ignored.
+    func readIntent() -> String {
+        let f = guardDir.appendingPathComponent("overlay-intent")
+        guard let raw = try? String(contentsOf: f, encoding: .utf8) else { return "" }
+        // trim first: Double("123\n") is nil, and the marker ends with a newline
+        let parts = raw.split(whereSeparator: { $0 == " " || $0.isNewline })
+        guard parts.count == 2, let ts = Double(parts[1]),
+              Date().timeIntervalSince1970 - ts < 15 else { return "" }
+        return String(parts[0])
+    }
+
+    func shouldStay() -> Bool {
+        if openedByLane || bootIntent == "summon" || bootIntent == "show" { return true }
+        return sessionCount() > 0
+    }
+
+    // measured against the session markers, once, a couple of seconds in: the
+    // first launch of a session may still be writing its marker.
+    func settleBoot() {
+        guard !shouldStay() else { return }
+        crashLog("no opencode session and no launch intent — exiting")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            NSApp.terminate(nil)
+        }
+    }
 
     // launchd restarts this app every few seconds when it dies. if it dies from
     // something that reproduces on boot, that becomes a spin that pegs a core
@@ -439,7 +489,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // GUI (never the root daemon) when it is gone. at most once every 10 min.
     func warpWindowTick() {
         warpChecks += 1
-        guard warpChecks % 15 == 0 else { return }   // 2s poll × 15 = 30s
+        guard warpChecks % 2 == 0 else { return }    // 2s poll × 2 = 4s
         let now = Date().timeIntervalSince1970
         let app = NSWorkspace.shared.runningApplications.first(
             where: { ($0.bundleIdentifier ?? "").contains("cloudflare.1dot1dot1") })
@@ -462,8 +512,13 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             let hh = b["Height"] as? Double ?? 0
             return ww >= 300 && hh >= 300
         }
-        guard !usable else { return }
+        // two misses in a row before touching anything: a window that is
+        // rebuilding itself must not get killed mid-animation.
+        if usable { warpMiss = 0; return }
+        warpMiss += 1
+        guard warpMiss >= 2 else { return }
         guard now - warpFixAt > 600 else { return }
+        warpMiss = 0
         warpFixAt = now
         crashLog("warp GUI has no window — relaunching it (tunnel untouched)")
         push("log", ["line": "warp UI had no window — restarted the app"])
@@ -474,6 +529,35 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         kill.waitUntilExit()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             self?.openWarp()
+        }
+    }
+
+    // the lane drops a pid file per session and removes it on exit. counting
+    // those is the only honest answer to "is opencode running right now" — the
+    // `opencode serve` daemon is always up and must not count.
+    func sessionCount() -> Int {
+        let dir = guardDir.appendingPathComponent("sessions")
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return 0 }
+        var live = 0
+        for n in names where !n.hasPrefix(".") {
+            guard let pid = pid_t(n) else { continue }
+            if kill(pid, 0) == 0 { live += 1 }
+            else { try? fm.removeItem(at: dir.appendingPathComponent(n)) }
+        }
+        return live
+    }
+
+    func sessionTick() {
+        let n = sessionCount()
+        if n > 0 { idleTicks = 0; return }
+        guard openedByLane, !hidden else { idleTicks = 0; return }
+        idleTicks += 1
+        // 2s poll × 30 = a minute of no session before the panel steps back
+        if idleTicks >= 30 {
+            idleTicks = 0
+            openedByLane = false
+            crashLog("no opencode session for 60s — hiding the HUD")
+            setHidden(true, remember: false)
         }
     }
 
@@ -512,9 +596,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // the only real close the panel has. the process stays resident so the
     // lane can raise it again without a relaunch, but nothing re-orders it
     // while hidden is set.
-    func setHidden(_ v: Bool) {
+    func setHidden(_ v: Bool, remember: Bool = true) {
         hidden = v
-        defaults.set(v, forKey: "hidden")
+        if remember { defaults.set(v, forKey: "hidden") }
         if v {
             window.orderOut(nil)
         } else {
@@ -555,7 +639,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         btn.appearsDisabled = hidden
     }
 
-    @objc func menuShow() { setHidden(false); setCollapsed(false, animate: true) }
+    @objc func menuShow() { openedByLane = false; setHidden(false); setCollapsed(false, animate: true) }
     @objc func menuHide() { setHidden(true) }
     @objc func menuBubble() { setHidden(false); setCollapsed(true, animate: true) }
     @objc func menuReload() { setHidden(false); reloadPage() }
@@ -684,7 +768,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         // opencode launch — so a stray click cannot lose it, but it also
         // cannot sit on top of everything forever.
         case "hide": setHidden(true)
-        case "show": setHidden(false)
+        case "show": openedByLane = false; setHidden(false)
+        case "summon": openedByLane = true; idleTicks = 0; setHidden(false); setCollapsed(false, animate: true)
         case "warp": openWarp()
         case "close": setCollapsed(true, animate: true)
         case "refresh": refresh(force: true)
@@ -910,7 +995,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         // offers, so a stray click (or a stale command) cannot take it down.
         case "close": setCollapsed(true, animate: true)
         case "hide": setHidden(true)
-        case "show": setHidden(false)
+        case "show": openedByLane = false; setHidden(false)
+        case "summon": openedByLane = true; idleTicks = 0; setHidden(false); setCollapsed(false, animate: true)
         case "warp": openWarp()
         case "quit": quitForReal()
         default: break

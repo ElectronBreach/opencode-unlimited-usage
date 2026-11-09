@@ -120,7 +120,15 @@ strip_block(){
 # the pin is owned by a pid file rather than a guess at the process table
 LANE_PID="$HOME/.local/share/opencode-unlimited/guard/lane.pid"
 
+# one file per live terminal session. the HUD counts these to know whether
+# opencode is actually running — `opencode serve` is always up and is not a
+# session, so the process table cannot answer it.
+SESS_DIR="$HOME/.local/share/opencode-unlimited/guard/sessions"
+mkdir -p "$SESS_DIR" 2>/dev/null || true
+printf '%s\n' "$$" > "$SESS_DIR/$$" 2>/dev/null || true
+
 restore_hosts(){
+  rm -f "$SESS_DIR/$$" 2>/dev/null
   # cleanup must run even when nothing was pinned
   [ -n "${MACHINE_DIR:-}" ] && rm -rf "$MACHINE_DIR" 2>/dev/null
   [ "$PINNED" = "1" ] || return 0
@@ -234,7 +242,7 @@ if [ "${OUC_OVERLAY:-1}" != "0" ]; then
   [ -x "$HUD" ] || HUD="$HOME/Library/Application Support/opencode-unlimited/OpencodeOverlay.app"
   if [ -d "$HOME/Library/Application Support/opencode-unlimited/OpencodeOverlay.app" ] \
      || [ -x "$HOME/.local/bin/opencode-unlimited-overlay" ]; then
-    OUC_SESSION_DIR="$PWD" "$HUD" show >/dev/null 2>&1 &
+    OUC_SESSION_DIR="$PWD" "$HUD" summon >/dev/null 2>&1 &
   fi
 fi
 
