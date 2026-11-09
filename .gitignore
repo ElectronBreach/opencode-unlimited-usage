@@ -1,0 +1,7 @@
+dist/
+*.log
+.DS_Store
+tools/_patch_*.py
+
+scripts/__pycache__/
+*.pyc

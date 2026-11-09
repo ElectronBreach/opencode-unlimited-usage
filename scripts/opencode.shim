@@ -1,0 +1,72 @@
+#!/bin/bash
+# opencode shim — born proxied, every time.
+#
+# why this exists: the process that opens the sockets is `opencode.exe serve
+# --service`, spawned by the CLI itself. it inherits the env of whoever spawned
+# it, so a session started while the proxy was down stays direct for hours and
+# no button can fix it. this shim sits at the binary path, which means *both*
+# processes are born with the proxy env whenever the mux is up or wanted.
+#
+# it is deliberately dumb: parse one small json, export three vars, exec the
+# real binary with the same argv. no state, no daemon, no failure mode of its
+# own — if anything looks wrong it execs the real binary untouched.
+set -u
+
+# $0 may arrive through the ~/.npm-global/bin symlink, where dirname($0) is the
+# symlink's directory and the real binary is a level away. resolve first, then
+# take the directory of the *file* this script actually is.
+SELF_FILE="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0" 2>/dev/null)"
+[ -n "${SELF_FILE:-}" ] || SELF_FILE="$0"
+SELF="$(cd "$(dirname "$SELF_FILE")" && pwd -P)"
+REAL="$SELF/opencode.real"
+[ -x "$REAL" ] || REAL="$SELF/opencode.exe"
+if [ ! -x "$REAL" ] || [ "$REAL" = "$SELF_FILE" ]; then
+  echo "opencode shim: the real binary is missing next to $SELF_FILE" >&2
+  echo "  restore it with: proxy-pool.sh shim off" >&2
+  exit 127
+fi
+
+STATE="$HOME/.local/share/opencode-unlimited/guard/proxy-state.json"
+WANT="$HOME/.local/share/opencode-unlimited/guard/proxy-want"
+PORT=8899
+
+SHIM_LOG="$HOME/.local/share/opencode-unlimited/guard/shim.log"
+shim_note(){
+  [ -n "${OUC_SHIM_DEBUG:-}" ] || return 0
+  printf '%s pid=%s %s\n' "$(date +%H:%M:%S)" "$$" "$1" >> "$SHIM_LOG" 2>/dev/null || true
+}
+
+if [ -z "${OUC_NO_PROXY:-}" ] && [ -f "$STATE" ]; then
+  # a wanted-but-restarting mux is still the right address: the guard restarts
+  # it within one tick, and exporting only on a live pid is how a CLI ends up
+  # born direct and stuck there.
+  if python3 - "$STATE" "$WANT" <<'PY' >/dev/null 2>&1
+import json,os,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+if int(d.get("pool") or 0) <= 0:
+    sys.exit(1)
+wanted=os.path.exists(sys.argv[2])
+pid=int(d.get("pid") or 0)
+alive=False
+if pid:
+    try:
+        os.kill(pid,0); alive=True
+    except Exception:
+        alive=False
+sys.exit(0 if (wanted or (d.get("up") and alive)) else 1)
+PY
+  then
+    export HTTP_PROXY="http://127.0.0.1:$PORT"
+    export HTTPS_PROXY="$HTTP_PROXY"
+    export ALL_PROXY="$HTTP_PROXY"
+    export NO_PROXY="localhost,127.0.0.1,::1"
+    shim_note "exported proxy for: $*"
+  else
+    shim_note "no export for: $*"
+  fi
+fi
+
+exec "$REAL" "$@"

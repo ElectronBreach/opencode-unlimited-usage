@@ -1,0 +1,229 @@
+#!/bin/bash
+# audit — compares the macOS port against the linux upstream, feature by
+# feature, and reports PASS / DEVIATION / FAIL. read-only.
+set -u
+BRAND="opencode-unlimited"
+DEST="$HOME/.local/share/$BRAND"
+GUARD_DIR="$DEST/guard"
+SHIM="$HOME/.local/bin/opencode"
+
+pass=0; dev=0; fail=0
+ok(){  printf "  \033[32m✓\033[0m %-46s %s\n" "$1" "${2:-}"; pass=$((pass+1)); }
+dv(){  printf "  \033[33m~\033[0m %-46s %s\n" "$1" "${2:-}"; dev=$((dev+1)); }
+bad(){ printf "  \033[31m✗\033[0m %-46s %s\n" "$1" "${2:-}"; fail=$((fail+1)); }
+
+echo ""
+echo "  ==============================================="
+echo "  opencode-unlimited — macOS vs linux feature audit"
+echo "  ==============================================="
+echo ""
+
+# ---- 1. binaries ------------------------------------------------------------
+REAL=""
+for c in "$HOME/.opencode/bin/opencode" /opt/homebrew/bin/opencode /usr/local/bin/opencode "$HOME/.npm-global/bin/opencode"; do
+  [ -x "$c" ] && grep -qI "zen-lane" "$c" 2>/dev/null || { [ -x "$c" ] && REAL="$c" && break; }
+done
+[ -n "$REAL" ] && ok "opencode CLI" "$("$REAL" --version 2>/dev/null | head -1)" || bad "opencode CLI" "missing"
+
+WARP="$(command -v warp-cli 2>/dev/null || true)"
+[ -n "$WARP" ] && [ -s "$WARP" ] && ok "warp-cli" "$("$WARP" --version 2>/dev/null | head -1)" || bad "warp-cli" "missing/stub"
+
+# ---- 2. launchd units -------------------------------------------------------
+launchctl print system/com.opencode-unlimited.keeper >/dev/null 2>&1 \
+  && ok "keeper daemon (linux: systemd root)" "loaded" || bad "keeper daemon" "not loaded"
+launchctl print "gui/$(id -u)/com.opencode-unlimited.guard" >/dev/null 2>&1 \
+  && ok "zen-guard agent (linux: systemd user)" "loaded" || bad "zen-guard agent" "not loaded"
+
+pgrep -f "warp-keeper.sh" >/dev/null 2>&1 && ok "keeper process alive" "$(pgrep -f warp-keeper.sh | head -1)" || bad "keeper process" "not running"
+pgrep -f "zen-guard.sh" >/dev/null 2>&1 && ok "guard process alive" "$(pgrep -f zen-guard.sh | head -1)" || bad "guard process" "not running"
+
+# ---- 3. tunnel --------------------------------------------------------------
+ST="$("$WARP" --accept-tos status 2>/dev/null | head -1)"
+echo "$ST" | grep -q Connected && ok "warp tunnel connected" || bad "warp tunnel" "$ST"
+MODE="$("$WARP" --accept-tos settings 2>/dev/null | awk -F'Mode: ' '/Mode:/ {print $2; exit}')"
+case "$MODE" in
+  TunnelOnly) dv "warp mode" "TunnelOnly (linux: TUN+warp; DNS stays local)" ;;
+  Warp)       dv "warp mode" "Warp — DNS rides the tunnel (macOS wants TunnelOnly)" ;;
+  *)          dv "warp mode" "${MODE:-unknown}" ;;
+esac
+
+REG="$("$WARP" --accept-tos registration show 2>/dev/null | head -2 | tr '\n' ' ')"
+[ -n "$REG" ] && ok "warp registration" "$(echo "$REG" | cut -c1-40)" || bad "warp registration" "none"
+
+# ---- 4. leak guard ----------------------------------------------------------
+if [ -f /etc/pf.anchors/OUC_LEAKGUARD ]; then
+  N=$(sudo -n /sbin/pfctl -a OUC_LEAKGUARD -s rules 2>/dev/null | grep -c . )
+  [ "${N:-0}" -gt 0 ] && ok "leak guard (linux: iptables 24/7)" "armed, $N rules" \
+                      || dv "leak guard" "installed, fail-open (flushed while down)"
+else
+  dv "leak guard (linux: iptables 24/7)" "OFF by default (opt-in, fail-open)"
+fi
+R=$(grep -c "OUC_LEAKGUARD" /etc/pf.conf 2>/dev/null || true)
+[ "${R:-0}" = 0 ] && ok "pf.conf clean" "no refs" || dv "pf.conf" "$R refs left"
+
+# ---- 5. lane / shim ---------------------------------------------------------
+grep -q "zen-lane" "$SHIM" 2>/dev/null && ok "opencode shim → lane" || bad "opencode shim" "not pointing at lane"
+[ -x "$HOME/.local/bin/opencode-unlimited-hop" ] && ok "PATH tool: hop" || bad "PATH tool: hop" "missing"
+[ -x "$HOME/.local/bin/opencode-unlimited-doctor" ] && ok "PATH tool: doctor" || bad "PATH tool: doctor" "missing"
+
+grep -q "ensure_credit" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: credit enforcement" || bad "lane: credit" "missing"
+grep -q "IOPlatformExpertDevice" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: machine-id via ioreg shim (per launch)" || dv "lane: machine-id" "env only"
+grep -q "OUC_PAYLOAD" "$DEST/install.sh" 2>/dev/null && ok "installer: standalone payload (no branch needed)" || dv "installer" "needs a checkout or published branch"
+grep -q "lane_live" "$DEST/scripts/warp-keeper.sh" 2>/dev/null && ok "keeper: pid-owned lane pin sweep" || bad "keeper: lane sweep" "missing"
+grep -q "hop_with_timeout" "$DEST/scripts/zen-guard.sh" 2>/dev/null && ok "guard: bounded rotation (180s cap)" || dv "guard: rotation cap" "unbounded"
+grep -q "IOPlatformExpertDevice" "$DEST/scripts/zen-lane.sh" 2>/dev/null \
+  && ok "lane: machine-id" "ioreg shim (macOS has no /etc/machine-id)" \
+  || bad "lane: machine-id" "no shim"
+grep -q "export MACHINE_ID" "$DEST/scripts/zen-lane.sh" 2>/dev/null \
+  && dv "lane: MACHINE_ID env" "exported, but opencode v2 never reads it" | true
+grep -q "v6 first" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: edge pin" "v6-first (warp /64 reaches the server), v4 fallback" || dv "lane: edge pin" "v4-first"
+PFX=$(ifconfig 2>/dev/null | awk '/^utun/{i=$1} /inet6 26[0-9a-f]*:/{print $2}' | head -1 | cut -d/ -f1 | awk -F: '{print $1":"$2":"$3":"$4}')
+[ -n "$PFX" ] && ok "warp /64 present" "$PFX" || dv "warp /64" "none — v4 pool only"
+grep -q "remove each launch\|restore_hosts\|MARK_BEGIN" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: hosts pin restorable" || bad "lane: hosts restore" "missing"
+grep -q "Telegram:- @ElectronCursed" "$DEST/scripts/zen-lane.sh" 2>/dev/null && ok "lane: non-tty credit append" || bad "lane: ntty credit" "missing"
+
+# ---- 6. guard ---------------------------------------------------------------
+grep -q "QuotaExceeded" "$DEST/scripts/zen-guard.sh" 2>/dev/null && ok "guard: wall detection" || bad "guard: wall" "missing"
+grep -q "grep -aqiE" "$DEST/scripts/zen-guard.sh" 2>/dev/null && ok "guard: case-insensitive match" || dv "guard: match" "case-sensitive"
+grep -q "blacklist" "$DEST/scripts/zen-guard.sh" 2>/dev/null && ok "guard: blacklist" || bad "guard: blacklist" "missing"
+grep -q "pause_keeper" "$DEST/scripts/zen-guard.sh" 2>/dev/null && ok "guard: pauses keeper during rotation" "marker file (linux: systemctl)" || bad "guard: pause" "missing"
+grep -q "is_warp_ip" "$DEST/scripts/zen-guard.sh" 2>/dev/null && ok "guard: never rotates direct egress" || bad "guard: warp check" "missing"
+grep -q "MAX_HOP_TRIES=3" "$DEST/scripts/zen-guard.sh" 2>/dev/null && dv "guard: max hop tries" "3 (linux: 8) — pool is 4 IPs here" || true
+
+# ---- 7. state ---------------------------------------------------------------
+if [ -f "$GUARD_DIR/state.json" ]; then
+  python3 - "$GUARD_DIR/state.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+need={"blacklist","offset","last_hop","hops","current"}
+missing=need-set(d)
+print("  \033[32m✓\033[0m %-46s %s" % ("guard state schema", "ok" if not missing else f"missing {missing}"))
+print("      offset=%r hops=%r current=%r /64=%r" % (d.get("offset"), d.get("hops"), d.get("current"), d.get("prefix")))
+PY
+else
+  bad "guard state" "missing"
+fi
+
+# ---- 8. wall regex against the real log ------------------------------------
+LOG="$HOME/.local/share/opencode/log/opencode.log"
+RE="QuotaExceeded|Free usage limit reached|usage limit reached|FreeUsageLimitError|FreeUsageLimit|rate limit exceeded|too many requests"
+if [ -f "$LOG" ]; then
+  HITS=$(rg -a -c -i "Free usage limit reached|FreeUsageLimitError|QuotaExceeded" "$LOG" 2>/dev/null | head -1)
+  if rg -a "Free usage limit reached|FreeUsageLimitError" "$LOG" 2>/dev/null | head -200 | grep -qiE "$RE"; then
+    ok "wall regex matches real log lines" "${HITS:-0} historical hits"
+  else
+    dv "wall regex vs real log" "no real hit in the sampled window"
+  fi
+fi
+
+# ---- 9. dns safety ----------------------------------------------------------
+[ -f "$GUARD_DIR/dns-baseline.txt" ] && ok "dns baseline captured" "$(head -1 "$GUARD_DIR/dns-baseline.txt" 2>/dev/null | tr '\t' ' ')" || bad "dns baseline" "missing"
+grep -q "restore_dns" "$DEST/scripts/warp-keeper.sh" 2>/dev/null && ok "keeper: dns restore on failure" || bad "keeper: dns restore" "missing"
+grep -q "ensure_daemon" "$DEST/scripts/warp-keeper.sh" 2>/dev/null && ok "keeper: warp daemon self-heal" || dv "keeper: daemon heal" "missing"
+
+# ---- 10. live network -------------------------------------------------------
+IP=$(curl -4 -sS -m 8 https://api64.ipify.org 2>/dev/null | tr -d '\n' || true)
+case "$IP" in *[!0-9a-f:.]*|"") IP="" ;; esac
+case "$IP" in
+  104.28.*|162.159.*|172.64.*|188.114.*|2a09:*|2606:*) ok "egress via cloudflare" "$IP" ;;
+  "") bad "egress" "none" ;;
+  *) dv "egress" "$IP — direct (tunnel down / fail-open)" ;;
+esac
+[ -n "$(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null)" ] && ok "dns resolves" "$(dig +short +time=2 +tries=1 opencode.ai 2>/dev/null | head -1)" || bad "dns" "not resolving"
+H=$(curl -4 -sS -o /dev/null -w "%{http_code}" -m 8 https://api.github.com 2>/dev/null || true)
+[ "$H" = 200 ] && ok "https reachable" "200" || bad "https" "$H"
+
+# ---- 11. install artifacts -------------------------------------------------
+[ -f /etc/sudoers.d/$BRAND ] && ok "sudoers entry present" || bad "sudoers entry" "missing"
+[ -f "$DEST/AGENTS.md" ] && ok "AGENTS.md shipped" || bad "AGENTS.md" "missing"
+[ -f "$DEST/scripts/zen-hop.sh" ] && [ -f "$DEST/scripts/doctor.sh" ] && ok "all scripts installed" || bad "scripts" "incomplete"
+[ -x "$DEST/scripts/zen-hop.sh" ] && ok "scripts executable" || bad "scripts" "not executable"
+
+# ---- 12. HUD ----------------------------------------------------------------
+APP="$HOME/Library/Application Support/$BRAND/OpencodeOverlay.app"
+if [ -d "$APP" ]; then
+  ok "overlay app built" "$([ -x "$APP/Contents/MacOS/opencode-unlimited-overlay" ] && echo bundle+bin || echo incomplete)"
+else
+  dv "overlay app" "not built (swiftc missing? re-run the installer)"
+fi
+pgrep -f "OpencodeOverlay.app/Contents/MacOS/opencode-unlimited-overlay" >/dev/null 2>&1 \
+  && ok "overlay running" "auto-raised by the lane" || dv "overlay running" "not up right now (opens with next session)"
+[ -x "$HOME/.local/bin/${BRAND}-overlay" ] && ok "overlay CLI" "opencode-unlimited-overlay" || bad "overlay CLI" "missing"
+grep -q "OpencodeOverlay" "$DEST/scripts/zen-lane.sh" 2>/dev/null \
+  && ok "lane raises the HUD" "on every opencode launch" || bad "lane HUD hook" "missing"
+HUD_PLIST="$HOME/Library/LaunchAgents/com.opencode-unlimited.overlay.plist"
+if [ -f "$HUD_PLIST" ]; then
+  launchctl print "gui/$(id -u)/com.opencode-unlimited.overlay" >/dev/null 2>&1 \
+    && ok "overlay agent (login)" "starts with the session, survives a reboot" \
+    || dv "overlay agent (login)" "plist present, not bootstrapped"
+else
+  dv "overlay agent (login)" "missing — HUD only appears when a session raises it"
+fi
+STATUS="$("$DEST/scripts/status.sh" 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);t=d.get("tokens") or {};print("%s sessions / %s tokens" % (t.get("sessions"), (t.get("input") or 0)+(t.get("output") or 0)))' 2>/dev/null)"
+[ -n "$STATUS" ] && ok "status probe emits json" "$STATUS" || bad "status probe" "no json"
+
+# ---- 13. api key pool -------------------------------------------------------
+if [ -x "$DEST/scripts/api-keys.sh" ]; then
+  KC=$("$DEST/scripts/api-keys.sh" list 2>/dev/null | grep -cE '^[0-9]+ +[-*] +OpenCode' || true)
+  CUR=$("$DEST/scripts/api-keys.sh" current 2>/dev/null | cut -f1)
+  if [ -n "${CUR:-}" ]; then
+    ok "opencode console key live" "$CUR (${KC:-?} in pool)"
+  else
+    bad "opencode console key" "none active — auth section has no key"
+  fi
+  case "${KC:-0}" in
+    ''|*[!0-9]*) bad "key pool readable" "unexpected output" ;;
+    *) [ "$KC" -le 50 ] && ok "key pool within cap" "$KC / 50" || bad "key pool over cap" "$KC / 50" ;;
+  esac
+  DUP=$("$DEST/scripts/api-keys.sh" prune --dry-run 2>/dev/null | grep -E "pool is clean|removable" | tail -1)
+  case "$DUP" in
+    "pool is clean"*) ok "key pool clean" "$DUP" ;;
+    \{3,\}*)          dv "key pool needs a clean" "$DUP" ;;
+    *)                dv "key pool check" "${DUP:-no output}" ;;
+  esac
+  AUTH=$("$DEST/scripts/api-keys.sh" health 2>/dev/null | grep -c "DEAD" || true)
+  [ "${AUTH:-0}" = "0" ] && ok "no rejected keys" || dv "rejected keys present" "$AUTH — run api-keys prune"
+else
+  bad "api-keys.sh" "not installed"
+fi
+
+# ---- 14. keeper hardening --------------------------------------------------
+grep -q "http_alive" "$DEST/scripts/warp-keeper.sh" 2>/dev/null   && ok "keeper: no 429 false-positive" "status-agnostic probes" || dv "keeper probes" "still using -f"
+grep -q "opencode_busy" "$DEST/scripts/warp-keeper.sh" 2>/dev/null   && ok "keeper: never bounces a busy session" "idle-gated reconnects" || dv "keeper idle gate" "missing"
+grep -q "rescue_provider" "$DEST/scripts/zen-guard.sh" 2>/dev/null   && ok "guard: provider rescue" "on ModelUnavailableError" || dv "guard provider rescue" "missing"
+
+# ---- 15. the two cheap levers ---------------------------------------------
+if [ -x "$DEST/scripts/proxy-pool.sh" ] && [ -f "$DEST/scripts/proxy-mux.py" ]; then
+  PX=$("$DEST/scripts/proxy-pool.sh" json 2>/dev/null)
+  PXC=$(printf '%s' "$PX" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("pool",0))' 2>/dev/null)
+  case "${PXC:-x}" in
+    ''|*[!0-9]*) bad "proxy pool json" "unreadable" ;;
+    *) ok "rotating proxy mux" "${PXC} upstreams · $(printf '%s' "$PX" | python3 -c 'import json,sys;d=json.load(sys.stdin);print("up" if d.get("up") else "idle")' 2>/dev/null)" ;;
+  esac
+  grep -q 'ALLOW_DIRECT", "0"' "$DEST/scripts/proxy-mux.py" 2>/dev/null \
+    && ok "proxy mux fails closed" "no direct fallback" || dv "proxy mux fail-closed" "allow-direct default changed"
+else
+  bad "proxy lever" "proxy-pool.sh / proxy-mux.py not installed"
+fi
+
+if [ -x "$DEST/scripts/model-levers.sh" ]; then
+  MD=$("$DEST/scripts/model-levers.sh" json 2>/dev/null)
+  MDF=$(printf '%s' "$MD" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("free",0))' 2>/dev/null)
+  MDC=$(printf '%s' "$MD" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("current") or "")' 2>/dev/null)
+  case "${MDF:-x}" in
+    ''|*[!0-9]*) bad "free model catalog" "unreadable — model-levers refresh" ;;
+    *) ok "free model lever" "$MDF zero-cost models" ;;
+  esac
+  if [ -n "${MDC:-}" ]; then
+    printf '%s' "$MD" | grep -q '"current":"'"$MDC"'"' && ok "default model pinned" "$MDC" || dv "default model" "$MDC"
+  else
+    dv "default model" "unpinned — the CLI picks (HUD → PROXY → MODELS)"
+  fi
+else
+  bad "model lever" "model-levers.sh not installed"
+fi
+
+echo ""
+echo "  pass=$pass  deviation=$dev  fail=$fail"
+if [ "$fail" -gt 0 ]; then echo "  ✗ something is broken — see the ✗ lines"; else echo "  ✓ no failures. ~ lines are documented macOS adaptations."; fi
+echo ""

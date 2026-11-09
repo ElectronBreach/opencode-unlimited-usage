@@ -1,0 +1,1441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>opencode unlimited</title>
+<style>
+/* ============================================================
+   opencode unlimited — HUD
+   dark glass · cyan/magenta · cyber grid · collapsible bubble
+   ============================================================ */
+:root{
+  --bg:#04070c;
+  --bg2:#070d15;
+  --cy:#22d3ee;
+  --cy-dim:rgba(34,211,238,.35);
+  --mag:#f472b6;
+  --vio:#a78bfa;
+  --ok:#34d399;
+  --warn:#fbbf24;
+  --bad:#fb7185;
+  --txt:#d7e6f2;
+  --mut:#5d7488;
+  --line:rgba(34,211,238,.14);
+  --glass:rgba(7,14,22,.82);
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;-webkit-user-select:none;user-select:none;margin:0;padding:0}
+html,body{height:100%;background:transparent;overflow:hidden}
+body{font:12px/1.45 var(--mono);color:var(--txt);-webkit-font-smoothing:antialiased}
+
+/* ---------- shell ---------- */
+#app{
+  position:relative;height:100%;width:100%;
+  background:
+    radial-gradient(120px 180px at 100% 0%,rgba(244,114,182,.10),transparent 70%),
+    radial-gradient(180px 200px at 0% 100%,rgba(34,211,238,.10),transparent 70%),
+    linear-gradient(165deg,var(--bg2),var(--bg) 60%);
+  border-radius:18px;
+  display:flex;flex-direction:column;
+  padding:11px 13px 10px;
+  opacity:1;transform:scale(1);
+  transition:opacity .16s ease,transform .16s ease;
+}
+#app::before{ /* grid */
+  content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;
+  background-image:
+    linear-gradient(var(--line) 1px,transparent 1px),
+    linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:26px 26px;
+  mask-image:radial-gradient(120% 90% at 50% 0%,#000 30%,transparent 85%);
+  opacity:.55;
+}
+#app::after{ /* scanlines + vignette */
+  content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.022) 0 1px,transparent 1px 3px);
+  box-shadow:inset 0 0 42px rgba(0,0,0,.55),inset 0 0 0 1px rgba(34,211,238,.06);
+}
+.corner{position:absolute;width:10px;height:10px;border:1px solid var(--cy);opacity:.5;pointer-events:none}
+.corner.tl{top:6px;left:6px;border-right:0;border-bottom:0}
+.corner.tr{top:6px;right:6px;border-left:0;border-bottom:0}
+.corner.bl{bottom:6px;left:6px;border-right:0;border-top:0}
+.corner.br{bottom:6px;right:6px;border-left:0;border-top:0}
+
+/* ---------- header ---------- */
+header{display:flex;align-items:center;gap:8px;cursor:grab;position:relative;z-index:2;padding-bottom:2px}
+header:active{cursor:grabbing}
+.brand{display:flex;align-items:center;gap:7px;font-weight:700;letter-spacing:.14em;font-size:10.5px;color:#eaf6ff}
+.brand .glyph{
+  width:16px;height:16px;display:grid;place-items:center;border-radius:4px;
+  background:linear-gradient(140deg,rgba(34,211,238,.25),rgba(167,139,250,.25));
+  border:1px solid rgba(34,211,238,.5);
+  box-shadow:0 0 10px rgba(34,211,238,.35);
+  font-size:9px;color:var(--cy);
+}
+.brand .dim{color:var(--mut);font-weight:400}
+.hdr-spacer{flex:1}
+.hbtn{
+  width:20px;height:20px;display:grid;place-items:center;border-radius:5px;
+  background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);
+  color:var(--mut);font-size:11px;cursor:pointer;transition:all .14s;
+}
+.hbtn:hover{color:var(--cy);border-color:var(--cy-dim);background:rgba(34,211,238,.08);box-shadow:0 0 9px rgba(34,211,238,.25)}
+.hbtn.close:hover{color:var(--bad);border-color:rgba(251,113,133,.5);background:rgba(251,113,133,.08);box-shadow:0 0 9px rgba(251,113,133,.25)}
+
+/* ---------- project ---------- */
+.project{
+  margin-top:5px;display:flex;align-items:center;gap:6px;
+  font-size:10px;color:var(--mut);letter-spacing:.03em;position:relative;z-index:2;
+}
+.project .pdot{width:5px;height:5px;border-radius:50%;background:var(--cy);box-shadow:0 0 7px var(--cy);flex:none}
+.project .pname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9fb6c8}
+
+/* ---------- hero ---------- */
+.hero{position:relative;z-index:2;margin-top:7px;padding:9px 11px 8px;border-radius:12px;
+  background:linear-gradient(160deg,rgba(34,211,238,.055),rgba(167,139,250,.03) 55%,transparent);
+  border:1px solid rgba(34,211,238,.16);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 0 22px rgba(34,211,238,.06);
+}
+.hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.label{font-size:8.5px;letter-spacing:.22em;color:var(--mut)}
+.big{
+  font-size:27px;line-height:1.05;font-weight:700;letter-spacing:-.01em;margin-top:3px;
+  color:#f2fbff;text-shadow:0 0 18px rgba(34,211,238,.45);
+  font-variant-numeric:tabular-nums;
+}
+.big .unit{font-size:12px;color:var(--cy);margin-left:2px;text-shadow:none}
+.hero-sub{display:flex;gap:10px;margin-top:5px;font-size:10px;color:var(--mut);align-items:center}
+.hero-sub b{color:#b9d4e4;font-weight:500}
+.hero-sub .cost{color:var(--ok)}
+
+/* ring */
+.ring{position:relative;width:52px;height:52px;flex:none}
+.ring svg{transform:rotate(-90deg)}
+.ring .track{stroke:rgba(255,255,255,.07)}
+.ring .fill{stroke:url(#rg);stroke-linecap:round;transition:stroke-dashoffset .5s ease}
+.ring span{position:absolute;inset:0;display:grid;place-items:center;font-size:9px;color:var(--cy);letter-spacing:.02em}
+
+/* bars */
+.bars{display:flex;gap:4px;margin-top:9px;height:4px}
+.bars .seg{flex:1;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden;position:relative}
+.bars .seg i{position:absolute;inset:0;width:0;border-radius:2px;transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.bars .in i{background:linear-gradient(90deg,var(--cy),#67e8f9);box-shadow:0 0 8px rgba(34,211,238,.7)}
+.bars .out i{background:linear-gradient(90deg,var(--vio),var(--mag));box-shadow:0 0 8px rgba(244,114,182,.6)}
+.bars .hit i{background:linear-gradient(90deg,var(--ok),#6ee7b7);box-shadow:0 0 8px rgba(52,211,153,.55)}
+.legend{display:flex;gap:9px;margin-top:5px;font-size:8.5px;letter-spacing:.08em;color:var(--mut)}
+.legend s{text-decoration:none;width:5px;height:5px;border-radius:1px;display:inline-block;margin-right:3px;vertical-align:middle}
+/* four real numbers in one line — added rows would eat the console, this does not */
+.stats{display:flex;justify-content:space-between;gap:6px;margin-top:7px;padding:5px 7px;
+  border-radius:7px;background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.055)}
+.stats div{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+.stats b{font-size:10px;font-weight:600;color:#cfe4f0;letter-spacing:.01em;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.stats span{font-size:7px;letter-spacing:.1em;color:var(--mut);white-space:nowrap}
+.stats .hi b{color:var(--cy)}
+.stats .ok b{color:var(--ok)}
+
+/* ---------- cards ---------- */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px;position:relative;z-index:2}
+.card{
+  position:relative;padding:7px 8px;border-radius:9px;overflow:hidden;
+  background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.06);
+  transition:border-color .18s,background .18s;
+}
+.card:hover{border-color:rgba(34,211,238,.28);background:rgba(34,211,238,.035)}
+.card b{display:block;font-size:11.5px;font-weight:600;color:#dff2ff;letter-spacing:.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card span{display:block;font-size:8px;letter-spacing:.16em;color:var(--mut);margin-top:2px}
+.card.cy b{color:#a5f3fc}
+.card.vi b{color:#c4b5fd}
+
+/* ---------- health ---------- */
+/* the row is a flex item in a fixed-height column: without flex:0 0 auto it
+   shrinks to a few pixels whenever the console grows, and the chips get sliced
+   in half. refusal to shrink is the whole fix. */
+.health{display:flex;flex-wrap:nowrap;gap:5px;margin-top:7px;position:relative;z-index:2;
+  flex:0 0 auto;min-height:18px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.health::-webkit-scrollbar{display:none}
+.health .chip{flex:0 0 auto}
+.chip.pointer{cursor:pointer}
+.chip{
+  display:flex;align-items:center;gap:4px;padding:3px 6px;border-radius:20px;
+  font-size:8.5px;letter-spacing:.09em;color:var(--mut);
+  background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.06);
+}
+.chip i{width:5px;height:5px;border-radius:50%;background:var(--mut);flex:none}
+.chip.ok{color:#a7f3d0;border-color:rgba(52,211,153,.25);background:rgba(52,211,153,.06)}
+.chip.ok i{background:var(--ok);box-shadow:0 0 7px var(--ok);animation:pulse 2.4s infinite}
+.chip.bad{color:#fecdd3;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.07)}
+.chip.bad i{background:var(--bad);box-shadow:0 0 7px var(--bad)}
+.chip.warn{color:#fde68a;border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.06)}
+.chip.warn i{background:var(--warn);box-shadow:0 0 7px var(--warn)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ---------- spark ---------- */
+.spark{margin-top:8px;position:relative;z-index:2;border-radius:9px;border:1px solid rgba(255,255,255,.05);
+  background:rgba(255,255,255,.015);padding:5px 7px 2px}
+.spark-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;white-space:nowrap;font-size:8px;letter-spacing:.16em;color:var(--mut);margin-bottom:3px}
+.spark-top b{font-weight:600;color:rgba(244,114,182,.85);letter-spacing:0;white-space:nowrap}
+.spark canvas{display:block;width:100%;height:40px}
+
+/* ---------- actions ---------- */
+.actions{display:flex;gap:7px;margin-top:9px;position:relative;z-index:2}
+
+/* ---------- api key pool ---------- */
+.keys{
+  margin-top:8px;padding:6px 8px;border-radius:11px;
+  border:1px solid rgba(167,139,250,.18);background:rgba(7,14,22,.55);
+  position:relative;z-index:2;
+}
+.keys .kh{display:flex;align-items:center;gap:7px;font-size:8px;letter-spacing:.16em;color:var(--mut)}
+.keys .kh b{color:#a5f3fc;font-size:9.5px;letter-spacing:.06em}
+.keys .klive{
+  margin-left:auto;display:flex;align-items:center;gap:5px;min-width:0;
+  color:#c4b5fd;letter-spacing:.02em;font-size:9px;text-transform:none;
+}
+.keys .klive i{
+  width:5px;height:5px;border-radius:50%;flex:0 0 auto;
+  background:var(--ok);box-shadow:0 0 6px var(--ok);
+}
+.keys .klive i.bad{background:var(--bad);box-shadow:0 0 6px var(--bad)}
+.keys .klive i.warn{background:var(--warn);box-shadow:0 0 6px var(--warn)}
+.keys .klive span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.keys .kh .kt{color:#8fa7b9}
+
+/* one label style for every card group, so the panel reads top to bottom */
+.seclabel{
+  display:flex;align-items:center;gap:7px;margin:8px 0 4px;
+  font-size:7.5px;letter-spacing:.2em;color:#5d7486;font-weight:600;
+}
+.seclabel i{flex:1;height:1px;background:linear-gradient(90deg,rgba(93,116,134,.28),transparent)}
+.keys .kb{display:flex;gap:5px;margin-top:6px}
+.keys .kr{display:flex;gap:5px;margin-top:5px}
+.keys .kr .act{flex:1 1 0;min-width:0}
+.keys input{
+  flex:1;min-width:0;background:rgba(0,0,0,.35);border:1px solid var(--line);
+  border-radius:7px;color:var(--txt);font:9.5px var(--mono);padding:4px 6px;outline:none;
+  -webkit-user-select:text;user-select:text;
+}
+.keys input:focus{border-color:rgba(34,211,238,.45)}
+.keys input::placeholder{color:#3f5464}
+.act.mini{
+  height:22px;padding:0 9px;font-size:8px;letter-spacing:.09em;border-radius:7px;
+  flex:0 0 auto;clip-path:none;box-shadow:none;font-weight:700;white-space:nowrap;
+}
+.act.mini:hover{box-shadow:none}
+.act.mini.key{
+  background:rgba(167,139,250,.12);color:#c4b5fd;border:1px solid rgba(167,139,250,.38);
+}
+.act.mini.key:hover{background:rgba(167,139,250,.2);box-shadow:none}
+.act.mini.ghost2{
+  background:rgba(34,211,238,.06);color:#7dd3e8;border:1px solid rgba(34,211,238,.25);
+}
+.act.mini.ghost2:hover{background:rgba(34,211,238,.14);box-shadow:none}
+.act.mini.ghost3{
+  background:rgba(52,211,153,.07);color:#6ee7b7;border:1px solid rgba(52,211,153,.28);
+}
+.act.mini.ghost3:hover{background:rgba(52,211,153,.16);box-shadow:none}
+.act.mini.del{
+  background:rgba(248,113,113,.07);color:#fca5a5;border:1px solid rgba(248,113,113,.3);
+}
+.act.mini.del:hover{background:rgba(248,113,113,.16);box-shadow:none}
+.act.mini.del.armed{
+  background:rgba(248,113,113,.9);color:#1a0606;border-color:#fca5a5;
+  animation:armpulse .9s ease-in-out infinite alternate;
+}
+@keyframes armpulse{from{opacity:.85}to{opacity:1}}
+.act.mini:disabled{opacity:.4;filter:none}
+button.act{
+  position:relative;flex:1;height:34px;border:0;cursor:pointer;font-family:var(--mono);
+  font-size:10.5px;font-weight:700;letter-spacing:.18em;color:#031018;
+  background:linear-gradient(135deg,#22d3ee,#67e8f9);
+  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);
+  display:flex;align-items:center;justify-content:center;gap:7px;
+  transition:filter .16s,transform .06s,box-shadow .16s;
+  box-shadow:0 0 16px rgba(34,211,238,.3);
+}
+button.act:hover{filter:brightness(1.12);box-shadow:0 0 24px rgba(34,211,238,.5)}
+button.act:active{transform:translateY(1px)}
+button.act:disabled{filter:grayscale(.7) brightness(.6);cursor:default;box-shadow:none}
+button.act .dot{width:6px;height:6px;border-radius:50%;background:#031018;opacity:.7}
+button.act.ghost{
+  flex:0 0 96px;color:var(--cy);background:rgba(34,211,238,.07);
+  border:1px solid rgba(34,211,238,.35);box-shadow:none;
+}
+button.act.ghost:hover{background:rgba(34,211,238,.14);box-shadow:0 0 16px rgba(34,211,238,.2)}
+button.act.ghost:disabled{color:var(--mut);border-color:rgba(255,255,255,.08);background:transparent}
+.spin{width:11px;height:11px;border-radius:50%;border:1.5px solid rgba(3,16,24,.3);border-top-color:#031018;
+  animation:sp .7s linear infinite;display:none}
+button.act.busy .spin{display:block}
+button.act.busy .dot{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ---------- tabs ---------- */
+/* the panel stopped growing the day the cards moved into tabs. identity,
+   keys and stats share one fixed-height pane, so adding a card later costs
+   a row inside a pane instead of another 90px of window, and the console
+   below never loses its height to it. */
+.tabs{display:flex;gap:4px;margin-top:7px;position:relative;z-index:2;
+  background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.055);
+  border-radius:9px;padding:3px}
+.tab{flex:1;height:20px;border:0;border-radius:6px;background:transparent;cursor:pointer;
+  font:700 8px var(--mono);letter-spacing:.14em;color:#6b8497;
+  transition:color .15s,background .15s;display:flex;align-items:center;justify-content:center;gap:3px}
+.tab:hover{color:#a9c6d8}
+.tab.on{background:rgba(34,211,238,.12);color:#bff3ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.28)}
+.tab b{font-weight:600;color:rgba(167,139,250,.9)}
+.tab i{width:4px;height:4px;border-radius:50%;background:var(--bad);display:none}
+.tab.alert i{display:inline-block;box-shadow:0 0 5px var(--bad)}
+.panes{position:relative;z-index:2;margin-top:6px;height:118px;flex:0 0 auto;overflow:hidden}
+.pane{display:none;height:100%;overflow-y:auto;overflow-x:hidden;padding-right:1px}
+.pane.on{display:block}
+.pane::-webkit-scrollbar{width:3px}
+.pane::-webkit-scrollbar-thumb{background:rgba(34,211,238,.28);border-radius:2px}
+.pane .grid,.pane .keys,.pane .spark{margin-top:0}
+/* one line, because the identities pane is 114px and the cards already
+   own most of it. three rows here pushed the third one under the HOP bar. */
+.meta{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+  margin-top:6px;font-size:7.5px;letter-spacing:.1em;color:#5d7486;white-space:nowrap}
+.meta span b{color:#c8e6f5;font-weight:600;letter-spacing:.03em;margin-left:3px}
+.meta b.ok{color:var(--ok)} .meta b.bad{color:var(--bad)}
+.models{display:flex;flex-direction:column;gap:4px;margin-top:7px}
+.models .m{display:flex;align-items:center;gap:6px;font-size:8.5px;color:#9db4c6}
+.models .m i{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.06);overflow:hidden;position:relative}
+.models .m i s{position:absolute;inset:0;width:0;border-radius:2px;
+  background:linear-gradient(90deg,rgba(34,211,238,.9),rgba(167,139,250,.9));text-decoration:none}
+.models .m span{flex:0 0 auto;max-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.models .m b{flex:0 0 42px;text-align:right;font-weight:600;color:#cfe4f0}
+
+/* ---------- log ---------- */
+.log{
+  margin-top:8px;flex:1 1 auto;min-height:104px;display:flex;flex-direction:column;
+  border-radius:9px;border:1px solid rgba(255,255,255,.06);background:rgba(2,6,10,.66);
+  position:relative;z-index:2;overflow:hidden;
+  transition:border-color .2s;
+}
+.log.live{border-color:rgba(34,211,238,.3);box-shadow:inset 0 0 26px rgba(34,211,238,.05)}
+.log-head{display:flex;align-items:center;justify-content:space-between;padding:4px 8px;
+  border-bottom:1px solid rgba(255,255,255,.05);font-size:8px;letter-spacing:.18em;color:var(--mut)}
+.log-head button{background:none;border:0;color:var(--mut);font:inherit;letter-spacing:.1em;cursor:pointer;font-size:8px}
+.log-head button:hover{color:var(--cy)}
+#logBody{
+  flex:1;overflow-y:auto;padding:5px 8px 6px;font-size:9.5px;line-height:1.5;
+  color:#9db4c6;white-space:pre-wrap;word-break:break-word;
+  -webkit-user-select:text;user-select:text;
+}
+#logPanel{flex:1 1 auto;min-height:96px}
+#logBody::-webkit-scrollbar{width:4px}
+#logBody::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
+#logBody .ok{color:var(--ok)}
+#logBody .bad{color:var(--bad)}
+#logBody .warn{color:var(--warn)}
+#logBody .cy{color:var(--cy)}
+.log-foot{display:flex;justify-content:space-between;padding:3px 8px;border-top:1px solid rgba(255,255,255,.04);
+  font-size:8px;letter-spacing:.1em;color:var(--mut)}
+#lastSession{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px}
+
+/* ---------- toast ---------- */
+/* ---------- proxy sheet ----------
+   the panel does not grow for this layer. every control lives on a sheet that
+   covers the panel while it is open and gets out of the way again, so the
+   tabs, the identity pane and the console keep their exact heights. */
+#sheet{position:absolute;inset:0;z-index:40;display:none;flex-direction:column;
+  padding:10px 11px 9px;gap:7px;border-radius:18px;
+  background-color:#050a11;
+  background-image:linear-gradient(170deg,rgba(10,19,30,.94),rgba(4,7,12,.97));
+  box-shadow:inset 0 0 0 1px rgba(34,211,238,.22),0 0 40px rgba(0,0,0,.65)}
+#sheet.on{display:flex}
+.sheet-head{display:flex;align-items:center;gap:6px}
+.stab{border:0;background:transparent;color:#5f778a;font:700 8px var(--mono);
+  letter-spacing:.14em;padding:3px 7px;border-radius:6px;cursor:pointer}
+.stab:hover{color:#a9c6d8}
+.stab.on{background:rgba(34,211,238,.13);color:#bff3ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.3)}
+.stab b{font-weight:600;color:rgba(167,139,250,.9);margin-left:3px}
+.sbody{display:none;flex:1 1 auto;min-height:0;flex-direction:column;gap:7px}
+.sbody.on{display:flex}
+.px-hint{margin-top:9px;padding:8px 10px;border-radius:8px;font:9px/1.6 var(--mono);
+  color:#4d6e82;letter-spacing:.03em;
+  background:rgba(34,211,238,.035);box-shadow:inset 0 0 0 1px rgba(34,211,238,.09)}
+.mx-head{display:flex;align-items:baseline;gap:7px;font:8px var(--mono);letter-spacing:.1em;color:#5d7486}
+.mx-head b{color:#c8e6f5;font-weight:600;font-size:9px;letter-spacing:.02em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sheet-head .sc{margin-left:auto;font:700 9px var(--mono);letter-spacing:.1em;color:var(--mut)}
+.sheet-head .sc.up{color:var(--ok)}
+.sx{background:none;border:0;color:var(--mut);font:inherit;cursor:pointer;font-size:11px;padding:2px 4px}
+.sx:hover{color:var(--cy)}
+.sheet-status{font:9px/1.5 var(--mono);color:var(--mut);letter-spacing:.06em;
+  border-top:1px solid rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.05);padding:4px 0}
+.sheet-status b{color:#c8e6f5;font-weight:600}
+.sheet-status .pxfix{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;color:#fbbf24}
+.sheet-status .pxfix:hover{color:#fde68a}
+.px-list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:3px}
+.px-list::-webkit-scrollbar{width:3px}
+.px-list::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
+.pxr{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;cursor:pointer;
+  background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.045);font:9px var(--mono)}
+.pxr:hover{background:rgba(34,211,238,.09)}
+.pxr.cur{background:rgba(34,211,238,.13);border-color:rgba(34,211,238,.3)}
+.pxr .pxd{width:5px;height:5px;border-radius:50%;background:var(--mut);flex:0 0 auto}
+.pxr .pxd.live{background:var(--ok);box-shadow:0 0 6px rgba(52,211,153,.7)}
+.pxr .pxd.dead{background:var(--bad)}
+.pxr b{color:var(--vio);font-weight:600;min-width:13px}
+.pxr .pxa{flex:1 1 auto;color:#a9c6d8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pxr .pxm{color:var(--mut);flex:0 0 auto}
+.pxdel{background:none;border:0;color:rgba(251,113,133,.55);font:inherit;cursor:pointer;padding:0 2px}
+.pxdel:hover{color:var(--bad)}
+.px-empty{color:var(--mut);font:9px/1.6 var(--mono);padding:10px 2px;text-align:center}
+.px-add{display:flex;gap:5px;flex:0 0 auto}
+.px-add input{flex:1 1 auto;min-width:0;height:22px;background:rgba(0,0,0,.35);
+  border:1px solid rgba(34,211,238,.18);border-radius:6px;color:var(--txt);
+  font:10px var(--mono);padding:0 7px;-webkit-user-select:text;user-select:text;outline:none}
+.px-add input:focus{border-color:rgba(34,211,238,.45)}
+.px-row{display:flex;gap:5px;flex:0 0 auto}
+.px-row .act.mini{flex:1 1 0}
+.sheet-foot{font:8px/1.5 var(--mono);letter-spacing:.08em;color:var(--mut);text-align:center;flex:0 0 auto}
+/* the chip is a 10px text run; give it a real target without moving the row */
+.meta #pxChip{cursor:pointer;padding:4px 5px;margin:-4px -5px;border-radius:5px;
+  box-shadow:inset 0 0 0 1px rgba(34,211,238,.22);color:#8fb3c6}
+.meta #pxChip:hover{background:rgba(34,211,238,.1);box-shadow:inset 0 0 0 1px rgba(34,211,238,.45)}
+.meta #pxChip:hover b{color:var(--cy)}
+.meta #pxChip b.up{color:var(--ok)}
+.meta #pxChip b.on{color:var(--cy)}
+
+#toast{
+  position:absolute;left:50%;bottom:14px;transform:translate(-50%,10px);
+  padding:5px 11px;border-radius:20px;font-size:9px;letter-spacing:.12em;
+  background:rgba(34,211,238,.14);border:1px solid rgba(34,211,238,.4);color:#c8f7ff;
+  opacity:0;pointer-events:none;transition:all .22s;z-index:60;white-space:nowrap;
+  box-shadow:0 0 18px rgba(34,211,238,.25);
+}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+
+/* ============================================================
+   collapsed — one circular bubble
+   ============================================================ */
+#bubble{
+  position:fixed;inset:0;border-radius:50%;cursor:pointer;
+  display:none;place-items:center;
+  background:radial-gradient(circle at 32% 26%,#0d1a26,#05090f 72%);
+  border:1px solid rgba(34,211,238,.45);
+  box-shadow:0 0 22px rgba(34,211,238,.35),inset 0 0 18px rgba(34,211,238,.10);
+  transition:transform .15s,box-shadow .2s,opacity .16s;
+}
+#bubble:hover{transform:scale(1.05);box-shadow:0 0 30px rgba(34,211,238,.55),inset 0 0 20px rgba(34,211,238,.16)}
+#bubble:active{transform:scale(.97)}
+#bubble .core{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;pointer-events:none}
+#bubble .cnt{font-size:13px;font-weight:700;color:#eafcff;letter-spacing:-.02em;text-shadow:0 0 12px rgba(34,211,238,.7)}
+#bubble .lbl{font-size:6.5px;letter-spacing:.2em;color:var(--mut)}
+#bubble .ringwrap{position:absolute;inset:0;pointer-events:none}
+#bubble svg{width:100%;height:100%;transform:rotate(-90deg)}
+#bubble .btrack{stroke:rgba(255,255,255,.07)}
+#bubble .bfill{stroke:var(--cy);stroke-width:2;stroke-linecap:round;filter:drop-shadow(0 0 4px rgba(34,211,238,.8));transition:stroke-dashoffset .6s}
+#bubble .bdot{
+  position:absolute;right:7px;top:8px;width:7px;height:7px;border-radius:50%;
+  background:var(--ok);box-shadow:0 0 8px var(--ok);border:1px solid #05090f;
+}
+#bubble .bdot.bad{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+#bubble .bdot.warn{background:var(--warn);box-shadow:0 0 8px var(--warn)}
+#bubble .spin2{width:14px;height:14px;border-radius:50%;border:2px solid rgba(34,211,238,.2);border-top-color:var(--cy);
+  animation:sp .8s linear infinite;display:none}
+#bubble.busy .spin2{display:block}
+#bubble.busy .cnt,#bubble.busy .lbl{display:none}
+
+body.collapsed{background:#04070c;border-radius:50%}
+body.collapsed #app{opacity:0;transform:scale(.94);pointer-events:none}
+body.collapsed #bubble{display:grid}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="corner tl"></div><div class="corner tr"></div>
+  <div class="corner bl"></div><div class="corner br"></div>
+
+  <header id="drag">
+    <div class="brand"><span class="glyph">◈</span>OLLIE<span class="dim">//</span>UNLTD</div>
+    <div class="hdr-spacer"></div>
+    <button class="hbtn" id="btnDock" title="dock to other side">⇄</button>
+    <button class="hbtn" id="btnMin" title="collapse to bubble">−</button>
+    <button class="hbtn close" id="btnClose" title="hide — reopen from the menu bar">✕</button>
+  </header>
+
+  <div class="project"><i class="pdot"></i><span class="pname" id="project">idle — no session</span></div>
+
+  <section class="hero">
+    <div class="hero-top">
+      <div>
+        <div class="label">TOKENS · IN + OUT</div>
+        <div class="big"><span id="tokTotal">0</span><span class="unit" id="tokUnit"></span></div>
+        <div class="hero-sub">
+          <span>↑<b id="tokIn">0</b></span>
+          <span>↓<b id="tokOut">0</b></span>
+          <span title="prompt cache reads — real work, billed at a fraction">⚡<b id="tokCache">0</b></span>
+          <span class="cost" id="tokCost">$0</span>
+        </div>
+      </div>
+      <div class="ring">
+        <svg width="52" height="52">
+          <defs><linearGradient id="rg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a78bfa"/>
+          </linearGradient></defs>
+          <circle class="track" cx="26" cy="26" r="22" fill="none" stroke-width="3"/>
+          <circle class="fill" id="ringFill" cx="26" cy="26" r="22" fill="none" stroke-width="3"
+                  stroke-dasharray="138.2" stroke-dashoffset="138.2"/>
+        </svg>
+        <span id="ringPct">0%</span>
+      </div>
+    </div>
+    <div class="bars">
+      <div class="seg in"><i id="barIn"></i></div>
+      <div class="seg out"><i id="barOut"></i></div>
+      <div class="seg hit"><i id="barHit"></i></div>
+    </div>
+    <div class="legend">
+      <span><s style="background:#22d3ee"></s>IN</span>
+      <span><s style="background:#a78bfa"></s>OUT</span>
+      <span><s style="background:#34d399"></s>CACHE HIT</span>
+      <span style="margin-left:auto" id="sessCount">0 sessions</span>
+    </div>
+    <div class="stats">
+      <div class="hi"><b id="sToday">0</b><span>TODAY</span></div>
+      <div><b id="sRate">—</b><span>RATE / MIN</span></div>
+      <div class="ok"><b id="sHit">0%</b><span>CACHE HIT</span></div>
+      <div><b id="sActive">0h</b><span>SESSION TIME</span></div>
+    </div>
+  </section>
+
+  <section class="health" id="health"></section>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab on" data-tab="id">IDENTITY<i></i></button>
+    <button class="tab" data-tab="keys">KEYS<b id="tabKeys"></b></button>
+    <button class="tab" data-tab="stats">STATS</button>
+  </nav>
+
+  <div class="panes">
+
+    <div class="pane on" data-pane="id">
+      <section class="grid">
+        <div class="card cy"><b id="egress">—</b><span>EGRESS · v4</span></div>
+        <div class="card vi"><b id="prefix">—</b><span>QUOTA /64</span></div>
+        <div class="card"><b id="hops">0</b><span>ROTATIONS</span></div>
+        <div class="card"><b id="device">—</b><span>DEVICE</span></div>
+      </section>
+      <div class="meta">
+        <span>BUCKET<b id="mBucket">—</b></span>
+        <span>WALLS<b id="mWalls">0</b></span>
+        <span>BURNED<b id="mBurned">0</b></span>
+        <span id="pxChip" title="proxy pool — add, test, rotate, system proxy">PROXY<b id="mProxy">—</b></span>
+      </div>
+    </div>
+
+    <div class="pane" data-pane="keys">
+      <section class="keys">
+        <div class="kh">
+          <span class="kt">API KEYS</span>
+          <b id="keyCount">0/50</b>
+          <span class="klive"><i id="keyDot"></i><span id="keyActive" title="">no key</span></span>
+        </div>
+        <div class="kb">
+          <input id="keyInput" placeholder="paste oc_sk_… key" autocomplete="off" spellcheck="false">
+          <button class="act mini" id="btnKeyAdd">ADD</button>
+        </div>
+        <div class="kr">
+          <button class="act mini key" id="btnKeyPrev" title="previous key">&#9664; PREV</button>
+          <button class="act mini key" id="btnKeyNext" title="next key">NEXT &#9654;</button>
+        </div>
+        <div class="kr">
+          <button class="act mini ghost2" id="btnKeyList" title="probe every key">CHECK</button>
+          <button class="act mini ghost3" id="btnKeyPrune" title="drop duplicates and dead keys">CLEAN</button>
+          <button class="act mini del" id="btnKeyDel" title="delete the active key">DEL</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="stats">
+      <section class="spark">
+        <div class="spark-top"><span>SESSION BURN · <b id="sparkN">—</b></span><span id="lastAge">—</span></div>
+        <canvas id="spark" width="680" height="68"></canvas>
+      </section>
+      <div class="models" id="models"></div>
+    </div>
+
+  </div>
+
+  <section class="actions">
+    <button class="act" id="btnHop"><span class="dot"></span><span class="spin"></span>HOP</button>
+    <button class="act ghost" id="btnDoctor">DOCTOR</button>
+  </section>
+
+  <section class="log" id="logPanel">
+    <div class="log-head"><span>CONSOLE</span><button id="btnClear">CLEAR</button></div>
+    <pre id="logBody"></pre>
+    <div class="log-foot"><span id="lastSession">no session yet</span><span id="clock">--:--:--</span></div>
+  </section>
+
+<!-- ============ proxy sheet =============================================
+     the panel does not grow a single pixel for the proxy layer. every
+     control lives here, on a sheet that covers the panel while it is open
+     and leaves the tabs, the console and the tokens exactly where they were.
+     ==================================================================== -->
+<div id="sheet" aria-hidden="true">
+  <div class="sheet-head">
+    <button class="stab on" data-sheet="proxy">PROXY</button>
+    <button class="stab" data-sheet="models">MODELS<b id="mxCount"></b></button>
+    <button class="stab" data-sheet="prov">PROV</button>
+    <span class="sc" id="pxHead">off</span>
+    <button class="sx" id="btnPxClose" title="close (esc)">✕</button>
+  </div>
+  <div class="sheet-status" id="pxStat">mux down · no upstreams</div>
+
+  <div class="sbody on" data-body="proxy">
+    <div class="px-list" id="pxList"><div class="px-empty">pool is empty — paste a proxy below</div></div>
+    <div class="px-add">
+      <input id="pxInput" placeholder="host:port:user:pass" autocomplete="off" spellcheck="false">
+      <button class="act mini" id="btnPxAdd">ADD</button>
+    </div>
+    <div class="px-row">
+      <button class="act mini key" id="btnPxOn" title="start the local mux">ON</button>
+      <button class="act mini del" id="btnPxOff" title="stop the mux and restore the system proxy">OFF</button>
+      <button class="act mini key" id="btnPxRot" title="switch upstream now — no restart">ROTATE ⇄</button>
+    </div>
+    <div class="px-row">
+      <button class="act mini ghost2" id="btnPxTest" title="probe every upstream through cdn-cgi/trace">TEST</button>
+      <button class="act mini ghost3" id="btnPxSys" title="route the whole machine through the mux">SYS</button>
+      <button class="act mini ghost3" id="btnPxPol" title="conn: new ip per connection · window: hold one ip">CONN</button>
+    </div>
+  </div>
+
+  <div class="sbody" data-body="models">
+    <div class="mx-head">
+      <span class="k">FREE MODEL</span>
+      <b id="mxCur">—</b>
+    </div>
+    <div class="px-list" id="mxList"><div class="px-empty">loading the catalog…</div></div>
+    <div class="px-row">
+      <button class="act mini key" id="btnMxNext" title="switch to the next free model this run has not burned">NEXT ⇄</button>
+      <button class="act mini del" id="btnMxBurn" title="mark the current model as walled">BURN</button>
+      <button class="act mini ghost3" id="btnMxReset" title="forget the burned list">RESET</button>
+    </div>
+    <div class="px-row">
+      <button class="act mini ghost2" id="btnMxRefresh" title="re-fetch the model catalog">REFRESH</button>
+      <button class="act mini ghost2" id="btnMxHop" title="also move the egress /64 — the expensive lever">HOP /64</button>
+    </div>
+  </div>
+
+  <div class="sbody" data-body="prov">
+    <div class="mx-head">
+      <span class="k">PROVIDER MODEL</span>
+      <b id="pvCur">—</b>
+    </div>
+    <div class="px-list" id="pvList"><div class="px-empty">reading ~/.config/opencode/opencode.json…</div></div>
+    <div class="px-row">
+      <button class="act mini ghost2" id="btnPvRefresh" title="re-read the provider models from the config">REFRESH</button>
+    </div>
+  </div>
+
+  <div class="sheet-foot" id="pxFoot">client → 127.0.0.1:8899 · rotation behind a fixed address</div>
+</div>
+
+
+
+</div>
+
+<div id="bubble" title="opencode unlimited — click to expand">
+  <div class="ringwrap">
+    <svg viewBox="0 0 78 78">
+      <circle class="btrack" cx="39" cy="39" r="35" fill="none" stroke-width="2"/>
+      <circle class="bfill" id="bubbleRing" cx="39" cy="39" r="35" fill="none" stroke-width="2"
+              stroke-dasharray="219.9" stroke-dashoffset="219.9"/>
+    </svg>
+  </div>
+  <div class="core"><div class="spin2"></div><div class="cnt" id="bubbleTok">0</div><div class="lbl">TOK</div></div>
+  <i class="bdot" id="bubbleDot"></i>
+</div>
+
+<div id="toast"></div>
+
+
+
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const bridge = (cmd, extra) => {
+  try { window.webkit.messageHandlers.ouc.postMessage(Object.assign({cmd}, extra || {})); } catch (e) {}
+};
+
+/* ---------- formatting ---------- */
+function compact(n){
+  n = Number(n) || 0;
+  if (n >= 1e9) return [ (n/1e9).toFixed(n/1e9 >= 10 ? 0 : 1), "B" ];
+  if (n >= 1e6) return [ (n/1e6).toFixed(n/1e6 >= 10 ? 1 : 2), "M" ];
+  if (n >= 1e3) return [ (n/1e3).toFixed(n/1e3 >= 10 ? 0 : 1), "K" ];
+  return [ String(Math.round(n)), "" ];
+}
+const fmt = (n) => { const [v,u] = compact(n); return v + u; };
+const money = (c) => "$" + (Number(c)||0).toFixed(2);
+const hrs = (s) => {
+  s = Number(s) || 0;
+  if (!s) return "0h";
+  const h = s / 3600;
+  if (h >= 10) return Math.round(h) + "h";
+  if (h >= 1) return h.toFixed(1) + "h";
+  return Math.max(1, Math.round(s / 60)) + "m";
+};
+const age = (s) => {
+  if (s < 0) return "—";
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s/60) + "m ago";
+  if (s < 86400) return Math.floor(s/3600) + "h ago";
+  return Math.floor(s/86400) + "d ago";
+};
+
+/* ---------- state ---------- */
+let S = {};
+
+function healthChip(label, state, hint, act){
+  // "idle" is neither good nor broken — the leak guard being off is the design,
+  // not a fault, and painting it yellow made healthy systems look sick.
+  const cls = state === true ? "ok" : state === "warn" ? "warn"
+            : state === "idle" ? "" : "bad";
+  const attr = act ? ` data-act="${act}"` : "";
+  const cur = act ? " pointer" : "";
+  return `<span class="chip ${cls}${cur}" id="chip${label}"${attr} title="${hint||""}"><i></i>${label}</span>`;
+}
+
+function render(d){
+  S = d;
+  window.oucLastUpdate = d.ts || 0;
+  const t = d.tokens || {};
+  const id = d.identity || {};
+  const w = d.warp || {};
+
+  const [tv, tu] = compact((t.input || 0) + (t.output || 0));
+  $("tokTotal").textContent = tv;
+  $("tokUnit").textContent = tu;
+  $("tokIn").textContent = fmt(t.input);
+  $("tokOut").textContent = fmt(t.output);
+  $("tokCache").textContent = fmt(t.cacheRead);
+  $("tokCost").textContent = money(t.cost);
+  $("sessCount").textContent = (t.sessions || 0) + " sessions"
+    + (t.subagents ? " +" + t.subagents : "");
+
+  const cache = t.cacheRead || 0, inTok = t.input || 0;
+  const hit = cache + inTok > 0 ? cache / (cache + inTok) : 0;
+  const pct = Math.round(hit * 100);
+  const circ = 2 * Math.PI * 22;
+  $("ringFill").style.strokeDashoffset = String(circ * (1 - hit));
+  $("ringPct").textContent = pct + "%";
+
+  // the four numbers that answer "what did this actually cost me to run".
+  // rate is a real delta between two snapshots, not a guess: no new tokens, no
+  // number, and it decays as the gap grows.
+  const io = (t.input || 0) + (t.output || 0);
+  const nowTs = Date.now() / 1000;
+  if (window._ratePrev) {
+    const dt = nowTs - window._ratePrev.t;
+    const dv = io - window._ratePrev.v;
+    if (dt >= 3 && dv >= 0) {
+      const inst = (dv / dt) * 60;
+      window._rate = window._rate ? window._rate * 0.55 + inst * 0.45 : inst;
+    }
+  }
+  window._ratePrev = { t: nowTs, v: io };
+  $("sToday").textContent = fmt((t.today || {}).total || 0);
+  $("sRate").textContent = window._rate > 0.5 ? fmt(window._rate) + "/m" : "—";
+  $("sHit").textContent = pct + "%";
+  $("sActive").textContent = hrs(t.activeSec);
+
+  const totalAll = (t.input||0) + (t.output||0) + cache;
+  const wIn = totalAll ? (inTok / totalAll) * 100 : 0;
+  const wOut = totalAll ? ((t.output||0) / totalAll) * 100 : 0;
+  const wHit = totalAll ? (cache / totalAll) * 100 : 0;
+  $("barIn").style.width = Math.max(1.5, wIn) + "%";
+  $("barOut").style.width = Math.max(1.5, wOut) + "%";
+  $("barHit").style.width = Math.max(1.5, wHit) + "%";
+
+  $("egress").textContent = d.egress4 || "—";
+  $("prefix").textContent = id.prefix || "—";
+  $("hops").textContent = id.hops || 0;
+
+  // the proxy chip is the whole reason the sheet is reachable in one tap: if
+  // the second egress lever is live you should see it without opening anything.
+  const px = d.proxy || {};
+  window._px = Object.assign(window._px || {}, px);
+  const chip = $("mProxy");
+  if (chip) {
+    chip.textContent = px.up ? (px.healthy || 0) + "/" + (px.pool || 0) : "off";
+    chip.className = px.up ? "up" : "";
+    $("pxChip").title = px.up
+      ? "proxy mux up · " + (px.current || "—") + " · click to manage"
+      : "proxy pool " + (px.pool || 0) + " · click to manage";
+    if (sheet && sheet.classList.contains("on")) renderSheet();
+  }
+  // the identity tab carries a dot when the current bucket is one we have
+  // already been walled on — that is the one thing you need to see without
+  // opening the tab.
+  const idTab = document.querySelector('.tab[data-tab="id"]');
+  if (idTab) idTab.classList.toggle("alert", !!id.burnt);
+  if (idTab) idTab.title = id.burnt
+    ? "this /64 is on the blacklist — hop"
+    : "bucket " + (id.bucket || id.prefix || "?") + " · fresh";
+  $("device").textContent = id.device ? id.device + "…" : "—";
+
+  // the quota key, stated plainly: which bucket we are on, whether it is one
+  // we have already been walled on, and how many have burned in total.
+  const mb = $("mBucket");
+  if (mb) {
+    mb.textContent = id.burnt ? "burnt — hop" : "fresh";
+    mb.className = id.burnt ? "bad" : "ok";
+  }
+  if ($("mWalls")) $("mWalls").textContent = String(id.bucketWalls || 0);
+  if ($("mBurned")) $("mBurned").textContent = String(id.blacklist || 0);
+
+  const chips = [
+    healthChip("WARP", w.connected ? true : false,
+               (w.mode || "") + " — click to open Cloudflare WARP", "warp"),
+    healthChip("DNS", !!d.dns, "opencode.ai resolution"),
+    healthChip("KEEPER", !!d.keeper, "root launchd"),
+    healthChip("GUARD", !!d.guard, "user launchagent"),
+    healthChip("CREDIT", !!d.credit, "~/.opencode/AGENTS.md"),
+    healthChip("LEAK",
+               /armed/.test(d.leakguard || "") ? true
+                 : (d.leakguard === "off" || !d.leakguard) ? "idle" : "warn",
+               (d.leakguard === "off" || !d.leakguard)
+                 ? "off — fail-open by design, armed only while the tunnel carries traffic"
+                 : d.leakguard)
+  ];
+  $("health").innerHTML = chips.join("");
+
+  // project
+  const p = d.context || {};
+  if (p.dir) {
+    const name = p.dir.replace(/\/+$/, "").split("/").pop() || p.dir;
+    $("project").textContent = name + (p.age >= 0 ? " · " + age(p.age) : "");
+    $("project").title = p.dir;
+  }
+
+  // sparkline
+  // recent arrives newest-first; the chart reads left to right in time order.
+  // 24 rows now, which is what this label has always claimed.
+  const burn = (t.recent || []).slice().reverse()
+    .filter(r => (r.tokens || 0) > 0).slice(-24);
+  drawSpark(burn);
+  window._burn = burn;
+
+  // top models, biggest first — the four rows the snapshot already carries.
+  const mx = (t.models || []).slice(0, 3);
+  const top = mx.reduce((m, x) => Math.max(m, x.tokens || 0), 1);
+  const modelsEl = $("models");
+  if (modelsEl) {
+    modelsEl.innerHTML = mx.length ? mx.map(x => {
+      const name = (x.name || "?").split("/").pop();
+      const pct = Math.max(3, Math.round(100 * (x.tokens || 0) / top));
+      return `<div class="m" title="${(x.name || "")} · ${fmt(x.tokens)} tokens · ${x.sessions} sessions">`
+        + `<span>${name}</span><i><s style="width:${pct}%"></s></i><b>${fmt(x.tokens)}</b></div>`;
+    }).join("") : `<div class="m"><span>no sessions yet</span></div>`;
+  }
+  $("sparkN").textContent = burn.length ? burn.length + " sessions" : "no burn yet";
+
+  // last session
+  const last = t.last;
+  if (last) {
+    const cachePct = last.cacheRead
+      ? " · " + Math.round(100 * last.cacheRead / (last.cacheRead + last.input + 1)) + "% cached"
+      : "";
+    $("lastSession").textContent = last.title + " · " + fmt(last.tokens) + " tok" + cachePct;
+    $("lastSession").title = [last.title, last.model, last.dir,
+      "in " + fmt(last.input), "out " + fmt(last.output),
+      "cache " + fmt(last.cacheRead), money(last.cost)].filter(Boolean).join(" · ");
+    $("lastAge").textContent = age(last.age);
+  }
+
+  // api key pool
+  const kk = d.apiKeys;
+  if (kk) {
+    // the pool size is not capacity — nine revoked keys are nine dead rows and
+    // nine unprobed keys are nine question marks. say which it is.
+    const liveN = (kk.live || 0), deadN = (kk.dead || 0), unkN = (kk.unknown || 0);
+    const known = liveN + deadN;
+    $("keyCount").textContent = (kk.count || 0) + "/" + (kk.cap || 50)
+      + (known ? " · " + liveN + " live" : "");
+    $("keyCount").title = deadN
+      ? deadN + " key" + (deadN === 1 ? "" : "s") + " rejected by the console"
+      : (known ? "pool size · keys the console answers" : "run CHECK to probe the pool");
+  const tk = $("tabKeys");
+  if (tk) tk.textContent = kk.count ? String(kk.count) : "";
+    const act = $("keyActive");
+    const dot = $("keyDot");
+    const st = kk.activeState || (kk.activeLive ? "live" : "unknown");
+    act.textContent = kk.active || "no key";
+    act.title = kk.active ? kk.active + "  " + (kk.activeMasked || "")
+      + (st === "dead" ? "  — rejected by the console"
+        : st === "unknown" ? "  — not probed yet" : "") : "no active key";
+    dot.className = st === "dead" ? "bad" : (st === "unknown" ? "warn" : "");
+    act.style.color = st === "dead" ? "var(--bad)" : (st === "live" ? "#c4b5fd" : "var(--mut)");
+  }
+
+  // bubble
+  const bcirc = 2 * Math.PI * 35;
+  $("bubbleRing").style.strokeDashoffset = String(bcirc * (1 - hit));
+  $("bubbleTok").textContent = fmt((t.input || 0) + (t.output || 0));
+}
+
+function drawSpark(rows){
+  const c = $("spark");
+  const ctx = c.getContext("2d");
+  const W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!rows.length) {
+    ctx.strokeStyle = "rgba(255,255,255,.07)";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, H - 1.5); ctx.lineTo(W, H - 1.5); ctx.stroke();
+    return;
+  }
+  // scale bars on real tokens only. folding the cache maximum into the peak
+  // squashed every bar to a stub, because cache reads run ~30x the token count.
+  const peak = rows.reduce((m, r) => Math.max(m, r.tokens || 0), 1);
+  const max = Math.sqrt(peak);
+  const peakCache = rows.reduce((m, r) => Math.max(m, r.cacheRead || 0), 1);
+  const n = rows.length;
+  const bw = W / n;
+  rows.forEach((r, i) => {
+    // a quiet session still gets a visible stub; without a floor the chart
+    // reads as a row of ticks and the shape is lost.
+    const rel = Math.sqrt(r.tokens || 0) / max;
+    const h = Math.max(4, (0.14 + 0.86 * rel) * (H - 10));
+    const x = i * bw;
+    const g = ctx.createLinearGradient(0, H - h, 0, H);
+    g.addColorStop(0, "rgba(34,211,238,.95)");
+    g.addColorStop(1, "rgba(34,211,238,.10)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    const w = Math.max(3, bw * 0.62);
+    const cx = x + (bw - w) / 2;
+    ctx.roundRect(cx, H - h, w, h, 1.5);
+    ctx.fill();
+    // a tick above the bar is the cache share of that session. without it a
+    // session that was 99% cache reads looks identical to one that was not.
+    const cache = r.cacheRead || 0;
+    if (cache > 0 && peakCache > 0) {
+      // its own scale, capped, so the tick says "this one was cached heavily"
+      // without competing with the token bars for height.
+      const ch = 2 + 9 * Math.sqrt(cache / peakCache);
+      ctx.fillStyle = "rgba(52,211,153,.40)";
+      ctx.beginPath();
+      ctx.roundRect(cx, H - h - ch - 2, w, ch, 1);
+      ctx.fill();
+    }
+    if (i === n - 1) {
+      ctx.fillStyle = "#f472b6";
+      ctx.beginPath();
+      ctx.arc(cx + w / 2, H - h - 2, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+}
+
+/* ---------- logs ---------- */
+function logLine(line){
+  const el = $("logBody");
+  const s = document.createElement("span");
+  let cls = "";
+  if (/^\s*(✓|==|.*FRESH IDENTITY)/.test(line) || /connected|rotated|ok\b/i.test(line)) cls = "ok";
+  else if (/^\s*(✗|error|failed|not found)/i.test(line)) cls = "bad";
+  else if (/^\s*(!|warn)/i.test(line) || /retry|unchanged/i.test(line)) cls = "warn";
+  else if (/old egress|new egress|wall detected/i.test(line)) cls = "cy";
+  if (cls) s.className = cls;
+  s.textContent = line + "\n";
+  el.appendChild(s);
+  el.scrollTop = el.scrollHeight;
+  while (el.childNodes.length > 300) el.removeChild(el.firstChild);
+}
+
+function toast(msg){
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("on");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("on"), 1600);
+}
+
+function setBusy(cmd, on){
+  const hop = $("btnHop"), doc = $("btnDoctor");
+  hop.disabled = on && cmd !== "hop" ? true : on;
+  doc.disabled = on;
+  if (cmd === "hop") hop.classList.toggle("busy", on);
+  if (cmd === "doctor") { doc.classList.toggle("busy", on); }
+  $("logPanel").classList.toggle("live", on);
+  $("bubble").classList.toggle("busy", on);
+  if (on) { $("btnHop").textContent = ""; }
+  // keep label markup intact
+  hop.innerHTML = on && cmd === "hop"
+    ? '<span class="spin" style="display:block"></span>ROTATING'
+    : '<span class="dot"></span>HOP';
+  doc.innerHTML = on && cmd === "doctor"
+    ? '<span class="spin" style="display:block"></span>SCANNING'
+    : 'DOCTOR';
+}
+
+/* ---------- native events ---------- */
+window.ouc = function(ev){
+  if (!ev || !ev.type) return;
+  if (ev.type === "log") logLine(ev.payload.line || "");
+  else if (ev.type === "busy") setBusy(ev.payload.cmd, ev.payload.on);
+  else if (ev.type === "toast") toast(ev.payload.text || "");
+  else if (ev.type === "window") {
+    document.body.classList.toggle("collapsed", !!ev.payload.collapsed);
+  }
+  else if (ev.type === "keysOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "key pool updated" : "key command failed");
+  }
+  else if (ev.type === "keysBusy") {
+    const on = !!ev.payload.on;
+    ["btnKeyAdd", "btnKeyPrev", "btnKeyNext", "btnKeyList", "btnKeyDel"].forEach(id => { $(id).disabled = on; });
+    if (on && typeof disarmDel === "function") disarmDel();
+    clearTimeout(window.oucKeyUnlock);
+    // a dead native side must never leave the pool controls greyed out
+    if (on) window.oucKeyUnlock = setTimeout(() => {
+      ["btnKeyAdd", "btnKeyPrev", "btnKeyNext", "btnKeyList", "btnKeyDel"].forEach(id => { $(id).disabled = false; });
+    }, 30000);
+  }
+  else if (ev.type === "proxyState") {
+    try {
+      const d = JSON.parse(ev.payload.json || "{}");
+      pxRows = d.upstreams || [];
+      pxSeen = true;
+      window._px = Object.assign(window._px || {}, d);
+    } catch (e) {}
+    renderSheet();
+  }
+  else if (ev.type === "proxyOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "proxy updated" : "proxy command failed");
+    bridge("proxyList");
+  }
+  else if (ev.type === "proxyBusy") {
+    const on = !!ev.payload.on;
+    ["btnPxAdd", "btnPxOn", "btnPxOff", "btnPxRot", "btnPxTest", "btnPxSys", "btnPxPol"].forEach(id => { $(id).disabled = on; });
+    clearTimeout(window.oucPxUnlock);
+    // TEST probes every upstream with its own timeout; a big pool can run
+    // long, and a wedged native process must not grey the sheet out forever.
+    if (on) window.oucPxUnlock = setTimeout(() => {
+      ["btnPxAdd", "btnPxOn", "btnPxOff", "btnPxRot", "btnPxTest", "btnPxSys", "btnPxPol"].forEach(id => { $(id).disabled = false; });
+    }, 60000);
+  }
+  else if (ev.type === "modelState") {
+    try {
+      const d = JSON.parse(ev.payload.json || "{}");
+      mxModels = d.models || [];
+      mxSeen = true;
+      window._mx = d;
+    } catch (e) {}
+    renderModels();
+    renderModelStat();
+  }
+  else if (ev.type === "modelOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "model lever updated" : "model command failed");
+    bridge("modelList");
+  }
+  else if (ev.type === "providerState") {
+    try { window._pv = JSON.parse(ev.payload.json || "{}"); } catch (e) { window._pv = {}; }
+    renderProviders(); renderProvStat();
+  }
+  else if (ev.type === "providerOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "model pinned" : "pin failed");
+    bridge("providerList");
+  }
+  else if (ev.type === "modelBusy") {
+    const on = !!ev.payload.on;
+    ["btnMxNext", "btnMxBurn", "btnMxReset", "btnMxRefresh"].forEach(id => { $(id).disabled = on; });
+  }
+};
+window.oucUpdate = function(d){ try { render(d); } catch (e) { console.log(e); } };
+
+/* ---------- controls ---------- */
+// a plain click hops; a long press asks where we are and rotates nothing.
+// the read-only answer is the one you want when a hop would be expensive.
+let hopTimer = null, hopLong = false;
+const hopBtn = $("btnHop");
+hopBtn.addEventListener("pointerdown", () => {
+  hopLong = false;
+  hopTimer = setTimeout(() => { hopLong = true; toast("where am i…"); bridge("where"); }, 550);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach(ev =>
+  hopBtn.addEventListener(ev, () => { if (hopTimer) { clearTimeout(hopTimer); hopTimer = null; } }));
+hopBtn.addEventListener("click", () => {
+  if (hopLong) { hopLong = false; return; }
+  bridge("hop");
+});
+hopBtn.title = "click: rotate · press and hold: where am i (no rotation)";
+
+// the bucket line is the same question, one tap away
+const metaRow = document.querySelector(".meta");
+if (metaRow) {
+  metaRow.style.cursor = "pointer";
+  metaRow.title = "tap for full identity — bucket, both egress families, device, blacklist";
+  metaRow.addEventListener("click", () => { toast("where am i…"); bridge("where"); });
+}
+
+/* ---------- proxy sheet ----------
+   the second egress lever, entirely on a sheet: the panel keeps its exact
+   height, the console keeps its leftover height, and every control here runs
+   scripts/proxy-pool.sh for real. nothing decorative. */
+let pxRows = [], pxSeen = false;
+const sheet = $("sheet");
+function openSheet(on){
+  sheet.classList.toggle("on", on);
+  sheet.setAttribute("aria-hidden", on ? "false" : "true");
+  if (on) { renderSheet(); bridge("proxyList"); }
+}
+$("pxChip").addEventListener("click", (e) => {
+  e.stopPropagation();          // the meta row underneath asks "where"; this asks "proxy"
+  openSheet(true);
+});
+$("btnPxClose").addEventListener("click", () => openSheet(false));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") openSheet(false); });
+
+function sheetTab(){
+  const b = document.querySelector(".stab.on");
+  return (b && b.dataset.sheet) || "proxy";
+}
+function renderSheet(){
+  const p = window._px || {};
+  $("pxHead").textContent = p.up ? "up" : "down";
+  $("pxHead").classList.toggle("up", !!p.up);
+  // the status line belongs to the visible page — a proxy poll landing while
+  // the models page is open must not repaint it with proxy text.
+  if (sheetTab() === "proxy") $("pxStat").innerHTML = (p.up
+      ? "mux up · <b>" + (p.current || "—") + "</b> · " + (p.rotations || 0) + " rotations · " + (p.served || 0) + " served"
+      : "mux down · " + (p.pool || 0) + " upstreams in the pool")
+    + " · system " + (p.system ? "<b>on</b>" : "off")
+    // the mux rotating is not the same as the CLI using it: the service is
+    // long-lived and inherits env at spawn, so say it out loud.
+    // the service inherits env from the CLI process. killing the service only
+    // helps if the CLI itself carries the proxy env, so say the true thing.
+    + (p.up && p.cli === 2 ? ' · <b class="pxfix" title="this opencode was started before the proxy — exit it and run opencode again; the lane and the shim keep every new session proxied">restart opencode</b>' : "");
+  $("pxStat").onclick = (e) => {
+    if (!e.target.classList.contains("pxfix")) return;
+    toast("restarting the service — if the hint stays, exit and run opencode again");
+    bridge("proxyCli", {});
+  };
+  $("btnPxSys").textContent = p.system ? "SYS ON" : "SYS";
+  $("btnPxPol").textContent = p.policy === "window" ? "WINDOW" : "CONN";
+  $("btnPxPol").title = p.policy === "window"
+    ? "one ip held for the window length — click for a new ip per connection"
+    : "new ip per connection — click to hold one ip for a while";
+  if (!pxSeen) return;
+  const list = $("pxList");
+  if (!pxRows.length) {
+    list.innerHTML = '<div class="px-empty">pool is empty — paste a proxy below</div>';
+    return;
+  }
+  list.innerHTML = "";
+  pxRows.forEach(r => {
+    const row = document.createElement("div");
+    row.className = "pxr" + (p.up && p.index === r.slot - 1 ? " cur" : "");
+    row.title = "click: rotate to this upstream" + (r.ip ? " · " + r.ip : "");
+    const dot = document.createElement("i");
+    dot.className = "pxd " + (r.state === "dead" ? "dead" : r.state === "live" ? "live" : "");
+    const n = document.createElement("b"); n.textContent = "#" + r.slot;
+    const a = document.createElement("span"); a.className = "pxa"; a.textContent = r.masked;
+    const m = document.createElement("span"); m.className = "pxm";
+    m.textContent = r.state === "live" ? (r.ms ? r.ms + "ms" : "live")
+                  : (r.state === "dead" ? "dead" : "—");
+    const del = document.createElement("button");
+    del.className = "pxdel"; del.textContent = "✕"; del.title = "remove #" + r.slot;
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toast("removing #" + r.slot + "…");
+      bridge("proxyRemove", { slot: String(r.slot) });
+    });
+    row.append(dot, n, a, m, del);
+    row.addEventListener("click", () => {
+      toast("rotating to #" + r.slot + "…");
+      bridge("proxyRotate", { slot: String(r.slot) });
+    });
+    list.appendChild(row);
+  });
+  // with a thin pool the list leaves a lot of dead glass. say the useful thing
+  // there instead of nothing: what the policy does and what fixes a thin pool.
+  if (pxRows.length < 3) {
+    const hint = document.createElement("div");
+    hint.className = "px-hint";
+    hint.innerHTML = p.policy === "window"
+      ? "one upstream held for a window — add more before it is exhausted"
+      : "a new upstream per connection — two or three is where rotation starts paying";
+    list.appendChild(hint);
+  }
+}
+
+$("btnPxAdd").addEventListener("click", () => {
+  const v = $("pxInput").value.trim();
+  if (!v) { toast("paste a proxy spec first"); return; }
+  toast("adding upstream…");
+  bridge("proxyAdd", { spec: v });
+  $("pxInput").value = "";
+});
+$("pxInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btnPxAdd").click(); });
+$("btnPxOn").addEventListener("click", () => { toast("starting the mux…"); bridge("proxyOn"); });
+$("btnPxOff").addEventListener("click", () => { toast("stopping the mux…"); bridge("proxyOff"); });
+$("btnPxRot").addEventListener("click", () => { toast("rotating…"); bridge("proxyRotate"); });
+$("btnPxTest").addEventListener("click", () => { toast("probing every upstream…"); bridge("proxyTest"); });
+$("btnPxSys").addEventListener("click", () => {
+  const on = !!(window._px && window._px.system);
+  toast(on ? "restoring the system proxy…" : "routing the machine through the mux…");
+  bridge("proxySys", { on: on ? "off" : "on" });
+});
+$("btnPxPol").addEventListener("click", () => {
+  const next = (window._px && window._px.policy) === "window" ? "conn" : "window";
+  toast("policy → " + next);
+  bridge("proxyPolicy", { value: next });
+});
+
+/* ---------- sheet tabs + model levers ----------
+   same sheet, second page. the free tier is per model — the client's own wall
+   text says "or switch models" — so this is the cheapest lever on the machine:
+   no tunnel, no dns window, no registration. 51 of them. */
+[...document.querySelectorAll(".stab")].forEach(b => b.addEventListener("click", () => {
+  const want = b.dataset.sheet;
+  document.querySelectorAll(".stab").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll(".sbody").forEach(x => x.classList.toggle("on", x.dataset.body === want));
+  $("pxFoot").textContent = want === "models"
+    ? "new sessions pick up the switch"
+    : want === "prov"
+      ? "models already in opencode.json — one tap, no free-tier wall"
+      : "client → 127.0.0.1:8899 · rotation behind a fixed address";
+  if (want === "models") { renderModelStat(); bridge("modelList"); }
+  else if (want === "prov") { renderProvStat(); bridge("providerList"); }
+  else renderSheet();
+}));
+
+/* ---------- provider page ----------
+   the free pool is one provider. when it is walled, the working answer is a
+   model the config already carries a key for — this lists them and pins one
+   with a tap, instead of a shell command. */
+function renderProvStat(){
+  if (sheetTab() !== "prov") return;
+  const d = window._pv || {};
+  const n = (d.providers || []).reduce((a, p) => a + (p.models || []).length, 0);
+  $("pxStat").innerHTML = n
+    ? "<b>" + n + "</b> provider models in config · current <b>" + ((d.current || "—").split("/").pop()) + "</b>"
+    : "no provider models in opencode.json";
+}
+function renderProviders(){
+  if (sheetTab() !== "prov") return;
+  const d = window._pv || {};
+  const list = $("pvList");
+  list.innerHTML = "";
+  const provs = d.providers || [];
+  const cur = $("pvCur"); if (cur) cur.textContent = (d.current || "—").split("/").pop();
+  if (!provs.length) {
+    list.innerHTML = '<div class="px-empty">no provider block in ~/.config/opencode/opencode.json</div>';
+    return;
+  }
+  provs.forEach(p => {
+    const head = document.createElement("div");
+    head.className = "mx-head";
+    head.style.margin = "6px 0 2px";
+    head.innerHTML = '<span class="k">' + (p.label || p.id) + '</span>';
+    list.appendChild(head);
+    (p.models || []).forEach(m => {
+      const row = document.createElement("div");
+      row.className = "pxr" + (d.current === p.id + "/" + m.id ? " cur" : "");
+      const n = document.createElement("b"); n.textContent = "★";
+      const a = document.createElement("span"); a.className = "pxa"; a.textContent = m.id;
+      const t = document.createElement("span"); t.className = "pxm"; t.textContent = m.ctx ? Math.round(m.ctx / 1000) + "k" : "";
+      row.title = "pin " + p.id + "/" + m.id;
+      row.append(n, a, t);
+      row.addEventListener("click", () => { toast("pinning " + m.id + "…"); bridge("providerSet", { ref: p.id + "/" + m.id }); });
+      list.appendChild(row);
+    });
+  });
+}
+$("btnPvRefresh").addEventListener("click", () => { toast("re-reading the config…"); bridge("providerList"); });
+
+// the models status line reads the same small blocks the list does, so it is
+// right before the catalog finishes loading and stays right after.
+function renderModelStat(){
+  if (sheetTab() !== "models") return;
+  const d = window._mx || {};
+  $("pxStat").innerHTML = d.free
+    ? "free tier is per model · <b>" + (d.free - (d.burned || 0)) + "</b> of " + d.free + " unburned"
+    : "free tier is per model · catalog not loaded";
+}
+
+let mxModels = [], mxSeen = false;
+function renderModels(){
+  const d = window._mx || {};
+  $("mxCur").textContent = d.current ? "opencode/" + d.current : "not pinned";
+  const mc = $("mxCount");
+  if (mc) mc.textContent = d.free ? (d.free - (d.burned || 0)) + "/" + d.free : "";
+  if (!mxSeen) return;
+  const list = $("mxList");
+  if (!mxModels.length) { list.innerHTML = '<div class="px-empty">no catalog — hit REFRESH</div>'; return; }
+  list.innerHTML = "";
+  mxModels.forEach((m, i) => {
+    const row = document.createElement("div");
+    row.className = "pxr" + (m.current ? " cur" : "");
+    row.title = m.id + (m.ctx ? " · " + Math.round(m.ctx / 1000) + "k context" : "");
+    const dot = document.createElement("i");
+    // m.dead is what the last probe said: "429" is the free wall, "400" means
+    // the console is not serving that model at all. both are worth seeing
+    // before a tap, not after.
+    dot.className = "pxd " + (m.current ? "live" : (m.dead || m.burned) ? "dead" : "");
+    const n = document.createElement("b"); n.textContent = i + 1;
+    const a = document.createElement("span"); a.className = "pxa"; a.textContent = m.id;
+    if (m.dead || m.burned) { a.style.opacity = ".55"; }
+    const c = document.createElement("span"); c.className = "pxm";
+    c.textContent = m.dead === "429" ? "wall"
+                  : m.dead === "400" ? "gone"
+                  : m.burned ? "burnt"
+                  : (m.ctx ? Math.round(m.ctx / 1000) + "k" : "");
+    row.append(dot, n, a, c);
+    row.addEventListener("click", () => {
+      toast("model → " + m.id);
+      bridge("modelSet", { id: m.id });
+    });
+    list.appendChild(row);
+  });
+}
+$("btnMxNext").addEventListener("click", () => { toast("next free model…"); bridge("modelNext"); });
+$("btnMxBurn").addEventListener("click", () => { toast("marking the model burned…"); bridge("modelBurn"); });
+$("btnMxReset").addEventListener("click", () => { toast("clearing the burn list…"); bridge("modelReset"); });
+$("btnMxRefresh").addEventListener("click", () => { toast("re-fetching the catalog…"); bridge("modelRefresh"); });
+$("btnMxHop").addEventListener("click", () => { toast("hopping the /64…"); bridge("hop"); });
+
+// api keys: add what is in the box, or rotate to the next live key. the native
+// side runs scripts/api-keys.sh, so the HUD never touches the db itself.
+$("btnKeyAdd").addEventListener("click", () => {
+  const v = $("keyInput").value.trim();
+  if (!v) { toast("paste a key first"); $("keyInput").focus(); return; }
+  $("keyInput").value = "";
+  toast("checking key…");
+  bridge("keyAdd", { key: v });
+});
+function keyRotate(dir){
+  toast(dir ? ("rotating " + dir + "…") : "rotating…");
+  bridge("keyRotate", { dir: dir || "next" });
+}
+$("btnKeyPrev").addEventListener("click", () => keyRotate("prev"));
+$("btnKeyNext").addEventListener("click", () => keyRotate("next"));
+$("btnKeyList").addEventListener("click", () => { toast("probing keys…"); bridge("keyList"); });
+$("btnKeyPrune").addEventListener("click", () => { toast("cleaning the pool…"); bridge("keyPrune"); });
+
+// deleting is the one irreversible verb in this card, so it arms first and
+// only fires on the second tap inside four seconds.
+let delTimer = null;
+function disarmDel(){
+  const b = $("btnKeyDel");
+  b.classList.remove("armed");
+  b.textContent = "DEL";
+  clearTimeout(delTimer);
+  delTimer = null;
+}
+$("btnKeyDel").addEventListener("click", () => {
+  const b = $("btnKeyDel");
+  if (!S.apiKeys || !S.apiKeys.activeId) { toast("no active key to delete"); return; }
+  if (!b.classList.contains("armed")) {
+    b.classList.add("armed");
+    b.textContent = "CONFIRM";
+    toast("tap again to delete " + (S.apiKeys.active || "the active key"));
+    delTimer = setTimeout(disarmDel, 4000);
+    return;
+  }
+  disarmDel();
+  toast("deleting " + (S.apiKeys.active || "key") + "…");
+  bridge("keyRemove", { slot: S.apiKeys.activeId });
+});
+$("keyInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("btnKeyAdd").click();
+  e.stopPropagation();
+});
+$("btnDoctor").addEventListener("click", () => bridge("doctor"));
+$("btnClear").addEventListener("click", () => { $("logBody").innerHTML = ""; });
+$("btnDock").addEventListener("click", () => bridge("dock"));
+$("btnMin").addEventListener("click", () => bridge("collapse"));
+// X puts the panel away. it is not a quit: the process stays resident, the
+// menu bar item brings it back, and the lane raises it on the next opencode
+// launch. the − button is the softer version (bubble, still on screen).
+$("btnClose").addEventListener("click", () => bridge("hide"));
+$("bubble").addEventListener("click", () => {
+  // a drag that ends on the circle is not a click — don't swallow it in expand
+  if (dragMoved) { dragMoved = false; return; }
+  bridge("expand");
+});
+$("bubble").addEventListener("dblclick", () => bridge("hop"));
+$("lastSession").addEventListener("click", () => bridge("copy"));
+// a chip is a shortcut, not decoration: WARP opens the Cloudflare WARP window
+$("health").addEventListener("click", (e) => {
+  const c = e.target.closest(".chip[data-act]");
+  if (!c) return;
+  bridge(c.dataset.act);
+});
+
+/* drag: native timer owns the motion, js only says start/stop */
+let dragging = false, dragMoved = false, dragOrigin = { x: 0, y: 0 };
+function startDrag(e){
+  if (e.button !== 0) return;
+  dragging = true;
+  dragMoved = false;
+  dragOrigin = { x: e.clientX, y: e.clientY };
+  bridge("dragStart");
+}
+document.addEventListener("pointermove", (e) => {
+  if (!dragging) return;
+  if (Math.abs(e.clientX - dragOrigin.x) > 3 || Math.abs(e.clientY - dragOrigin.y) > 3) dragMoved = true;
+});
+function stopDrag(){
+  if (!dragging) return;
+  dragging = false;
+  bridge("dragEnd");
+}
+["drag"].forEach(id => {
+  const el = $(id);
+  el.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button")) return;
+    startDrag(e);
+  });
+});
+document.addEventListener("pointerup", stopDrag);
+document.addEventListener("pointercancel", stopDrag);
+$("bubble").addEventListener("pointerdown", (e) => { startDrag(e); });
+
+/* clock */
+setInterval(() => {
+  const d = new Date();
+  $("clock").textContent = [d.getHours(), d.getMinutes(), d.getSeconds()]
+    .map(x => String(x).padStart(2, "0")).join(":");
+}, 1000);
+
+/* tabs — one pane at a time. the console lives outside them on purpose:
+   whatever you are looking at, the log is still there. */
+(function(){
+  const tabs = [...document.querySelectorAll(".tab")];
+  const panes = [...document.querySelectorAll(".pane")];
+  function showTab(name){
+    tabs.forEach(t => t.classList.toggle("on", t.dataset.tab === name));
+    panes.forEach(p => p.classList.toggle("on", p.dataset.pane === name));
+    // a canvas inside a display:none pane has no layout box, so it draws at
+    // zero size and stays blank until the next data tick. redraw on reveal.
+    if (name === "stats") { try { drawSpark(window._burn || []); } catch (e) {} }
+  }
+  tabs.forEach(t => t.addEventListener("click", () => showTab(t.dataset.tab)));
+  window.oucShowTab = showTab;
+})();
+
+/* expand on load */
+document.body.classList.remove("collapsed");
+bridge("refresh");
+</script>
+</body>
+</html>
