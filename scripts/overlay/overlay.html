@@ -583,6 +583,7 @@ body.collapsed #bubble{display:grid}
   <div class="sheet-head">
     <button class="stab on" data-sheet="proxy">PROXY</button>
     <button class="stab" data-sheet="models">MODELS<b id="mxCount"></b></button>
+    <button class="stab" data-sheet="prov">PROV</button>
     <span class="sc" id="pxHead">off</span>
     <button class="sx" id="btnPxClose" title="close (esc)">✕</button>
   </div>
@@ -620,6 +621,17 @@ body.collapsed #bubble{display:grid}
     <div class="px-row">
       <button class="act mini ghost2" id="btnMxRefresh" title="re-fetch the model catalog">REFRESH</button>
       <button class="act mini ghost2" id="btnMxHop" title="also move the egress /64 — the expensive lever">HOP /64</button>
+    </div>
+  </div>
+
+  <div class="sbody" data-body="prov">
+    <div class="mx-head">
+      <span class="k">PROVIDER MODEL</span>
+      <b id="pvCur">—</b>
+    </div>
+    <div class="px-list" id="pvList"><div class="px-empty">reading ~/.config/opencode/opencode.json…</div></div>
+    <div class="px-row">
+      <button class="act mini ghost2" id="btnPvRefresh" title="re-read the provider models from the config">REFRESH</button>
     </div>
   </div>
 
@@ -1032,6 +1044,16 @@ window.ouc = function(ev){
     toast(ev.payload.ok ? "model lever updated" : "model command failed");
     bridge("modelList");
   }
+  else if (ev.type === "providerState") {
+    try { window._pv = JSON.parse(ev.payload.json || "{}"); } catch (e) { window._pv = {}; }
+    renderProviders(); renderProvStat();
+  }
+  else if (ev.type === "providerOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "model pinned" : "pin failed");
+    bridge("providerList");
+  }
   else if (ev.type === "modelBusy") {
     const on = !!ev.payload.on;
     ["btnMxNext", "btnMxBurn", "btnMxReset", "btnMxRefresh"].forEach(id => { $(id).disabled = on; });
@@ -1188,10 +1210,57 @@ $("btnPxPol").addEventListener("click", () => {
   document.querySelectorAll(".sbody").forEach(x => x.classList.toggle("on", x.dataset.body === want));
   $("pxFoot").textContent = want === "models"
     ? "new sessions pick up the switch"
-    : "client → 127.0.0.1:8899 · rotation behind a fixed address";
+    : want === "prov"
+      ? "models already in opencode.json — one tap, no free-tier wall"
+      : "client → 127.0.0.1:8899 · rotation behind a fixed address";
   if (want === "models") { renderModelStat(); bridge("modelList"); }
+  else if (want === "prov") { renderProvStat(); bridge("providerList"); }
   else renderSheet();
 }));
+
+/* ---------- provider page ----------
+   the free pool is one provider. when it is walled, the working answer is a
+   model the config already carries a key for — this lists them and pins one
+   with a tap, instead of a shell command. */
+function renderProvStat(){
+  if (sheetTab() !== "prov") return;
+  const d = window._pv || {};
+  const n = (d.providers || []).reduce((a, p) => a + (p.models || []).length, 0);
+  $("pxStat").innerHTML = n
+    ? "<b>" + n + "</b> provider models in config · current <b>" + ((d.current || "—").split("/").pop()) + "</b>"
+    : "no provider models in opencode.json";
+}
+function renderProviders(){
+  if (sheetTab() !== "prov") return;
+  const d = window._pv || {};
+  const list = $("pvList");
+  list.innerHTML = "";
+  const provs = d.providers || [];
+  const cur = $("pvCur"); if (cur) cur.textContent = (d.current || "—").split("/").pop();
+  if (!provs.length) {
+    list.innerHTML = '<div class="px-empty">no provider block in ~/.config/opencode/opencode.json</div>';
+    return;
+  }
+  provs.forEach(p => {
+    const head = document.createElement("div");
+    head.className = "mx-head";
+    head.style.margin = "6px 0 2px";
+    head.innerHTML = '<span class="k">' + (p.label || p.id) + '</span>';
+    list.appendChild(head);
+    (p.models || []).forEach(m => {
+      const row = document.createElement("div");
+      row.className = "pxr" + (d.current === p.id + "/" + m.id ? " cur" : "");
+      const n = document.createElement("b"); n.textContent = "★";
+      const a = document.createElement("span"); a.className = "pxa"; a.textContent = m.id;
+      const t = document.createElement("span"); t.className = "pxm"; t.textContent = m.ctx ? Math.round(m.ctx / 1000) + "k" : "";
+      row.title = "pin " + p.id + "/" + m.id;
+      row.append(n, a, t);
+      row.addEventListener("click", () => { toast("pinning " + m.id + "…"); bridge("providerSet", { ref: p.id + "/" + m.id }); });
+      list.appendChild(row);
+    });
+  });
+}
+$("btnPvRefresh").addEventListener("click", () => { toast("re-reading the config…"); bridge("providerList"); });
 
 // the models status line reads the same small blocks the list does, so it is
 // right before the catalog finishes loading and stays right after.

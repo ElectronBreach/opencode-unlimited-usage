@@ -3,6 +3,22 @@
 All notable changes to the macOS port. Versioned by the `VERSION` file; the
 Linux upstream has its own history.
 
+## 2.5.2 — 2026-11-09
+
+### PROV — a third page on the same sheet
+
+The free pool is one provider. When it is walled, the working answer is a model
+the config already carries a key for, and that used to be a shell command.
+`PROV` lists every provider block in `~/.config/opencode/opencode.json` with its
+models and context size, marks the pinned one, and pins another with one tap.
+
+- `model-levers providers json` is the backend: config only, no network
+- `PROVIDER MODEL` header shows the current pin, `REFRESH` re-reads the file
+- the sheet still has exactly one height; the panel did not grow
+
+Verified: 9 river models listed, `DeepSeek-V4.1-Flash-1017` highlighted, a tap
+on the first row pinned `river/GLM-5.3`, and the pin was restored after the test.
+
 ## 2.5.1 — 2026-11-09
 
 ### `zen-guard.sh wall-event` — prove the telemetry without waiting for a wall

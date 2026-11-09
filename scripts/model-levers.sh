@@ -371,6 +371,26 @@ PY
   done
 }
 
+# what the config already carries keys for: every provider block and its models.
+# the sheet's PROV page is this list, and a tap pins one.
+cmd_providers(){
+  local fmt="${1:-}"
+  python3 - "$CONF" <<'PY'
+import json,os,sys
+conf=sys.argv[1]
+try: d=json.load(open(conf))
+except Exception: d={}
+out=[]
+for pid,p in (d.get("provider") or d.get("providers") or {}).items():
+    ms=[]
+    for mid,m in (p.get("models") or {}).items():
+        ms.append({"id":mid,
+                   "ctx":((m.get("limit") or {}).get("context") or 0)})
+    out.append({"id":pid,"label":(p.get("name") or pid),"models":ms})
+print(json.dumps({"current":d.get("model") or "","providers":out},separators=(",",":")))
+PY
+}
+
 cmd_json(){
   ensure_catalog
   python3 - "$CATALOG" "$PROVIDER" "$USED" "$(current_id)" <<'PY'
@@ -408,6 +428,7 @@ case "${1:-list}" in
   reset)     cmd_reset ;;
   refresh)   refresh; printf 'catalog refreshed\n' ;;
   json)      cmd_json ;;
+  providers|prov) shift; cmd_providers "${1:-}" ;;
   *)         cat >&2 <<EOF
 usage: model-levers list | current | set <id|index> | next | burn <id> | reset | json
 EOF

@@ -922,6 +922,14 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "modelBurn": modelCmd(["burn-current"])
         case "modelReset": modelCmd(["reset"])
         case "modelRefresh": modelCmd(["refresh"])
+        // ---- providers already in opencode.json. the free pool is one
+        // provider; when it is walled this is the working answer.
+        case "providerList":
+            toolCmd("model-levers.sh", ["providers", "json"], json: true, tag: "provider")
+        case "providerSet":
+            if let ref = body["ref"] as? String, !ref.isEmpty {
+                toolCmd("model-levers.sh", ["set", ref], tag: "provider")
+            }
         default: break
         }
     }
