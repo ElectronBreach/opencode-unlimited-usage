@@ -103,10 +103,20 @@ Your TUI session picked an edge whose bucket is full for that model. Close and r
 
 **Does this work on Mac / Windows?**
 The root scripts are Linux (systemd). WSL2 counts as Linux and is what I use daily.
-**macOS has its own implementation in [`mac/`](mac/)** — launchd instead of systemd,
-one rotator instead of four racing ones, a shared rotation lock, GUI parking so the
-Zero Trust enrollment page never appears, daemon revival, and unlimited rotation
-(no hourly cap). Install with `mac/install-mac.sh`. Windows: use WSL2.
+**macOS is fully supported — [`mac/`](mac/) is a complete implementation**, not a
+port: launchd agents instead of systemd units, one rotator instead of four racing
+ones, one shared rotation lock across every stack, the WARP GUI parked during
+rotation (no Zero Trust enrollment page), daemon revival for the vanished-socket
+outage, the HUD built from source with `swiftc`, and **unlimited rotation** (no
+hourly cap).
+
+```bash
+git clone https://github.com/ElectronBreach/opencode-unlimited-usage
+cd opencode-unlimited-usage
+make mac          # installs rotator + keeper + HUD
+```
+
+Windows: use WSL2.
 
 **Is it unlimited though?**
 For a single human's normal use — yes, in practice. You're not going to hit walls you can't rotate out of. Don't be a robot about it.
