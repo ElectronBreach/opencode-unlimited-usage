@@ -605,6 +605,53 @@ def resume_gui(was_up):
         run(["open", "-g", "-a", WARP_APP], timeout=15)
 
 
+GUI_HOLD = STATE / "gui-hold"
+
+
+def hold_gui_down():
+    """WARP is a login item, so launchd resurrects the window seconds after it
+    is killed. One quit is not enough: the fresh window lands while the
+    registration is deleted, calls IpcStatus.missingRegistration() and paints
+    the enrollment page with 'Something went wrong. Please try again later.'
+    — which is exactly the screen this whole fix exists to prevent.
+
+    Keep a background watchdog killing it for the duration of the surgery, then
+    relaunch once, after the tunnel is healthy again.
+    """
+    pat = f"{WARP_APP}/Contents/MacOS/Cloudflare WARP"
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        GUI_HOLD.write_text(str(os.getpid()))
+    except OSError:
+        return None
+    cmd = (f'while [ -f "{GUI_HOLD}" ]; do '
+           f'pkill -f "{pat}" >/dev/null 2>&1; sleep 0.4; done')
+    try:
+        return subprocess.Popen(
+            ["/bin/bash", "-c", cmd],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+    except OSError:
+        return None
+
+
+def release_gui_hold(proc, was_up):
+    try:
+        GUI_HOLD.unlink()
+    except OSError:
+        pass
+    if proc is not None:
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+    resume_gui(was_up)
+
+
 def rotate(verbose=True, lock_timeout=15):
     """Burn the registration, take a new one, confirm the egress /64 moved.
 
@@ -634,7 +681,12 @@ def rotate(verbose=True, lock_timeout=15):
         raise
 
     paused = pause_keeper()
+    try:
+        GUI_HOLD.unlink()
+    except OSError:
+        pass
     gui_was_up = pause_gui()
+    gui_hold = hold_gui_down()
     try:
         if not ensure_daemon():
             raise RuntimeError("warp daemon is not running")
@@ -774,7 +826,7 @@ def rotate(verbose=True, lock_timeout=15):
         say(f"new {after_pfx or '(none)'}  egress {key}  device {did[:8]}…")
         return True, before_pfx, after_pfx
     finally:
-        resume_gui(gui_was_up)
+        release_gui_hold(gui_hold, gui_was_up)
         if paused:
             resume_keeper()
         if foreign:

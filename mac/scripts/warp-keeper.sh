@@ -274,6 +274,32 @@ unpark_gui(){
     open -g -a "$WARP_GUI_APP" >/dev/null 2>&1 || true
 }
 
+# WARP.app is a login item: launchd resurrects the window seconds after it is
+# killed, and a window that starts while the registration is deleted calls
+# IpcStatus.missingRegistration() and paints the enrollment page. Hold it down
+# for the whole surgery with a watchdog, then relaunch once, clean.
+GUI_HOLD="$GUARD_DIR/gui-hold"
+
+hold_gui_down(){
+  : > "$GUI_HOLD" 2>/dev/null || return 0
+  (
+    while [ -f "$GUI_HOLD" ]; do
+      pkill -f "$WARP_GUI_BIN" >/dev/null 2>&1 || true
+      sleep 0.4
+    done
+  ) &
+  HOLD_PID=$!
+}
+
+release_gui_hold(){
+  rm -f "$GUI_HOLD" 2>/dev/null || true
+  if [ -n "${HOLD_PID:-}" ]; then
+    wait "$HOLD_PID" 2>/dev/null || true
+    kill "$HOLD_PID" 2>/dev/null || true
+    HOLD_PID=""
+  fi
+}
+
 clear_registration(){
   local i
   for i in 1 2 3 4 5; do
@@ -298,7 +324,9 @@ ensure_connected(){
   # registration surgery — park the WARP window first, or it paints the
   # Zero Trust enrollment page and keeps it after the tunnel is healthy
   local gui_was=0
+  rm -f "$GUI_HOLD" 2>/dev/null || true
   park_gui && gui_was=1
+  hold_gui_down
 
   clear_registration
   local ok=0
@@ -308,12 +336,14 @@ ensure_connected(){
     sleep 3
   done
   if [ "$ok" != "1" ]; then
+    release_gui_hold
     unpark_gui "$gui_was"
     klog "could not take a new registration — GUI restored, tunnel left direct"
     return 1
   fi
   w connect
   sleep 5
+  release_gui_hold
   unpark_gui "$gui_was"
   connected
 }
@@ -468,7 +498,21 @@ res_fixes=0
 last_res_fix=0
 loops=0
 
+# bash reads a script once at startup: an edit to this file does nothing until
+# the daemon is restarted, which needs root. that is how a rotator can sit on
+# months-old code and keep painting the WARP enrollment page. hash the script
+# and re-exec when it changes — the keeper repairs itself from then on.
+SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
+self_hash(){ shasum -a 256 "$SELF" 2>/dev/null | awk '{print $1}'; }
+SELF_HASH="$(self_hash)"
+
 while true; do
+  cur_hash="$(self_hash)"
+  if [ -n "$cur_hash" ] && [ -n "$SELF_HASH" ] && [ "$cur_hash" != "$SELF_HASH" ]; then
+    klog "keeper script changed on disk — re-exec to load it"
+    exec /bin/bash "$SELF" "$@"
+  fi
+
   if paused; then sleep "$FAST"; continue; fi
 
   sweep_hosts
@@ -628,3 +672,4 @@ while true; do
     dns_ok || restore_dns
   fi
 done
+
