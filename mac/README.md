@@ -76,6 +76,25 @@ The overlay's rotate button runs `zen-hop.sh` from
 accept `ai.ocul.guard` and the root keeper daemon as the healthy agents, so the
 HUD chips and the doctor sheet stop reporting the canonical stack as down.
 
+## The guard stops fighting the rotator
+
+The tunnel is *supposed* to be down for a few seconds mid-rotation. The guard
+used to see that gap and "repair" it — reconnecting under the rotator mid-surgery
+and logging `tunnel down — reconnect` every time. It now checks the same global
+lock first: while any rotator holds it, `heal_tunnel()` stands down and returns
+healthy. No more fake outages in `guard.log`, no more reconnects racing a
+registration swap.
+
+## The stale lane kill switch
+
+`cmd_proxy_off` writes `~/.local/state/ocu-lane/proxy.off`; while that file
+exists the guard will not spawn the lane, so a single `ocul proxy-off` silently
+disables self-healing forever. If the lane looks permanently down, check for it:
+
+```bash
+ls ~/.local/state/ocu-lane/proxy.off && rm -f ~/.local/state/ocu-lane/proxy.off
+```
+
 ## How rotation is serialised
 
 Every rotator on the machine takes the same three locks, in this order:

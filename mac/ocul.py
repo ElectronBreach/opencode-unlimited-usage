@@ -1567,8 +1567,29 @@ def refresh_egress():
     return pfx
 
 
+def rotation_in_progress():
+    """True while any rotator holds the shared global lock. The tunnel is meant
+    to be down for a few seconds mid-surgery; the guard must not 'repair' it
+    then, or it reconnects under the rotator and logs a fake outage."""
+    try:
+        fh = open(GLOBAL_ROTATE_LOCK, "a+")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
+    finally:
+        fh.close()
+
+
 def heal_tunnel():
     if warp_connected() and iface_v6(force=True):
+        return True
+    if rotation_in_progress():
+        # a rotation owns warp-cli right now; it restores the tunnel itself
         return True
     log_throttled(GUARD_LOG, "tunnel-down", "tunnel down — reconnect", every=120)
     # a dead daemon answers every warp-cli verb with 'No such file or directory';
