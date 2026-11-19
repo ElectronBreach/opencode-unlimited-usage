@@ -61,6 +61,21 @@ relaunches the app until the socket returns, before it touches anything.
 raced a rotation. It now repairs the tunnel first and only fails if repair
 fails.
 
+## The HUD's hop button
+
+The overlay's rotate button runs `zen-hop.sh` from
+`~/.local/share/opencode-unlimited/scripts/`. That script used to `exec ouc hop`
+**first**, so every click ran the engine with no daemon revival and failed with
+`Unable to connect to the CloudflareWARP daemon`. The order is now:
+
+1. `ocul hop` (canonical — daemon revival, GUI parking, shared lock, unlimited)
+2. `ouc hop` (fallback, also hardened in `opencode-unlimited-mac`)
+3. the local shell implementation
+
+`zen-hop.sh` in this directory is the patched copy. `status.sh` and `doctor.sh`
+accept `ai.ocul.guard` and the root keeper daemon as the healthy agents, so the
+HUD chips and the doctor sheet stop reporting the canonical stack as down.
+
 ## How rotation is serialised
 
 Every rotator on the machine takes the same three locks, in this order:
