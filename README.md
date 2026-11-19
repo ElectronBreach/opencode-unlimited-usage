@@ -102,7 +102,11 @@ No traffic leaves at all — that's by design. The keeper repairs the tunnel in 
 Your TUI session picked an edge whose bucket is full for that model. Close and reopen opencode — each launch picks a fresh random edge. The guard handles the /64 side automatically.
 
 **Does this work on Mac / Windows?**
-The scripts are Linux (systemd). WSL2 counts as Linux and is what I use daily. Mac would need the keeper adapted to launchd — haven't needed it.
+The root scripts are Linux (systemd). WSL2 counts as Linux and is what I use daily.
+**macOS has its own implementation in [`mac/`](mac/)** — launchd instead of systemd,
+one rotator instead of four racing ones, a shared rotation lock, GUI parking so the
+Zero Trust enrollment page never appears, daemon revival, and unlimited rotation
+(no hourly cap). Install with `mac/install-mac.sh`. Windows: use WSL2.
 
 **Is it unlimited though?**
 For a single human's normal use — yes, in practice. You're not going to hit walls you can't rotate out of. Don't be a robot about it.
