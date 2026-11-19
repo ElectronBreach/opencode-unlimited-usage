@@ -230,6 +230,50 @@ ensure_guard(){
 
 reg_present(){ wo registration show 2>/dev/null | grep -qi "ID:"; }
 
+# ---- WARP GUI parking ------------------------------------------------------
+# The WARP window is a Flutter front-end, separate from this root daemon. If it
+# is open while the registration is deleted it drops into the first-run
+# "What would you like to do?" chooser and flashes
+#   "Something went wrong. Please try again later."
+# because every call returns IpcStatus.missingRegistration(). It keeps that
+# screen after the tunnel is healthy again. Park it around the surgery — the
+# same way the ocul rotator does from the user side.
+WARP_GUI_BIN="/Applications/Cloudflare WARP.app/Contents/MacOS/Cloudflare WARP"
+WARP_GUI_APP="/Applications/Cloudflare WARP.app"
+
+console_user(){ stat -f %Su /dev/console 2>/dev/null; }
+console_uid(){
+  local u; u=$(console_user)
+  [ -n "$u" ] && [ "$u" != "root" ] || return 1
+  id -u "$u" 2>/dev/null
+}
+
+gui_running(){
+  pgrep -f "$WARP_GUI_BIN" >/dev/null 2>&1
+}
+
+park_gui(){
+  local uid u
+  gui_running || return 1
+  uid=$(console_uid) || { pkill -f "$WARP_GUI_BIN" >/dev/null 2>&1; return 0; }
+  u=$(console_user)
+  launchctl asuser "$uid" sudo -u "$u" \
+    osascript -e 'tell application "Cloudflare WARP" to quit' >/dev/null 2>&1 || true
+  sleep 1
+  pkill -f "$WARP_GUI_BIN" >/dev/null 2>&1 || true
+  return 0
+}
+
+unpark_gui(){
+  local uid u
+  [ "${1:-0}" = "1" ] || return 0
+  uid=$(console_uid) || return 0
+  u=$(console_user)
+  sleep 1
+  launchctl asuser "$uid" sudo -u "$u" \
+    open -g -a "$WARP_GUI_APP" >/dev/null 2>&1 || true
+}
+
 clear_registration(){
   local i
   for i in 1 2 3 4 5; do
@@ -250,6 +294,12 @@ ensure_connected(){
     wo status 2>/dev/null | head -1 | grep -q Disconnected && break
     sleep 1
   done
+
+  # registration surgery — park the WARP window first, or it paints the
+  # Zero Trust enrollment page and keeps it after the tunnel is healthy
+  local gui_was=0
+  park_gui && gui_was=1
+
   clear_registration
   local ok=0
   for i in 1 2 3 4 5; do
@@ -257,9 +307,14 @@ ensure_connected(){
     clear_registration
     sleep 3
   done
-  [ "$ok" = "1" ] || return 1
+  if [ "$ok" != "1" ]; then
+    unpark_gui "$gui_was"
+    klog "could not take a new registration — GUI restored, tunnel left direct"
+    return 1
+  fi
   w connect
   sleep 5
+  unpark_gui "$gui_was"
   connected
 }
 
