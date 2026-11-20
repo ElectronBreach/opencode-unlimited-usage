@@ -49,6 +49,42 @@ final class Panel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+// two pipes, two readers. draining them one after the other deadlocks the
+// moment the child fills the 64 KB stderr buffer: it blocks on write, never
+// closes stdout, and the stdout read never returns — the panel sits on its
+// last paint until the 12s watchdog kills a child that was only talking.
+final class PipeSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outData = Data()
+    private var errData = Data()
+    var out: Data {
+        get { lock.lock(); defer { lock.unlock() }; return outData }
+        set { lock.lock(); outData = newValue; lock.unlock() }
+    }
+    var err: Data {
+        get { lock.lock(); defer { lock.unlock() }; return errData }
+        set { lock.lock(); errData = newValue; lock.unlock() }
+    }
+}
+
+// read both ends concurrently, then let the caller reap. returns (stdout, stderr).
+func drainPipes(_ out: Pipe, _ err: Pipe) -> (Data, Data) {
+    let sink = PipeSink()
+    let group = DispatchGroup()
+    group.enter()
+    DispatchQueue.global(qos: .utility).async {
+        sink.out = (try? out.fileHandleForReading.readToEnd()) ?? Data()
+        group.leave()
+    }
+    group.enter()
+    DispatchQueue.global(qos: .utility).async {
+        sink.err = (try? err.fileHandleForReading.readToEnd()) ?? Data()
+        group.leave()
+    }
+    group.wait()
+    return (sink.out, sink.err)
+}
+
 // plain container. it used to return nil from hitTest to "let drags through",
 // which also told AppKit the whole content view was untouchable — the web view
 // inside it never received a single mouseDown, so every button was dead while
@@ -66,6 +102,16 @@ final class DragView: NSView {
 // and there is never a first click because nothing activates the app.
 final class Web: WKWebView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+// scheduledTimer installs on .default, and the run loop leaves .default while
+// the user is dragging the panel, holding a menu, or resizing. every timer in
+// here exists to keep the panel honest, so none of them may stop when a hand is
+// on the window — .common keeps them ticking through tracking modes.
+func commonTimer(_ interval: TimeInterval, _ body: @escaping (Timer) -> Void) -> Timer {
+    let t = Timer(timeInterval: interval, repeats: true, block: body)
+    RunLoop.main.add(t, forMode: .common)
+    return t
 }
 
 final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
@@ -107,6 +153,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     var tickCount = 0
     var brainPoll: Timer?
     var brainSig = ""
+    // signature of the last brain.json parse (mtime:size). the guard rewrites
+    // that file every six seconds and this timer fires three times a second,
+    // so unchanged bytes must cost a stat and nothing else.
+    var brainStamp = ""
+    var brainSeenAt: TimeInterval = 0
     // true while the guard is publishing a fresh document. when it is, the
     // shell probe is insurance rather than the source, so it runs at half rate.
     var brainLive = false
@@ -180,7 +231,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 self?.reclampForScreen()
             }
 
-        poll = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+        poll = commonTimer(2.0) { _ in
             // nobody is looking at a hidden panel. the session watcher still runs
             // every tick; the status probe drops to every fourth (8s), which is
             // 1/4 the process spawns and still instant to the eye on show.
@@ -211,11 +262,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         // 0.35s: a file read, not a fork. refresh() is only called when the
         // sequence actually moved, so this adds latency-free reaction without
         // adding a single extra status.sh run.
-        brainPoll = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
+        brainPoll = commonTimer(0.35) { _ in
             self.brainTick()
         }
         seedCommandCursor()
-        cmdWatch = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { _ in
+        cmdWatch = commonTimer(0.6) { _ in
             self.watchCommandFile()
         }
         refresh(force: true)
@@ -852,7 +903,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         dragStartMouse = NSEvent.mouseLocation
         dragStartOrigin = window.frame.origin
         dragTimer?.invalidate()
-        dragTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 90.0, repeats: true) { _ in
+        dragTimer = commonTimer(1.0 / 90.0) { _ in
             let m = NSEvent.mouseLocation
             var f = self.window.frame
             f.origin = NSPoint(x: self.dragStartOrigin.x + (m.x - self.dragStartMouse.x),
@@ -995,9 +1046,33 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // costs one small file read and no repaint at all.
     func brainTick() {
         let f = guardDir.appendingPathComponent("brain.json")
+        // the guard rewrites this file every six seconds and this timer fires
+        // three times a second. parsing unchanged bytes was 15 wasted reads a
+        // minute on the main thread; a stat is nanoseconds, so sign the file
+        // first and only pay for the parse when the signature moves.
+        let stamp: String
+        if let a = try? FileManager.default.attributesOfItem(atPath: f.path),
+           let m = a[.modificationDate] as? Date,
+           let s = a[.size] as? Int {
+            stamp = "\(Int(m.timeIntervalSince1970 * 1000)):\(s)"
+        } else {
+            stamp = "gone"
+        }
+        if stamp == brainStamp {
+            // unchanged bytes still age: a frozen writer must read as dead
+            if brainLive, Date().timeIntervalSince1970 - brainSeenAt > 20 {
+                brainLive = false
+                brainSig = ""
+                push("brain", ["live": false])
+                refresh(force: false)
+            }
+            return
+        }
+        brainStamp = stamp
         guard let d = try? Data(contentsOf: f),
               let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
               let seq = obj["seq"] as? Int else {
+            brainSeenAt = 0
             brainLive = false
             brainSig = ""
             return
@@ -1007,6 +1082,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         let beat = obj["beat"] as? Int ?? 0
         let age = Int(Date().timeIntervalSince1970) - beat
         let fresh = age <= 20
+        if fresh { brainSeenAt = Date().timeIntervalSince1970 }
         if fresh != brainLive { brainSig = "" }
         brainLive = fresh
         let rot = (obj["rotation"] as? [String: Any])?["phase"] as? String ?? ""
@@ -1058,8 +1134,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 }
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + 12, execute: watchdog)
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let edata = epipe.fileHandleForReading.readDataToEndOfFile()
+            let (data, edata) = drainPipes(pipe, epipe)
             p.waitUntilExit()
             watchdog.cancel()
             let out = String(data: data, encoding: .utf8) ?? "{}"

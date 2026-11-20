@@ -8,6 +8,24 @@
 #   * after a rotation, verify DNS — repair it if broken
 set -u
 
+# argument handling must come before anything that can block. this script used
+# to ignore its argv entirely, so `zen-guard.sh --help` (or any wrapper that
+# passes a flag) fell straight into the watcher loop and never returned. the
+# TERM trap then swallowed `timeout`'s signal, leaving it parked for hours.
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    printf '\nusage: zen-guard.sh               run the watcher\n'
+    printf '       zen-guard.sh --where       print the live identity, rotate nothing\n'
+    printf '       zen-guard.sh --version      print the version\n'
+    exit 0 ;;
+  -V|--version) echo "zen-guard (legacy self-healer — ocul is canonical)"; exit 0 ;;
+  --where)
+    SD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -x "$SD/zen-hop.sh" ]; then exec "$SD/zen-hop.sh" --where; fi
+    echo "zen-hop.sh not found next to zen-guard.sh"; exit 1 ;;
+esac
+
 LOGF="$HOME/.local/share/opencode/log/opencode.log"
 DEST="$HOME/.local/share/opencode-unlimited"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +48,11 @@ fi
 
 COOLDOWN=30
 MAX_HOP_TRIES=8
+# bounded backoff when a wall is account-side (three walls inside a minute of a
+# fresh identity) and no free model answers. this is the only "park" left, and
+# it is short on purpose: rotation is unlimited, but burning fresh /64s on a
+# wall that is not about the ip just empties the pool when you need it.
+ACCOUNT_PARK=${OUC_ACCOUNT_PARK:-120}
 WALL_RE="QuotaExceeded|Free usage limit reached|usage limit reached|FreeUsageLimitError|FreeUsageLimit|rate limit exceeded|too many requests"
 
 mkdir -p "$STATE_DIR"
@@ -105,7 +128,13 @@ except Exception: print('')" 2>/dev/null)
 }
 
 resume_keeper(){ rm -f "$PAUSE" 2>/dev/null; }
-trap resume_keeper EXIT INT TERM HUP
+# a watcher that swallows TERM cannot be stopped — `timeout` and launchd both
+# send SIGTERM and expect the process to die. clean up, then exit with the
+# conventional code for the signal instead of looping forever.
+trap resume_keeper EXIT
+trap 'resume_keeper; exit 130' INT
+trap 'resume_keeper; exit 143' TERM
+trap 'resume_keeper; exit 129' HUP
 
 state_get(){ python3 -c "
 import json
@@ -383,7 +412,10 @@ _hop_body(){
   done
   w connect
   resume_keeper
-  [ "$GUI_WAS_UP" = "1" ] && { sleep 1; open -g -a "/Applications/Cloudflare WARP.app" >/dev/null 2>&1 || open -a "/Applications/Cloudflare WARP.app" >/dev/null 2>&1; }
+  # never reopen it: a WARP.app launched while the daemon is still settling
+  # reads IpcStatus, gets missingRegistration(), and paints "Something went
+  # wrong. Please try again later." The tunnel is up either way.
+  [ "$GUI_WAS_UP" = "1" ] && echo "  · WARP window left closed (open the app yourself if you want it)" >&2
   [ "$ok" = 1 ] || { tunnel_ensure || true; echo ""; return; }
   local V=""
   for i in $(seq 1 20); do
@@ -443,11 +475,8 @@ while true; do
     # warp-gui-heal exits 0 = nothing to do, 1 = healed, 2 = GUI missing.
     # logging on 0 made the guard claim a heal every 30s forever.
     case "$heal_rc" in
-      1) glog "warp gui was showing the enrollment page — relaunched the front-end (tunnel untouched)" ;;
-      2) open -g -a "/Applications/Cloudflare WARP.app" >/dev/null 2>&1 \
-           || open -a "/Applications/Cloudflare WARP.app" >/dev/null 2>&1 \
-           || true
-         glog "warp gui was not running — opened the front-end (tunnel untouched)" ;;
+      1) glog "warp gui was showing the enrollment page — left it alone (relaunching it is what painted that page)" ;;
+      2) glog "warp gui not running (tunnel unaffected) — not opening it" ;;
     esac
   fi
   rot_release
@@ -513,13 +542,18 @@ PY
   # advance the offset: the wall is still ours to act on next tick.
   if [ -f "$PAUSE" ]; then
     PPID_OWNER=$(tr -dc '0-9' < "$PAUSE" 2>/dev/null)
-    if [ -n "$PPID_OWNER" ] && ! kill -0 "$PPID_OWNER" 2>/dev/null; then
-      glog "rotation marker was orphaned (pid $PPID_OWNER gone) — clearing it"
-      rm -f "$PAUSE" 2>/dev/null
-    else
+    PAUSE_AGE=$(( $(date +%s) - $(stat -f %m "$PAUSE" 2>/dev/null || echo 0) ))
+    if [ -n "$PPID_OWNER" ] && [ "$PAUSE_AGE" -lt 1200 ] \
+       && kill -0 "$PPID_OWNER" 2>/dev/null; then
       [ "$WALL" = 1 ] && glog "wall seen while a rotation owns the tunnel — holding it for the next tick"
       continue
     fi
+    # three ways a marker stops meaning anything: the writer died, the file was
+    # written empty by a truncated printf, or the pid was reused by an unrelated
+    # process. holding on any of them wedged the guard for ever — walls piled
+    # up while it politely waited for a rotation that had already ended.
+    glog "rotation marker was orphaned (pid ${PPID_OWNER:-none}, ${PAUSE_AGE}s old) — clearing it"
+    rm -f "$PAUSE" 2>/dev/null
   fi
   state_set offset "$SIZE"
 
@@ -541,8 +575,8 @@ PY
     state_set key_pending 0
     state_set key_fails 2
     glog "the wall came back after the key swap — the key is not the lever; key rotation off for this run"
-    glog "parking rotations 15 min (pool dry and the account is not it)"
-    state_set last_hop "$(( $(date +%s) + 900 ))"
+    glog "parking rotations ${ACCOUNT_PARK}s (pool dry and the account is not it)"
+    state_set last_hop "$(( $(date +%s) + ACCOUNT_PARK ))"
     continue
   fi
 
@@ -570,24 +604,22 @@ PY
     state_set fastwalls "$FW"
     [ "$FW" = 1 ] && glog "wall ${AGE}s after a rotation — the identity is seconds old; waiting ${COOLDOWN_J}s"
     if [ "$FW" -ge 3 ]; then
-      glog "three walls inside a minute of a fresh identity — account-side, parking rotations for 15 min"
-      # no /64 fixes this, and the wall's own text names the cheaper lever:
-      # "or switch models". say it once, in the log, and let olivia press it —
-      # a stale session may not pick up a config change, so the guard never
-      # switches models behind a running client.
-      glog "the wall is not the ip right now — HUD → PROXY → MODELS, pick a free model"
-    # a wall that survives a rotation is not about the ip. if the pinned model
-    # is a free console model, try the pool once: pin the first model that
-    # actually answers, and say so. provider models are never touched.
-    if [ "$(model_provider)" = "opencode" ] && [ -x "$SELF_DIR/model-levers.sh" ]; then
-      if nm=$(bash "$SELF_DIR/model-levers.sh" fallback 6 2>/dev/null); then
-        [ -n "$nm" ] && { glog "account-side wall — switched model to $nm"; bash "$SELF_DIR/wall-log.sh" model "$nm" 2>/dev/null; }
-      else
-        glog "account-side wall and no free model answers — pin a provider model"
-      fi
-    fi
-      state_set last_hop "$((NOW + 900))"
+      glog "three walls inside a minute of a fresh identity — account-side"
       state_set fastwalls 0
+      # the wall's own text names the cheaper lever ("or switch models"). if a
+      # free model answers, switching to it IS the fix — keep watching, do not
+      # park, and do not burn a fresh /64 on a wall that is not about the ip.
+      # provider models are never touched; only a free console model is tried.
+      if [ "$(model_provider)" = "opencode" ] && [ -x "$SELF_DIR/model-levers.sh" ] \
+         && nm=$(bash "$SELF_DIR/model-levers.sh" fallback 6 2>/dev/null) && [ -n "$nm" ]; then
+        glog "account-side wall — switched model to $nm"
+        bash "$SELF_DIR/wall-log.sh" model "$nm" 2>/dev/null
+        continue
+      fi
+      # nothing answered. back off a short, bounded window so we stop spending
+      # fresh /64s on an account-side wall; rotation resumes by itself after.
+      glog "no free model answers — parking rotations ${ACCOUNT_PARK}s (the wall is account-side, not the ip)"
+      state_set last_hop "$((NOW + ACCOUNT_PARK))"
       continue
     fi
   elif [ "$AGE" -ge 300 ]; then
@@ -625,7 +657,7 @@ PY
   if [ -n "$MPROV" ] && [ "$MPROV" != "opencode" ]; then
     glog "the pinned model is on $MPROV — this wall is that provider's quota, not the /64"
     glog "switch model on the PROV page, or wait for that provider's reset — no tunnel surgery"
-    state_set last_hop "$((NOW + 600))"
+    state_set last_hop "$((NOW + ACCOUNT_PARK))"
     continue
   fi
   # the /64 is the bucket, exactly like the linux build. fall back to the v4
@@ -638,12 +670,12 @@ PY
     if [ "$(model_provider)" = "opencode" ] && [ -x "$SELF_DIR/model-levers.sh" ]; then
       if nm=$(bash "$SELF_DIR/model-levers.sh" fallback 6 2>/dev/null); then
         [ -n "$nm" ] && { glog "switched model to $nm instead of rotating"; bash "$SELF_DIR/wall-log.sh" model "$nm" 2>/dev/null; }
-        state_set last_hop "$((NOW + 600))"
+        state_set last_hop "$((NOW + ACCOUNT_PARK))"
         continue
       fi
     fi
-    glog "no free model answers either — parking rotations 10 min instead of burning the tunnel"
-    state_set last_hop "$((NOW + 600))"
+    glog "no free model answers either — parking rotations ${ACCOUNT_PARK}s instead of burning the tunnel"
+    state_set last_hop "$((NOW + ACCOUNT_PARK))"
     continue
   fi
 
@@ -718,9 +750,9 @@ print(int(d.get("count") or 0))' 2>/dev/null || echo 0)
         continue
       fi
     fi
-    glog "every try landed on a burned /64 ($COLLISIONS wasted) — pool saturated, parking rotations 15 min"
+    glog "every try landed on a burned /64 ($COLLISIONS wasted) — pool saturated, parking rotations ${ACCOUNT_PARK}s"
     glog "the /64 pool is out of fresh blocks — switch to a free model in HUD → PROXY → MODELS"
-    state_set last_hop "$((NOW + 900))"
+    state_set last_hop "$((NOW + ACCOUNT_PARK))"
     state_set pool_dry "$NOW"
     continue
   fi
@@ -729,8 +761,8 @@ print(int(d.get("count") or 0))' 2>/dev/null || echo 0)
     case "$FAILS" in ''|*[!0-9]*) FAILS=1 ;; esac
     state_set fails "$FAILS"
     if [ "$FAILS" -ge 3 ]; then
-      glog "three rotations failed in a row — cooling down for 10 minutes (account-side wall)"
-      state_set last_hop "$((NOW + 600))"
+      glog "three rotations failed in a row — cooling down ${ACCOUNT_PARK}s (account-side wall)"
+      state_set last_hop "$((NOW + ACCOUNT_PARK))"
       state_set fails 0
     else
       glog "rotation failed ($FAILS/3) — wall is likely account-side, not ip-side; keeping the tunnel"

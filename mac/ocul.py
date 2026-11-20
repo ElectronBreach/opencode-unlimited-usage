@@ -347,8 +347,60 @@ def clear_rotation_phase():
         pass
 
 
+ROTATE_MAX_AGE = 1800
+
+
 def rotation_phase():
-    return jload(ROTATE_OWNER, {}) or {}
+    """The in-flight rotation, or {} when the owner file is a fossil.
+
+    A rotator killed with SIGKILL never reaches its `finally`, so
+    rotate.owner.json outlives it. Every reader then believes the tunnel is
+    owned for ever: the HUD gates HOP behind "rotation in progress", health
+    prints "do not click HOP", the guard holds walls instead of acting on
+    them, and a second `ocul hop` defers to a process that no longer exists.
+    The pid decides — and a hard age cap decides when that pid was reused by
+    something unrelated. One check here is worth one in each of the four
+    readers, which is how they drifted apart in the first place.
+    """
+    d = jload(ROTATE_OWNER, {}) or {}
+    if not d:
+        return {}
+    try:
+        pid = int(d.get("pid") or 0)
+    except Exception:
+        pid = 0
+    try:
+        started = int(d.get("started") or 0)
+    except Exception:
+        started = 0
+
+    alive = False
+    if pid > 0:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except ProcessLookupError:
+            alive = False
+        except PermissionError:
+            # the process exists and belongs to someone else — still a live
+            # owner, and not ours to clear
+            alive = True
+        except Exception:
+            alive = False
+
+    aged = bool(started) and (now() - started) > ROTATE_MAX_AGE
+    if alive and not aged:
+        return d
+
+    try:
+        ROTATE_OWNER.unlink()
+    except OSError:
+        pass
+    log_throttled(GUARD_LOG, "rot-owner-fossil",
+                  f"cleared a dead rotation owner (pid {pid or '?'}, "
+                  f"{max(0, now() - started)}s old) — the tunnel is free",
+                  every=120)
+    return {}
 
 
 def api_park_left():
@@ -1133,8 +1185,6 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
                     else ("state" if old_bucket else "unknown"))
         if old_bucket:
             burned.add(old_bucket)
-        if old_bucket:
-            burned.add(old_bucket)
 
         say = print if verbose else (lambda *a, **k: None)
         say(f"old {old_bucket or '(unmeasured)'} ({old_from})"
@@ -1335,12 +1385,6 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
                 last_err = "no cloudflare egress after rotation"
                 time.sleep(3)
                 continue
-            if key in tried:
-                last_err = f"same bucket ({key}) — cloudflare pinned it"
-                say("   same /64 handed back — rotating again")
-                tried.add(key)
-                continue
-            tried.add(key)
             if key in burned:
                 burned_hits += 1
                 last_err = f"landed on a burned bucket ({key})"
@@ -1360,10 +1404,25 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
                         if old_bucket:
                             burned.add(old_bucket)
                         burned_hits = 0
+                        # the recycle is the whole point of this branch: a block
+                        # that just left the burn list must be acceptable again,
+                        # so it cannot be sitting in `tried` from the attempts
+                        # that burned it. forgetting both lists is what lets the
+                        # rescue actually land instead of reporting it pinned.
+                        tried = set(burned) | ({old_bucket} if old_bucket else set())
                         log(GUARD_LOG, f"recycled blacklist to {len(keep)} newest blocks")
                         say(f"   pool saturated — recycled burn list to {len(keep)} blocks")
                 time.sleep(min(WALL_BACKOFF_MAX, 2 * attempt))
                 continue
+            # a key only counts as "tried" once it is a candidate we would
+            # accept. adding it before the burn check made every burned block
+            # permanent for the rest of the turn, so the recycled list above
+            # could never hand one back.
+            if key in tried:
+                last_err = f"same bucket ({key}) — cloudflare pinned it"
+                say("   same /64 handed back — rotating again")
+                continue
+            tried.add(key)
 
             accepted = (key, after_addr, after_pfx, egress, registration_id())
             break

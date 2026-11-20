@@ -179,7 +179,8 @@ header:active{cursor:grabbing}
 .stats div{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 0}
 .stats b{font-size:var(--t10);font-weight:600;color:#cfe4f0;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
-.stats span{font-size:var(--t7);letter-spacing:.11em;color:var(--faint);white-space:nowrap}
+.stats span{font-size:var(--t7);letter-spacing:.11em;color:var(--faint);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
 .stats .hi b{color:var(--cy)}
 .stats .ok b{color:var(--ok)}
 
@@ -595,10 +596,10 @@ body.collapsed #bubble{display:grid}
       <div class="seg hit" title="cache hit"><i id="barHit"></i></div>
     </div>
     <div class="stats">
-      <div class="hi"><b id="sToday">0</b><span>TODAY</span></div>
+      <div class="hi"><b id="sToday">0</b><span>TOUCHED</span></div>
       <div><b id="sRate">—</b><span>RATE/MIN</span></div>
-      <div class="ok"><b id="sHit">0%</b><span>CACHE</span></div>
-      <div><b id="sActive">0h</b><span>SESSION</span></div>
+      <div class="ok"><b id="sHit">0%</b><span>CACHE HIT</span></div>
+      <div><b id="sActive">0h</b><span>HISTORY</span></div>
     </div>
   </section>
 
@@ -822,8 +823,13 @@ function paintBrain(p){
             : (st === "ok" || sc >= 90) ? "ok"
             : (st === "warn" || sc >= 60) ? "warn" : "bad";
   const num = (live && sc >= 0) ? " " + sc : "";
-  el.className = "chip " + cls;
-  el.innerHTML = "<i></i>BRAIN" + num;
+  const cls2 = "chip " + cls;
+  if (el.className !== cls2) el.className = cls2;
+  const html = "<i></i>BRAIN" + num;
+  if (el.dataset.sig !== html) {
+    el.dataset.sig = html;
+    el.innerHTML = html;
+  }
   const a = p.advice || "";
   el.title = !live
     ? "the rotator has not published a heartbeat — these chips are being probed live"
@@ -911,9 +917,22 @@ function render(d){
   }
   window._ratePrev = { t: nowTs, v: io };
   $("sToday").textContent = fmt((t.today || {}).total || 0);
+  // three labels that used to name a narrower thing than the number under them.
+  // TODAY was never today: the figure is the lifetime tokens of every session
+  // that did work since midnight. SESSION was never one session: it is every
+  // session's create-to-last-activity summed. CACHE was never a cache: it is a
+  // hit ratio. the value is right in all three cases, the caption was not.
+  $("sToday").title = (t.today || {}).sessions
+    ? ((t.today.sessions) + " session" + (t.today.sessions === 1 ? "" : "s")
+       + " touched since local midnight · this is their lifetime token count, not today spend")
+    : "no session has done work since local midnight";
   $("sRate").textContent = window._rate > 0.5 ? fmt(window._rate) + "/m" : "—";
+  $("sRate").title = "input+output tokens per minute, smoothed between snapshots — blank means none arrived";
   $("sHit").textContent = pct + "%";
+  $("sHit").title = "cacheRead / (cacheRead + input) over every session in the DB — a hit ratio, not a cache size";
   $("sActive").textContent = hrs(t.activeSec);
+  $("sActive").title = "every session create-to-last-activity, summed over "
+    + ((t.allSessions || t.sessions || 0)) + " rows — calendar span, not one session and not a busy clock";
 
   const totalAll = (t.input||0) + (t.output||0) + cache;
   const wIn = totalAll ? (inTok / totalAll) * 100 : 0;
@@ -935,9 +954,21 @@ function render(d){
   // say so in the tooltip instead of letting a stale address pass as current.
   const pr = d.probe || {};
   const v4 = (id.v4 || "");
-  $("egress").title = ((typeof pr.age === "number" && pr.age >= 0)
-    ? ("measured " + age(pr.age) + (pr.ok ? " · probe ok" : " · last probe failed — showing the last known exit"))
-    : "no probe has completed yet")
+  const bE = (d.brain && d.brain.egress) || {};
+  const fresh = (typeof pr.age === "number" && pr.age >= 0);
+  // freshness belongs to the address. `probe.age` is the age of the egress
+  // stamp on both paths (brain: now - egress.at), so the clock is right — but
+  // "last probe failed" fired on any empty reading while the value was "—",
+  // which claimed to be showing a last known exit that was not on screen.
+  $("egress").title = !eg
+    ? "nothing was measured — an empty reading is a fact, not a licence to show the tunnel address"
+    : (fresh
+        ? ("measured " + age(pr.age) + (pr.ok
+            ? " · fresh"
+            : " · stale — this is the last known exit, not a live one"))
+        : "age unknown — no measurement has completed")
+    + (bE.colo ? " · colo " + bE.colo : "")
+    + (bE.unstable ? " · sources disagree" : "")
     // the two families are different questions. the /64 tile beside this one is
     // the quota bucket, and it equals this address on purpose — the v6 exit
     // lives inside it. the v4 is a separate reading, and unmeasured is a fact.
@@ -946,7 +977,13 @@ function render(d){
            + (v4 ? " · last known v4 " + v4 : " · v4 not measured"))
         : "");
   $("prefix").textContent = id.prefix || "—";
+  $("prefix").title = id.prefix
+    ? ("the quota bucket — one /64 per WARP exit, and every address in that /64 draws on it"
+       + (id.burnt ? " · this one is on the blacklist" : " · this one is fresh"))
+    : "no /64 recorded yet";
   $("hops").textContent = id.hops || 0;
+  $("hops").title = (id.hops || 0) + " rotations since the record began"
+    + " · " + (id.bucketHops || 0) + " on this /64";
 
   // the proxy chip is the whole reason the sheet is reachable in one tap: if
   // the second egress lever is live you should see it without opening anything.
@@ -959,8 +996,7 @@ function render(d){
     // a one-exit mux owned by ocul is the tunnel itself, so "1/1" is true but
     // mute; the pool file being absent is not the same fact as an empty pool.
     const pxPool = px.pool || 0, pxHi = px.healthy || 0;
-    const pxWarpOnly = px.up && pxPool === 1 && px.source !== "static";
-    chip.textContent = !px.up ? "off"
+    const pxWarpOnly = px.up && pxPool === 1 && px.source !== "static";    chip.textContent = !px.up ? "off"
       : (px.stale ? "stale"
       : (pxPool === 0 ? "empty" : (pxWarpOnly ? "warp" : pxHi + "/" + pxPool)));
     chip.className = !px.up ? "" : (pxHi > 0 && !px.stale ? "up" : "warn");
@@ -973,7 +1009,16 @@ function render(d){
           : "proxy mux up · " + (pxWarpOnly ? "one upstream: the tunnel"
               : pxHi + "/" + pxPool + " exits from " + (px.source || "?"))
             + " · " + (px.current || "—")
-            + ((px.failed || 0) > 0 ? " · " + px.failed + " refused" : "")
+            + ((px.failed || 0) > 0
+                ? " · " + px.failed + " refused lifetime"
+                  + (pxRecent(px)
+                      ? " · " + Math.round(pxRecent(px).ratio * 100) + "% of "
+                        + pxRecent(px).n
+                        + (pxRecent(px).span >= 5
+                            ? " in the last " + Math.round(pxRecent(px).span) + "s"
+                            : " just measured")
+                      : "")
+                : "")
             + " · click to manage"));
     if (sheet && sheet.classList.contains("on")) renderSheet();
   }
@@ -986,6 +1031,9 @@ function render(d){
     ? "this /64 is on the blacklist — hop"
     : "bucket " + (id.bucket || id.prefix || "?") + " · fresh";
   $("device").textContent = id.device ? id.device + "…" : "—";
+  $("device").title = id.device
+    ? "device id prefix — the full id changes on every WARP re-registration, so only the stem is stable enough to read"
+    : "WARP has not reported a device id";
 
   // the quota key, stated plainly: which bucket we are on, whether it is one
   // we have already been walled on, and how many have burned in total.
@@ -993,9 +1041,17 @@ function render(d){
   if (mb) {
     mb.textContent = id.burnt ? "burnt — hop" : "fresh";
     mb.className = id.burnt ? "bad" : "ok";
+    mb.title = id.burnt
+      ? "this /64 is on the blacklist — a wall was recorded against it"
+      : "this /64 has no wall recorded against it";
   }
   if ($("mWalls")) $("mWalls").textContent = String(id.bucketWalls || 0);
+  if ($("mWalls")) $("mWalls").title = "walls recorded on this /64";
   if ($("mBurned")) $("mBurned").textContent = String(id.blacklist || 0);
+  // two counts sat side by side with no words: walls on this bucket, and how
+  // many buckets have burned in total. a reader had no way to tell them apart.
+  if ($("mBurned")) $("mBurned").title = "how many /64s are on the blacklist in total · this one "
+    + (id.burnt ? "is on it" : "is not");
   if ($("mSince")) {
     const parked = (typeof id.parked === "number" && id.parked > 0);
     const fresh = (typeof id.since === "number" && id.since >= 0);
@@ -1058,7 +1114,14 @@ function render(d){
       return `<span class="chip bad" id="chipSNAP" title="${safe}"><i></i>SNAPSHOT</span>`;
     })()
   ];
-  $("health").innerHTML = chips.join("");
+  // rebuilding eight chips every four seconds threw away their hover state and
+  // forced a layout pass on a string that had not changed. the markup is now
+  // only written when it actually differs, which is rare.
+  const chipHtml = chips.join("");
+  if (chipHtml !== window._chipSig) {
+    window._chipSig = chipHtml;
+    $("health").innerHTML = chipHtml;
+  }
   paintBrain(d.brain || {live: false});
 
   // the HOP button must not offer a rotation that is already running. the
@@ -1451,6 +1514,15 @@ function sheetTab(){
   const b = document.querySelector(".stab.on");
   return (b && b.dataset.sheet) || "proxy";
 }
+// a lifetime refusal ratio says nothing about now: 203 refusals spread over
+// 2.2k connections keeps a lane that has been clean for an hour painted red.
+// status.sh keeps a windowed delta and this reads it, so the colour follows
+// measured recent behaviour and clears itself when the upstream recovers.
+function pxRecent(p){
+  if (!p || typeof p.rate !== "number" || (p.rateN || 0) < 8) return null;
+  return {ratio: p.rate, n: p.rateN, span: p.rateSpan || 0};
+}
+
 function renderSheet(){
   const p = window._px || {};
   $("pxHead").textContent = p.up ? "up" : "down";
@@ -1461,23 +1533,42 @@ function renderSheet(){
   const pxRelay = p.up
     ? ((p.static || 0) > 0 ? (p.static + " static") : "tunnel")
     : "—";
-  if (sheetTab() === "proxy") $("pxStat").innerHTML = (p.up
+  if (sheetTab() === "proxy") {
+    const statHtml = (p.up
       ? (p.stale
           ? "mux process alive · its state is " + (p.age || "?") + "s old — not publishing"
           : "mux up · <b>" + (p.current || "—") + "</b> · relay " + pxRelay
             + " · " + (p.rotations || 0) + " rotations · " + (p.served || 0) + " served"
-            // a mux that refused 9% of its traffic is not a clean lane. the
-            // count was always in the state file and never on screen, so a
-            // broken upstream read as a working one.
+            // a mux that refused 9% of its traffic is not a clean lane, but a
+            // lifetime count is not a reading of now. the number on the left
+            // stays cumulative and neutral; the colour comes from the windowed
+            // rate status.sh measures.
             + (p.failed > 0
-                ? ' · <span class="' + ((p.failed / Math.max(1, p.served + p.failed)) > 0.05 ? "pxbad" : "") + '">'
-                  + p.failed + " failed</span>"
+                ? ' · <span class="' + (pxRecent(p) && pxRecent(p).ratio > 0.05 ? "pxbad" : "")
+                  + '" title="lifetime: ' + p.failed + " refused of " + (p.served || 0)
+                  + " served"
+                  + (pxRecent(p)
+                      ? " · " + (pxRecent(p).span >= 5
+                          ? "last " + Math.round(pxRecent(p).span) + "s: "
+                          : "just measured: ")
+                        + Math.round(pxRecent(p).ratio * 100) + "% of " + pxRecent(p).n
+                      : " · no recent window yet")
+                  + '">'
+                  + p.failed + " refused</span>"
                 : ""))
       : "mux down · no exits in service")
     + " · system " + (p.system ? "<b>on</b>" : "off")
     // the mux rotating is not the same as the CLI using it: the service is
     // long-lived and inherits env at spawn, so say it out loud.
     + (p.up && p.cli === 2 ? ' · <b class="pxfix" title="this opencode was started before the proxy — exit it and run opencode again; the lane and the shim keep every new session proxied">restart opencode</b>' : "");
+    // same rule as the chips: this line is rewritten on every snapshot while
+    // the sheet is open, and rewriting identical markup kills text selection
+    // and reflows the panel for nothing.
+    if (statHtml !== window._pxStatSig) {
+      window._pxStatSig = statHtml;
+      $("pxStat").innerHTML = statHtml;
+    }
+  }
   $("pxStat").onclick = (e) => {
     if (!e.target.classList.contains("pxfix")) return;
     toast("restarting the service — if the hint stays, exit and run opencode again");

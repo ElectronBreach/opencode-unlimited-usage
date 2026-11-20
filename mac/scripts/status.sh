@@ -58,6 +58,7 @@ now=$(date +%s)
 BRAIN="$GUARD/brain.json"
 BRAIN_OK=0
 BRAIN_SEQ=0; BRAIN_SCORE=-1; BRAIN_STATE=""; BRAIN_ADVICE=0
+BRAIN_COLO=""; BRAIN_UNSTABLE=0
 ROT_ACTIVE=0; ROT_PHASE=""; ROT_ATTEMPT=0; ROT_MAX=0
 if [ -f "$BRAIN" ]; then
   eval "$(python3 - "$BRAIN" "$now" <<'PY' 2>/dev/null
@@ -117,6 +118,12 @@ print("guard=%d" % (1 if g.get("running") else 0))
 # /bin/bash (3.2), whose parser mis-counts a lone quote inside a here-doc
 # that sits in $( ), bleeding to EOF and killing the whole snapshot.
 print("BRAIN_BEAT=%d" % n(b.get("beat")))
+# the egress address is measured, and the measurement carries its own qualifiers.
+# the HUD can name the colo it came from and say when two probes disagreed,
+# which is the difference between "this is where we exit" and "this is one
+# reading of it".
+print("BRAIN_COLO=%s" % q(eg.get("colo")))
+print("BRAIN_UNSTABLE=%d" % (1 if eg.get("unstable") else 0))
 PY
 )"
 fi
@@ -237,6 +244,7 @@ export OUC_NOW="$now" OUC_IP="${c_ip:-}" OUC_DNS="$c_dns" OUC_TUNNEL="$tunnel" \
        OUC_BRAIN_SEQ="$BRAIN_SEQ" OUC_BRAIN_SCORE="$BRAIN_SCORE" \
        OUC_BRAIN_STATE="$BRAIN_STATE" OUC_BRAIN_ADVICE="$BRAIN_ADVICE" OUC_BRAIN_OK="$BRAIN_OK" \
        OUC_BRAIN_BEAT="${BRAIN_BEAT:-0}" \
+       OUC_BRAIN_COLO="$BRAIN_COLO" OUC_BRAIN_UNSTABLE="${BRAIN_UNSTABLE:-0}" \
        OUC_ROT_ACTIVE="$ROT_ACTIVE" OUC_ROT_PHASE="$ROT_PHASE" \
        OUC_ROT_ATTEMPT="$ROT_ATTEMPT" OUC_ROT_MAX="$ROT_MAX"
 
@@ -281,7 +289,11 @@ out = {
               "seq": num(env("OUC_BRAIN_SEQ")),
               "score": num(env("OUC_BRAIN_SCORE"), -1),
               "state": env("OUC_BRAIN_STATE"),
-              "advice": num(env("OUC_BRAIN_ADVICE"))},
+              "advice": num(env("OUC_BRAIN_ADVICE")),
+              # the qualifiers that belong to the egress number in egress4.
+              # without them the panel can say an address but not how sure it is.
+              "egress": {"colo": env("OUC_BRAIN_COLO"),
+                         "unstable": env("OUC_BRAIN_UNSTABLE") == "1"}},
 }
 
 # ---- guard state
@@ -708,6 +720,56 @@ if not px["pool"] or not px["up"]:
     px["healthy"] = 0
 else:
     px["healthy"] = min(px.get("healthy") or px["pool"], px["pool"])
+
+# served is every connection the mux handled and failed is the subset it
+# refused, so the honest lifetime ratio is failed / served — the panel used to
+# divide by served + failed and doubled the denominator.
+px["ratio"] = (float(px.get("failed") or 0) / px["served"]) if px["served"] else None
+
+# a lifetime ratio is not a health signal. after hours of uptime 203 refusals
+# out of 2.2k reads as a broken lane forever, which is the same lie as
+# painting a healthy one green. keep a bounded ring of deltas between
+# snapshots and report the recent refusal rate instead: measured, windowed,
+# and it decays on its own once the upstream recovers.
+px["rate"] = None
+px["rateN"] = 0
+px["rateSpan"] = 0
+try:
+    rpath = os.path.join(os.path.dirname(PROBE), "proxy-rate.json")
+    rnow = int(time.time())
+    ring, last = [], None
+    try:
+        with open(rpath) as f:
+            cache = json.load(f)
+        ring = [e for e in (cache.get("ring") or [])
+                if isinstance(e, list) and len(e) == 3 and rnow - int(e[0]) <= 900]
+        last = cache.get("last")
+    except Exception:
+        ring, last = [], None
+    cur = {"served": int(px.get("served") or 0), "failed": int(px.get("failed") or 0)}
+    if isinstance(last, dict) and px["up"]:
+        ds = cur["served"] - int(last.get("served") or 0)
+        df = cur["failed"] - int(last.get("failed") or 0)
+        # a mux that restarted has lower counters. do not read that as traffic.
+        if ds > 0 and df >= 0 and df <= ds:
+            ring.append([rnow, ds, df])
+    ring = ring[-24:]
+    tot_s = sum(int(e[1]) for e in ring)
+    tot_f = sum(int(e[2]) for e in ring)
+    if tot_s >= 8:
+        px["rate"] = float(tot_f) / tot_s
+        px["rateN"] = tot_s
+        px["rateSpan"] = rnow - int(ring[0][0]) if ring else 0
+    if px["up"]:
+        # two snapshots can overlap: the HUD ticks while a CLI run is in
+        # flight. a shared tmp path would let one writer truncate the other
+        # mid-dump and lose the window, so the tmp name carries the pid.
+        tmp = rpath + "." + str(os.getpid()) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"ring": ring, "last": cur, "at": rnow}, f)
+        os.replace(tmp, rpath)
+except Exception:
+    pass
 out["proxy"] = px
 
 # ---- free-model lever. the wall text says "or switch models", and there are
@@ -731,47 +793,77 @@ try:
 except Exception:
     pass
 try:
-    with open(os.path.expanduser("~/.local/share/opencode-unlimited/models.json")) as f:
-        cat = json.load(f)
-    p = cat.get("opencode") or {}
-    md["free"] = sum(1 for m in (p.get("models") or {}).values()
-                     if (((m.get("cost") or {}).get("text") or {}).get("output") or {}).get("price") == 0
-                     and (((m.get("cost") or {}).get("text") or {}).get("input") or {}).get("price") == 0
-                     and m.get("type") in ("chat", "decision"))
+    # models.json is the whole provider catalogue and it is ~12 MB. parsing it
+    # took 170 ms of a 500 ms snapshot, every four seconds, to produce one
+    # integer: how many models are free. it changes when the catalogue is
+    # re-dumped, which is rare and always changes mtime+size — so the stat is
+    # the key and the parse only runs when the key moves. a missing or
+    # mismatched cache falls back to the full read, never to a guessed number.
+    cat_path = os.path.expanduser("~/.local/share/opencode-unlimited/models.json")
+    try:
+        _st = os.stat(cat_path)
+        sig = "%d:%d" % (int(_st.st_mtime), int(_st.st_size))
+    except Exception:
+        sig = ""
+    cache_p = os.path.join(os.path.dirname(PROBE), "free-models.json")
+    free = None
+    if sig:
+        try:
+            with open(cache_p) as f:
+                _c = json.load(f)
+            if _c.get("sig") == sig and isinstance(_c.get("free"), int):
+                free = _c["free"]
+                md["freeCached"] = True
+        except Exception:
+            pass
+    if free is None:
+        with open(cat_path) as f:
+            cat = json.load(f)
+        p = cat.get("opencode") or {}
+        free = sum(1 for m in (p.get("models") or {}).values()
+                   if (((m.get("cost") or {}).get("text") or {}).get("output") or {}).get("price") == 0
+                   and (((m.get("cost") or {}).get("text") or {}).get("input") or {}).get("price") == 0
+                   and m.get("type") in ("chat", "decision"))
+        md["freeCached"] = False
+        if sig:
+            try:
+                tmp = cache_p + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump({"sig": sig, "free": free, "at": int(time.time())}, f)
+                os.replace(tmp, cache_p)
+            except Exception:
+                pass
+    md["free"] = free
 except Exception:
     pass
 # the ladder's last measurement. `free` counts how many models exist; this
 # says how many actually answered — the number that decides the next prompt.
+# read once and answer both readers: the same 7 KB file was being parsed twice
+# per snapshot for the same three numbers.
 try:
     ladder = os.path.join(os.path.expanduser("~"), ".local/share/opencode-unlimited/guard/ladder.json")
     with open(ladder) as f:
         lad = json.load(f)
-    live = [r for r in (lad.get("rows") or []) if r.get("state") == "live"]
+    _rows = lad.get("rows") or []
     md["ladder"] = {
         "best": lad.get("best"),
-        "live": len(live),
-        "probed": len(lad.get("rows") or []),
+        "live": sum(1 for r in _rows if r.get("state") == "live"),
+        "probed": len(_rows),
         "age": int(time.time()) - int(lad.get("at") or 0),
+    }
+    out["ladder"] = {
+        "best": lad.get("best"),
+        "live": md["ladder"]["live"],
+        "wall": sum(1 for r in _rows if r.get("state") == "wall"),
+        "age": max(0, now - num(str(lad.get("at")), 0)),
     }
 except Exception:
     md["ladder"] = {"best": None, "live": 0, "probed": 0, "age": -1}
 out["model"] = md
 
-# the ladder is the only truthful answer to "will the next prompt work?".
-# rows are written by model-ladder.sh in one atomic replace, so a half read
-# cannot happen; a missing file means no scan has run, which is not an error.
-try:
-    with open(env("OUC_LADDER")) as f:
-        lad = json.load(f)
-    rows = lad.get("rows") or []
-    out["ladder"] = {
-        "best": lad.get("best"),
-        "live": sum(1 for r in rows if r.get("state") == "live"),
-        "wall": sum(1 for r in rows if r.get("state") == "wall"),
-        "age": max(0, now - num(str(lad.get("at")), 0)),
-    }
-except Exception:
-    pass
+# a missing ladder file means no scan has run, which is not an error. the read
+# itself lives above, next to the other ladder consumer, so one file is parsed
+# once per snapshot instead of twice for the same three numbers.
 
 print(json.dumps(out, separators=(",", ":")))
 PY

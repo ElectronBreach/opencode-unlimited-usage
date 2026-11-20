@@ -264,14 +264,40 @@ park_gui(){
   return 0
 }
 
+# the toast has ONE cause: WARP.app launched while the registration was
+# missing or the daemon was still settling. it calls IpcStatus, gets
+# missingRegistration(), and paints the enrollment page — and keeps it even
+# after the tunnel comes back. so reopening is safe the moment — and only the
+# moment — both preconditions are proven: status says Connected, and
+# `registration show` succeeds. poll for that instead of guessing a sleep.
+warp_settled(){
+  local i
+  for i in $(seq 1 24); do
+    connected && w registration show >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
 unpark_gui(){
-  local uid u
+  # reopen the window we parked for the surgery, but never before the daemon
+  # is ready. leaving it closed forced a manual launch after every rotation;
+  # opening it early is what painted the enrollment page. wait, then open.
   [ "${1:-0}" = "1" ] || return 0
-  uid=$(console_uid) || return 0
+  gui_running && return 0
+  if ! warp_settled; then
+    klog "WARP GUI not reopened — tunnel not settled after 24s (open the app once it is)"
+    return 1
+  fi
+  local uid u
+  uid=$(console_uid) || return 1
   u=$(console_user)
-  sleep 1
-  launchctl asuser "$uid" sudo -u "$u" \
-    open -g -a "$WARP_GUI_APP" >/dev/null 2>&1 || true
+  launchctl asuser "$uid" sudo -u "$u" open -a "Cloudflare WARP" >/dev/null 2>&1 || {
+    klog "WARP GUI reopen failed (open returned non-zero)"
+    return 1
+  }
+  klog "WARP GUI reopened after rotation (tunnel connected, registration present)"
+  return 0
 }
 
 # WARP.app is a login item: launchd resurrects the window seconds after it is
@@ -461,15 +487,21 @@ paused(){
   [ -f "$PAUSE" ] || return 1
   local pid age
   pid=$(tr -dc '0-9' < "$PAUSE" 2>/dev/null)
+  age=$(( $(date +%s) - $(stat -f %m "$PAUSE" 2>/dev/null || echo 0) ))
   # a pid-owned marker is valid exactly as long as that process is alive, so a
-  # slow hop can never be walked over by the keeper mid-surgery
+  # slow hop can never be walked over by the keeper mid-surgery. the age cap
+  # covers the other ending: a pid reused by an unrelated process.
   if [ -n "$pid" ]; then
+    [ "$age" -lt 1200 ] || { rm -f "$PAUSE" 2>/dev/null; return 1; }
     kill -0 "$pid" 2>/dev/null && return 0
     rm -f "$PAUSE" 2>/dev/null
     return 1
   fi
-  age=$(( $(date +%s) - $(stat -f %m "$PAUSE" 2>/dev/null || echo 0) ))
-  [ "$age" -lt 600 ]
+  # every writer here writes its own pid, so a marker with no pid is a
+  # truncated write or a crashed writer. it used to buy a 600 s pause, which
+  # meant ten minutes of no healing and no leak-guard flush for a file that
+  # held nothing. two seconds is enough for a concurrent printf to land.
+  [ "$age" -lt 2 ]
 }
 
 # ---------------------------------------------------------------- boot -------
