@@ -181,6 +181,8 @@ ocul hop              # rotate now (cheap pass first)
 ocul hop --no-cheap   # skip straight to the burn
 ocul hop --where      # read-only: bucket, exit, device, blacklist. touches nothing
 ocul hop --wait 8     # how long to wait for a peer rotation before deferring
+ocul resume           # push "continue" into the latest chat, by hand
+ocul resume ses_…     # …or into one specific chat
 ```
 
 ---

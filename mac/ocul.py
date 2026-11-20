@@ -2321,6 +2321,7 @@ def dispatch_resume(session_ids):
         argv.append(msg)
         if os.environ.get("OCUL_RESUME_DRY") == "1":
             log(GUARD_LOG, "resume dry-run: " + " ".join(argv))
+            sent += 1
             continue
         try:
             ensure_dirs()
@@ -2449,6 +2450,26 @@ def cmd_guard(args):
             time.sleep(TICK)
     finally:
         lock.release()
+
+
+def cmd_resume(args):
+    """Push 'continue' into a chat by hand, the same way a wall does.
+
+    Useful after a rotation that happened while nobody was watching, and the
+    honest way to test the resume path without waiting for a real wall:
+    `ocul resume` takes the latest chat, `ocul resume ses_…` a specific one.
+    """
+    if os.environ.get("OCUL_RESUME_DRY") == "1":
+        print("dry run — nothing is sent")
+    sid = (getattr(args, "session", "") or "").strip()
+    sent = dispatch_resume([sid] if sid else [])
+    if not sent:
+        print("nothing queued — chat resumed too recently, hit the resume cap, "
+              "or opencode is not on PATH")
+        return 1
+    print(f"queued: continue -> {sid[:16] + '…' if sid else 'the latest chat'}")
+    print(f"log    {RESUME_LOG}")
+    return 0
 
 
 def cmd_where():
@@ -2922,6 +2943,9 @@ def main(argv):
                    help="skip the reconnect pass and burn the registration immediately")
     p.add_argument("--where", "--dry-run", dest="where", action="store_true",
                    help="say what identity we are on and touch nothing at all")
+    p = sub.add_parser("resume", help="send 'continue' into a chat (wall resume, by hand)")
+    p.add_argument("session", nargs="?", default="", help="session id (ses_…), or latest")
+    sub.add_parser("where", help="read-only: what /64 we are on, burnt or not")
     sub.add_parser("edges")
     sub.add_parser("overlay", help="publish ocul state into the overlay HUD files")
     sub.add_parser("proxy-on", help="start the lane proxy (HUD PROXY chip)")
@@ -2945,6 +2969,12 @@ def main(argv):
         return cmd_status(args)
     if args.cmd == "hop":
         return cmd_hop(args)
+    if args.cmd == "where":
+        return cmd_where()
+    if args.cmd == "resume":
+        return cmd_resume(args)
+    if args.cmd == "resume":
+        return cmd_resume(args)
     if args.cmd == "edges":
         return cmd_edges(args)
     if args.cmd == "overlay":
