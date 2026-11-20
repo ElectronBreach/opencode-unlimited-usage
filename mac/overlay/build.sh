@@ -8,7 +8,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HOME/Library/Application Support/opencode-unlimited/OpencodeOverlay.app}"
 BIN_NAME="opencode-unlimited-overlay"
 SRC="$HERE/main.swift"
-HTML="$HERE/overlay.html"
+# one source. a second copy next to this script is how a rebuild shipped an
+# html that predated the code it was drawing for.
+HTML="$HERE/../overlay.html"
 ICON_SRC="$HERE/icon.png"
 
 command -v swiftc >/dev/null 2>&1 || {

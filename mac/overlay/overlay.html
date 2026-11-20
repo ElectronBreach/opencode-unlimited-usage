@@ -6,413 +6,491 @@
 <title>opencode unlimited</title>
 <style>
 /* ============================================================
-   opencode unlimited — HUD
-   dark glass · cyan/magenta · cyber grid · collapsible bubble
+   opencode unlimited — HUD  (366 x 642, fixed)
+
+   layout is a strict top-to-bottom funnel:
+     header · project · hero(tokens) · health · actions · tabs · panes · console
+
+   one type scale, one spacing scale, one surface scale. every
+   number the HUD shows is a quota or a cost, so the eye should
+   land on tokens first, health second, the action third.
    ============================================================ */
 :root{
+  /* surfaces, dark → light */
   --bg:#04070c;
-  --bg2:#070d15;
-  --cy:#22d3ee;
-  --cy-dim:rgba(34,211,238,.35);
-  --mag:#f472b6;
-  --vio:#a78bfa;
-  --ok:#34d399;
-  --warn:#fbbf24;
-  --bad:#fb7185;
-  --txt:#d7e6f2;
-  --mut:#5d7488;
-  --line:rgba(34,211,238,.14);
-  --glass:rgba(7,14,22,.82);
+  --bed:rgba(2,6,10,.72);
+  --l0:rgba(255,255,255,.022);
+  --l1:rgba(255,255,255,.038);
+  --l2:rgba(255,255,255,.062);
+  --hair:rgba(255,255,255,.07);
+  --edge:rgba(34,211,238,.15);
+
+  /* ink */
+  --txt:#dcebf7;
+  --sub:#a2bbcd;
+  --mut:#7b93a6;
+  --faint:#5a7083;
+
+  /* signal */
+  --cy:#22d3ee; --cy2:#67e8f9; --cy-dim:rgba(34,211,238,.30);
+  --vio:#a78bfa; --mag:#f472b6;
+  --ok:#34d399; --warn:#fbbf24; --bad:#fb7185;
+
+  /* scale */
+  --s1:4px; --s2:6px; --s3:8px; --s4:11px;
+  --r1:6px; --r2:9px; --r3:12px; --r4:18px;
+  --t7:7.5px; --t9:9px; --t10:10px; --t12:12px;
+
   --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
 }
-*{box-sizing:border-box;-webkit-user-select:none;user-select:none;margin:0;padding:0}
-html,body{height:100%;background:transparent;overflow:hidden}
-body{font:12px/1.45 var(--mono);color:var(--txt);-webkit-font-smoothing:antialiased}
 
-/* ---------- shell ---------- */
+*{box-sizing:border-box;margin:0;padding:0;-webkit-user-select:none;user-select:none}
+html,body{height:100%;background:transparent;overflow:hidden}
+body{font:var(--t12)/1.45 var(--mono);color:var(--txt);-webkit-font-smoothing:antialiased}
+
+/* ---------- shell ------------------------------------------------ */
 #app{
   position:relative;height:100%;width:100%;
-  background:
-    radial-gradient(120px 180px at 100% 0%,rgba(244,114,182,.10),transparent 70%),
-    radial-gradient(180px 200px at 0% 100%,rgba(34,211,238,.10),transparent 70%),
-    linear-gradient(165deg,var(--bg2),var(--bg) 60%);
-  border-radius:18px;
   display:flex;flex-direction:column;
-  padding:11px 13px 10px;
+  padding:var(--s4) var(--s4) 9px;
+  border-radius:var(--r4);
+  background:
+    radial-gradient(150px 190px at 100% 0%,rgba(244,114,182,.085),transparent 72%),
+    radial-gradient(190px 210px at 0% 100%,rgba(34,211,238,.09),transparent 72%),
+    linear-gradient(168deg,#070d15,#04070c 58%,#050a11);
+  box-shadow:0 0 0 1px rgba(34,211,238,.10),0 18px 50px rgba(0,0,0,.55);
   opacity:1;transform:scale(1);
   transition:opacity .16s ease,transform .16s ease;
 }
-#app::before{ /* grid */
-  content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;
+#app::before{                     /* grid, fades out before it reaches the console */
+  content:"";position:absolute;inset:0;border-radius:var(--r4);pointer-events:none;
   background-image:
-    linear-gradient(var(--line) 1px,transparent 1px),
-    linear-gradient(90deg,var(--line) 1px,transparent 1px);
-  background-size:26px 26px;
-  mask-image:radial-gradient(120% 90% at 50% 0%,#000 30%,transparent 85%);
-  opacity:.55;
+    linear-gradient(var(--edge) 1px,transparent 1px),
+    linear-gradient(90deg,var(--edge) 1px,transparent 1px);
+  background-size:28px 28px;
+  mask-image:radial-gradient(125% 80% at 50% 0%,#000 26%,transparent 84%);
+  opacity:.45;
 }
-#app::after{ /* scanlines + vignette */
-  content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;
-  background:repeating-linear-gradient(0deg,rgba(255,255,255,.022) 0 1px,transparent 1px 3px);
-  box-shadow:inset 0 0 42px rgba(0,0,0,.55),inset 0 0 0 1px rgba(34,211,238,.06);
+#app::after{                      /* vignette + hairline top light */
+  content:"";position:absolute;inset:0;border-radius:var(--r4);pointer-events:none;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.055),
+             inset 0 0 46px rgba(0,0,0,.5),
+             inset 0 0 0 1px rgba(34,211,238,.045);
 }
-.corner{position:absolute;width:10px;height:10px;border:1px solid var(--cy);opacity:.5;pointer-events:none}
-.corner.tl{top:6px;left:6px;border-right:0;border-bottom:0}
-.corner.tr{top:6px;right:6px;border-left:0;border-bottom:0}
-.corner.bl{bottom:6px;left:6px;border-right:0;border-top:0}
-.corner.br{bottom:6px;right:6px;border-left:0;border-top:0}
+.corner{position:absolute;width:9px;height:9px;border:1px solid var(--cy);opacity:.42;pointer-events:none;z-index:3}
+.corner.tl{top:5px;left:5px;border-right:0;border-bottom:0;border-radius:4px 0 0 0}
+.corner.tr{top:5px;right:5px;border-left:0;border-bottom:0;border-radius:0 4px 0 0}
+.corner.bl{bottom:5px;left:5px;border-right:0;border-top:0;border-radius:0 0 0 4px}
+.corner.br{bottom:5px;right:5px;border-left:0;border-top:0;border-radius:0 0 4px 0}
 
-/* ---------- header ---------- */
-header{display:flex;align-items:center;gap:8px;cursor:grab;position:relative;z-index:2;padding-bottom:2px}
+/* ---------- header ---------------------------------------------- */
+header{display:flex;align-items:center;gap:var(--s2);cursor:grab;
+  position:relative;z-index:2;flex:0 0 auto;height:20px}
 header:active{cursor:grabbing}
-.brand{display:flex;align-items:center;gap:7px;font-weight:700;letter-spacing:.14em;font-size:10.5px;color:#eaf6ff}
+.brand{display:flex;align-items:center;gap:var(--s2);font-weight:700;
+  font-size:var(--t10);letter-spacing:.16em;color:#eef8ff;white-space:nowrap}
 .brand .glyph{
-  width:16px;height:16px;display:grid;place-items:center;border-radius:4px;
-  background:linear-gradient(140deg,rgba(34,211,238,.25),rgba(167,139,250,.25));
+  width:16px;height:16px;display:grid;place-items:center;border-radius:5px;
+  background:linear-gradient(140deg,rgba(34,211,238,.26),rgba(167,139,250,.22));
   border:1px solid rgba(34,211,238,.5);
-  box-shadow:0 0 10px rgba(34,211,238,.35);
+  box-shadow:0 0 10px rgba(34,211,238,.32);
   font-size:9px;color:var(--cy);
 }
-.brand .dim{color:var(--mut);font-weight:400}
-.hdr-spacer{flex:1}
+.brand .dim{color:var(--faint);font-weight:400;letter-spacing:.06em}
+.hdr-spacer{flex:1 1 auto}
 .hbtn{
-  width:20px;height:20px;display:grid;place-items:center;border-radius:5px;
-  background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);
-  color:var(--mut);font-size:11px;cursor:pointer;transition:all .14s;
+  width:20px;height:20px;display:grid;place-items:center;border-radius:var(--r1);
+  background:var(--l0);border:1px solid var(--hair);color:var(--mut);
+  font:11px var(--mono);cursor:pointer;transition:color .14s,border-color .14s,background .14s;
 }
-.hbtn:hover{color:var(--cy);border-color:var(--cy-dim);background:rgba(34,211,238,.08);box-shadow:0 0 9px rgba(34,211,238,.25)}
-.hbtn.close:hover{color:var(--bad);border-color:rgba(251,113,133,.5);background:rgba(251,113,133,.08);box-shadow:0 0 9px rgba(251,113,133,.25)}
+.hbtn:hover{color:var(--cy);border-color:var(--cy-dim);background:rgba(34,211,238,.09)}
+.hbtn.close:hover{color:var(--bad);border-color:rgba(251,113,133,.5);background:rgba(251,113,133,.09)}
 
-/* ---------- project ---------- */
-.project{
-  margin-top:5px;display:flex;align-items:center;gap:6px;
-  font-size:10px;color:var(--mut);letter-spacing:.03em;position:relative;z-index:2;
-}
-.project .pdot{width:5px;height:5px;border-radius:50%;background:var(--cy);box-shadow:0 0 7px var(--cy);flex:none}
-.project .pname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9fb6c8}
+/* ---------- project --------------------------------------------- */
+.project{display:flex;align-items:center;gap:var(--s2);margin-top:var(--s2);
+  flex:0 0 auto;font-size:var(--t9);letter-spacing:.04em;color:var(--mut);
+  position:relative;z-index:2;height:14px}
+.project .pdot{width:5px;height:5px;border-radius:50%;flex:none;
+  background:var(--cy);box-shadow:0 0 7px var(--cy)}
+.project .pname{color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  flex:0 1 auto;min-width:0}
 
-/* ---------- hero ---------- */
-.hero{position:relative;z-index:2;margin-top:7px;padding:9px 11px 8px;border-radius:12px;
-  background:linear-gradient(160deg,rgba(34,211,238,.055),rgba(167,139,250,.03) 55%,transparent);
-  border:1px solid rgba(34,211,238,.16);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 0 22px rgba(34,211,238,.06);
+/* the pinned model rides the project line. "which project" and "which model"
+   are the same question asked twice — both answer "what is this panel for
+   right now" — and neither belongs behind a tab. */
+.pmodel{
+  margin-left:auto;flex:0 0 auto;max-width:58%;
+  display:flex;align-items:center;gap:4px;
+  padding:1px 6px;border-radius:20px;
+  font-size:var(--t7);letter-spacing:.02em;color:var(--mut);
+  background:var(--l0);border:1px solid var(--hair);
+  overflow:hidden;white-space:nowrap;
 }
-.hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
-.label{font-size:8.5px;letter-spacing:.22em;color:var(--mut)}
-.big{
-  font-size:27px;line-height:1.05;font-weight:700;letter-spacing:-.01em;margin-top:3px;
-  color:#f2fbff;text-shadow:0 0 18px rgba(34,211,238,.45);
-  font-variant-numeric:tabular-nums;
+.pmodel i{width:5px;height:5px;border-radius:50%;background:var(--faint);flex:none}
+.pmodel b{font-weight:600;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pmodel.live{color:#a7f3d0;border-color:rgba(52,211,153,.26);background:rgba(52,211,153,.06)}
+.pmodel.live i{background:var(--ok);box-shadow:0 0 6px var(--ok);animation:pulse 2.6s infinite}
+.pmodel.live b{color:#a7f3d0}
+.pmodel.warn{color:#fde68a;border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.06)}
+.pmodel.warn i{background:var(--warn);box-shadow:0 0 6px var(--warn)}
+.pmodel.warn b{color:#fde68a}
+.pmodel.bad{color:#fecdd3;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.07)}
+.pmodel.bad i{background:var(--bad);box-shadow:0 0 6px var(--bad)}
+.pmodel.bad b{color:#fecdd3}
+
+/* ---------- hero: the money panel -------------------------------- */
+.hero{position:relative;z-index:2;flex:0 0 auto;margin-top:var(--s3);
+  padding:9px var(--s4) var(--s3);border-radius:var(--r3);
+  background:linear-gradient(158deg,rgba(34,211,238,.06),rgba(167,139,250,.028) 56%,transparent 88%);
+  border:1px solid rgba(34,211,238,.17);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 0 26px rgba(34,211,238,.06);
 }
-.big .unit{font-size:12px;color:var(--cy);margin-left:2px;text-shadow:none}
-.hero-sub{display:flex;gap:10px;margin-top:5px;font-size:10px;color:var(--mut);align-items:center}
+.hero-head{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:2px}
+.caps{font-size:var(--t7);letter-spacing:.22em;color:var(--mut);font-weight:600}
+.hero-head .sess{margin-left:auto;font-size:var(--t7);letter-spacing:.1em;color:var(--faint)}
+.hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--s3)}
+.hero-main{min-width:0}
+.big{font-size:30px;line-height:1;font-weight:700;letter-spacing:-.02em;
+  color:#f4fcff;font-variant-numeric:tabular-nums;
+  text-shadow:0 0 20px rgba(34,211,238,.4)}
+.big .unit{font-size:var(--t12);font-weight:600;color:var(--cy);margin-left:2px;text-shadow:none}
+.hero-sub{display:flex;gap:9px;margin-top:var(--s1);font-size:var(--t9);
+  color:var(--faint);align-items:center;font-variant-numeric:tabular-nums}
 .hero-sub b{color:#b9d4e4;font-weight:500}
-.hero-sub .cost{color:var(--ok)}
+.hero-sub .cost{color:var(--ok);font-weight:600}
 
-/* ring */
 .ring{position:relative;width:52px;height:52px;flex:none}
 .ring svg{transform:rotate(-90deg)}
 .ring .track{stroke:rgba(255,255,255,.07)}
 .ring .fill{stroke:url(#rg);stroke-linecap:round;transition:stroke-dashoffset .5s ease}
-.ring span{position:absolute;inset:0;display:grid;place-items:center;font-size:9px;color:var(--cy);letter-spacing:.02em}
+.ring span{position:absolute;inset:0;display:grid;place-items:center;
+  font-size:var(--t7);color:var(--cy);letter-spacing:.02em;font-variant-numeric:tabular-nums}
 
-/* bars */
-.bars{display:flex;gap:4px;margin-top:9px;height:4px}
-.bars .seg{flex:1;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden;position:relative}
-.bars .seg i{position:absolute;inset:0;width:0;border-radius:2px;transition:width .6s cubic-bezier(.2,.8,.2,1)}
-.bars .in i{background:linear-gradient(90deg,var(--cy),#67e8f9);box-shadow:0 0 8px rgba(34,211,238,.7)}
-.bars .out i{background:linear-gradient(90deg,var(--vio),var(--mag));box-shadow:0 0 8px rgba(244,114,182,.6)}
-.bars .hit i{background:linear-gradient(90deg,var(--ok),#6ee7b7);box-shadow:0 0 8px rgba(52,211,153,.55)}
-.legend{display:flex;gap:9px;margin-top:5px;font-size:8.5px;letter-spacing:.08em;color:var(--mut)}
-.legend s{text-decoration:none;width:5px;height:5px;border-radius:1px;display:inline-block;margin-right:3px;vertical-align:middle}
-/* four real numbers in one line — added rows would eat the console, this does not */
-.stats{display:flex;justify-content:space-between;gap:6px;margin-top:7px;padding:5px 7px;
-  border-radius:7px;background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.055)}
-.stats div{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
-.stats b{font-size:10px;font-weight:600;color:#cfe4f0;letter-spacing:.01em;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis}
-.stats span{font-size:7px;letter-spacing:.1em;color:var(--mut);white-space:nowrap}
+.bars{display:flex;gap:3px;margin-top:var(--s3);height:4px}
+.bars .seg{flex:1;background:rgba(255,255,255,.055);border-radius:2px;overflow:hidden;position:relative}
+.bars .seg i{position:absolute;inset:0;width:0;border-radius:2px;
+  transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.bars .in i{background:linear-gradient(90deg,var(--cy),var(--cy2));box-shadow:0 0 8px rgba(34,211,238,.6)}
+.bars .out i{background:linear-gradient(90deg,var(--vio),var(--mag));box-shadow:0 0 8px rgba(244,114,182,.5)}
+.bars .hit i{background:linear-gradient(90deg,var(--ok),#6ee7b7);box-shadow:0 0 8px rgba(52,211,153,.45)}
+
+.stats{display:flex;gap:var(--s2);margin-top:var(--s2);padding:5px var(--s2);
+  border-radius:var(--r1);background:var(--l0);border:1px solid rgba(255,255,255,.05)}
+.stats div{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 0}
+.stats b{font-size:var(--t10);font-weight:600;color:#cfe4f0;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.stats span{font-size:var(--t7);letter-spacing:.11em;color:var(--faint);white-space:nowrap}
 .stats .hi b{color:var(--cy)}
 .stats .ok b{color:var(--ok)}
 
-/* ---------- cards ---------- */
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px;position:relative;z-index:2}
-.card{
-  position:relative;padding:7px 8px;border-radius:9px;overflow:hidden;
-  background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.06);
-  transition:border-color .18s,background .18s;
-}
-.card:hover{border-color:rgba(34,211,238,.28);background:rgba(34,211,238,.035)}
-.card b{display:block;font-size:11.5px;font-weight:600;color:#dff2ff;letter-spacing:.01em;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.card span{display:block;font-size:8px;letter-spacing:.16em;color:var(--mut);margin-top:2px}
-.card.cy b{color:#a5f3fc}
-.card.vi b{color:#c4b5fd}
-
-/* ---------- health ---------- */
-/* the row is a flex item in a fixed-height column: without flex:0 0 auto it
-   shrinks to a few pixels whenever the console grows, and the chips get sliced
-   in half. refusal to shrink is the whole fix. */
-.health{display:flex;flex-wrap:nowrap;gap:5px;margin-top:7px;position:relative;z-index:2;
-  flex:0 0 auto;min-height:18px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
-.health::-webkit-scrollbar{display:none}
-.health .chip{flex:0 0 auto}
+/* ---------- health chips ---------------------------------------- */
+.health{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;
+  margin-top:var(--s2);flex:0 0 auto;position:relative;z-index:2}
+.health .chip{justify-content:center;min-width:0;overflow:hidden;white-space:nowrap}
+.chip{display:flex;align-items:center;gap:4px;padding:3px var(--s2);border-radius:20px;
+  font-size:var(--t7);letter-spacing:.1em;color:var(--mut);font-weight:600;
+  background:var(--l0);border:1px solid var(--hair);transition:border-color .15s,background .15s}
+.chip i{width:5px;height:5px;border-radius:50%;background:var(--faint);flex:none}
 .chip.pointer{cursor:pointer}
-.chip{
-  display:flex;align-items:center;gap:4px;padding:3px 6px;border-radius:20px;
-  font-size:8.5px;letter-spacing:.09em;color:var(--mut);
-  background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.06);
-}
-.chip i{width:5px;height:5px;border-radius:50%;background:var(--mut);flex:none}
-.chip.ok{color:#a7f3d0;border-color:rgba(52,211,153,.25);background:rgba(52,211,153,.06)}
-.chip.ok i{background:var(--ok);box-shadow:0 0 7px var(--ok);animation:pulse 2.4s infinite}
+.chip.pointer:hover{border-color:var(--cy-dim);background:rgba(34,211,238,.07)}
+.chip.ok{color:#a7f3d0;border-color:rgba(52,211,153,.26);background:rgba(52,211,153,.06)}
+.chip.ok i{background:var(--ok);box-shadow:0 0 7px var(--ok);animation:pulse 2.6s infinite}
 .chip.bad{color:#fecdd3;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.07)}
 .chip.bad i{background:var(--bad);box-shadow:0 0 7px var(--bad)}
 .chip.warn{color:#fde68a;border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.06)}
 .chip.warn i{background:var(--warn);box-shadow:0 0 7px var(--warn)}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.32}}
 
-/* ---------- spark ---------- */
-.spark{margin-top:8px;position:relative;z-index:2;border-radius:9px;border:1px solid rgba(255,255,255,.05);
-  background:rgba(255,255,255,.015);padding:5px 7px 2px}
-.spark-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;white-space:nowrap;font-size:8px;letter-spacing:.16em;color:var(--mut);margin-bottom:3px}
-.spark-top b{font-weight:600;color:rgba(244,114,182,.85);letter-spacing:0;white-space:nowrap}
-.spark canvas{display:block;width:100%;height:40px}
-
-/* ---------- actions ---------- */
-.actions{display:flex;gap:7px;margin-top:9px;position:relative;z-index:2}
-
-/* ---------- api key pool ---------- */
-.keys{
-  margin-top:8px;padding:6px 8px;border-radius:11px;
-  border:1px solid rgba(167,139,250,.18);background:rgba(7,14,22,.55);
-  position:relative;z-index:2;
-}
-.keys .kh{display:flex;align-items:center;gap:7px;font-size:8px;letter-spacing:.16em;color:var(--mut)}
-.keys .kh b{color:#a5f3fc;font-size:9.5px;letter-spacing:.06em}
-.keys .klive{
-  margin-left:auto;display:flex;align-items:center;gap:5px;min-width:0;
-  color:#c4b5fd;letter-spacing:.02em;font-size:9px;text-transform:none;
-}
-.keys .klive i{
-  width:5px;height:5px;border-radius:50%;flex:0 0 auto;
-  background:var(--ok);box-shadow:0 0 6px var(--ok);
-}
-.keys .klive i.bad{background:var(--bad);box-shadow:0 0 6px var(--bad)}
-.keys .klive i.warn{background:var(--warn);box-shadow:0 0 6px var(--warn)}
-.keys .klive span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.keys .kh .kt{color:#8fa7b9}
-
-/* one label style for every card group, so the panel reads top to bottom */
-.seclabel{
-  display:flex;align-items:center;gap:7px;margin:8px 0 4px;
-  font-size:7.5px;letter-spacing:.2em;color:#5d7486;font-weight:600;
-}
-.seclabel i{flex:1;height:1px;background:linear-gradient(90deg,rgba(93,116,134,.28),transparent)}
-.keys .kb{display:flex;gap:5px;margin-top:6px}
-.keys .kr{display:flex;gap:5px;margin-top:5px}
-.keys .kr .act{flex:1 1 0;min-width:0}
-.keys input{
-  flex:1;min-width:0;background:rgba(0,0,0,.35);border:1px solid var(--line);
-  border-radius:7px;color:var(--txt);font:9.5px var(--mono);padding:4px 6px;outline:none;
-  -webkit-user-select:text;user-select:text;
-}
-.keys input:focus{border-color:rgba(34,211,238,.45)}
-.keys input::placeholder{color:#3f5464}
-.act.mini{
-  height:22px;padding:0 9px;font-size:8px;letter-spacing:.09em;border-radius:7px;
-  flex:0 0 auto;clip-path:none;box-shadow:none;font-weight:700;white-space:nowrap;
-}
-.act.mini:hover{box-shadow:none}
-.act.mini.key{
-  background:rgba(167,139,250,.12);color:#c4b5fd;border:1px solid rgba(167,139,250,.38);
-}
-.act.mini.key:hover{background:rgba(167,139,250,.2);box-shadow:none}
-.act.mini.ghost2{
-  background:rgba(34,211,238,.06);color:#7dd3e8;border:1px solid rgba(34,211,238,.25);
-}
-.act.mini.ghost2:hover{background:rgba(34,211,238,.14);box-shadow:none}
-.act.mini.ghost3{
-  background:rgba(52,211,153,.07);color:#6ee7b7;border:1px solid rgba(52,211,153,.28);
-}
-.act.mini.ghost3:hover{background:rgba(52,211,153,.16);box-shadow:none}
-.act.mini.del{
-  background:rgba(248,113,113,.07);color:#fca5a5;border:1px solid rgba(248,113,113,.3);
-}
-.act.mini.del:hover{background:rgba(248,113,113,.16);box-shadow:none}
-.act.mini.del.armed{
-  background:rgba(248,113,113,.9);color:#1a0606;border-color:#fca5a5;
-  animation:armpulse .9s ease-in-out infinite alternate;
-}
-@keyframes armpulse{from{opacity:.85}to{opacity:1}}
-.act.mini:disabled{opacity:.4;filter:none}
+/* ---------- actions --------------------------------------------- */
+.actions{display:flex;gap:var(--s2);margin-top:var(--s3);flex:0 0 auto;
+  position:relative;z-index:2}
 button.act{
-  position:relative;flex:1;height:34px;border:0;cursor:pointer;font-family:var(--mono);
-  font-size:10.5px;font-weight:700;letter-spacing:.18em;color:#031018;
-  background:linear-gradient(135deg,#22d3ee,#67e8f9);
-  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);
-  display:flex;align-items:center;justify-content:center;gap:7px;
+  position:relative;flex:1 1 auto;height:32px;border:0;cursor:pointer;
+  font-family:var(--mono);font-size:var(--t10);font-weight:700;letter-spacing:.18em;
+  color:#031018;background:linear-gradient(135deg,var(--cy),var(--cy2));
+  clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px);
+  display:flex;align-items:center;justify-content:center;gap:var(--s2);
+  box-shadow:0 0 16px rgba(34,211,238,.28);
   transition:filter .16s,transform .06s,box-shadow .16s;
-  box-shadow:0 0 16px rgba(34,211,238,.3);
 }
-button.act:hover{filter:brightness(1.12);box-shadow:0 0 24px rgba(34,211,238,.5)}
+button.act:hover{filter:brightness(1.12);box-shadow:0 0 26px rgba(34,211,238,.46)}
 button.act:active{transform:translateY(1px)}
 button.act:disabled{filter:grayscale(.7) brightness(.6);cursor:default;box-shadow:none}
-button.act .dot{width:6px;height:6px;border-radius:50%;background:#031018;opacity:.7}
-button.act.ghost{
-  flex:0 0 96px;color:var(--cy);background:rgba(34,211,238,.07);
-  border:1px solid rgba(34,211,238,.35);box-shadow:none;
-}
-button.act.ghost:hover{background:rgba(34,211,238,.14);box-shadow:0 0 16px rgba(34,211,238,.2)}
-button.act.ghost:disabled{color:var(--mut);border-color:rgba(255,255,255,.08);background:transparent}
-.spin{width:11px;height:11px;border-radius:50%;border:1.5px solid rgba(3,16,24,.3);border-top-color:#031018;
-  animation:sp .7s linear infinite;display:none}
+button.act .dot{width:6px;height:6px;border-radius:50%;background:#031018;opacity:.65}
+button.act.ghost{flex:0 0 92px;color:var(--cy);background:rgba(34,211,238,.07);
+  border:1px solid rgba(34,211,238,.33);box-shadow:none}
+button.act.ghost:hover{background:rgba(34,211,238,.15);box-shadow:0 0 16px rgba(34,211,238,.2)}
+button.act.ghost:disabled{color:var(--mut);border-color:var(--hair);background:transparent}
+.spin{width:11px;height:11px;border-radius:50%;display:none;
+  border:1.5px solid rgba(3,16,24,.28);border-top-color:#031018;
+  animation:sp .7s linear infinite}
 button.act.busy .spin{display:block}
 button.act.busy .dot{display:none}
 @keyframes sp{to{transform:rotate(360deg)}}
 
-/* ---------- tabs ---------- */
-/* the panel stopped growing the day the cards moved into tabs. identity,
-   keys and stats share one fixed-height pane, so adding a card later costs
-   a row inside a pane instead of another 90px of window, and the console
-   below never loses its height to it. */
-.tabs{display:flex;gap:4px;margin-top:7px;position:relative;z-index:2;
+/* small buttons, shared by keys / proxy sheet / model sheet */
+.act.mini{
+  height:22px;padding:0 9px;font-size:var(--t7);letter-spacing:.1em;border-radius:var(--r1);
+  flex:0 0 auto;clip-path:none;box-shadow:none;font-weight:700;white-space:nowrap;
+  border:1px solid var(--hair);background:var(--l1);color:var(--sub);
+}
+.act.mini:hover{box-shadow:none;filter:none;background:var(--l2)}
+.act.mini.key{background:rgba(167,139,250,.12);color:#c4b5fd;border-color:rgba(167,139,250,.38)}
+.act.mini.key:hover{background:rgba(167,139,250,.2)}
+.act.mini.ghost2{background:rgba(34,211,238,.06);color:#7dd3e8;border-color:rgba(34,211,238,.25)}
+.act.mini.ghost2:hover{background:rgba(34,211,238,.14)}
+.act.mini.ghost3{background:rgba(52,211,153,.07);color:#6ee7b7;border-color:rgba(52,211,153,.28)}
+.act.mini.ghost3:hover{background:rgba(52,211,153,.16)}
+.act.mini.del{background:rgba(248,113,113,.07);color:#fca5a5;border-color:rgba(248,113,113,.3)}
+.act.mini.del:hover{background:rgba(248,113,113,.16)}
+.act.mini.del.armed{background:rgba(248,113,113,.9);color:#1a0606;border-color:#fca5a5;
+  animation:armpulse .9s ease-in-out infinite alternate}
+@keyframes armpulse{from{opacity:.86}to{opacity:1}}
+.act.mini:disabled{opacity:.4;filter:none}
+
+/* ---------- tabs ------------------------------------------------- */
+.tabs{display:flex;gap:3px;margin-top:var(--s3);flex:0 0 auto;position:relative;z-index:2;
   background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.055);
-  border-radius:9px;padding:3px}
-.tab{flex:1;height:20px;border:0;border-radius:6px;background:transparent;cursor:pointer;
-  font:700 8px var(--mono);letter-spacing:.14em;color:#6b8497;
-  transition:color .15s,background .15s;display:flex;align-items:center;justify-content:center;gap:3px}
+  border-radius:var(--r2);padding:3px}
+.tab{flex:1;height:21px;border:0;border-radius:var(--r1);background:transparent;cursor:pointer;
+  font:700 var(--t7) var(--mono);letter-spacing:.16em;color:#6b8497;
+  display:flex;align-items:center;justify-content:center;gap:3px;
+  transition:color .15s,background .15s,box-shadow .15s}
 .tab:hover{color:#a9c6d8}
-.tab.on{background:rgba(34,211,238,.12);color:#bff3ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.28)}
+.tab.on{background:rgba(34,211,238,.13);color:#bff3ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.28)}
 .tab b{font-weight:600;color:rgba(167,139,250,.9)}
 .tab i{width:4px;height:4px;border-radius:50%;background:var(--bad);display:none}
 .tab.alert i{display:inline-block;box-shadow:0 0 5px var(--bad)}
-.panes{position:relative;z-index:2;margin-top:6px;height:118px;flex:0 0 auto;overflow:hidden}
-.pane{display:none;height:100%;overflow-y:auto;overflow-x:hidden;padding-right:1px}
+
+/* ---------- panes ------------------------------------------------ */
+.panes{position:relative;z-index:2;margin-top:var(--s2);flex:0 0 auto;
+  height:196px;overflow:hidden}
+.pane{display:none;height:100%;overflow-y:auto;overflow-x:hidden;padding-right:2px}
 .pane.on{display:block}
 .pane::-webkit-scrollbar{width:3px}
 .pane::-webkit-scrollbar-thumb{background:rgba(34,211,238,.28);border-radius:2px}
 .pane .grid,.pane .keys,.pane .spark{margin-top:0}
-/* one line, because the identities pane is 114px and the cards already
-   own most of it. three rows here pushed the third one under the HOP bar. */
-.meta{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
-  margin-top:6px;font-size:7.5px;letter-spacing:.1em;color:#5d7486;white-space:nowrap}
-.meta span b{color:#c8e6f5;font-weight:600;letter-spacing:.03em;margin-left:3px}
-.meta b.ok{color:var(--ok)} .meta b.bad{color:var(--bad)}
-.models{display:flex;flex-direction:column;gap:4px;margin-top:7px}
-.models .m{display:flex;align-items:center;gap:6px;font-size:8.5px;color:#9db4c6}
-.models .m i{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.06);overflow:hidden;position:relative}
-.models .m i s{position:absolute;inset:0;width:0;border-radius:2px;
-  background:linear-gradient(90deg,rgba(34,211,238,.9),rgba(167,139,250,.9));text-decoration:none}
-.models .m span{flex:0 0 auto;max-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.models .m b{flex:0 0 42px;text-align:right;font-weight:600;color:#cfe4f0}
 
-/* ---------- log ---------- */
-.log{
-  margin-top:8px;flex:1 1 auto;min-height:104px;display:flex;flex-direction:column;
-  border-radius:9px;border:1px solid rgba(255,255,255,.06);background:rgba(2,6,10,.66);
-  position:relative;z-index:2;overflow:hidden;
-  transition:border-color .2s;
+/* ---------- identity cards --------------------------------------- */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s2);position:relative;z-index:2}
+.card{
+  position:relative;padding:7px 9px 7px 11px;border-radius:var(--r2);overflow:hidden;
+  background:var(--l0);border:1px solid rgba(255,255,255,.055);
+  transition:border-color .18s,background .18s;
 }
-.log.live{border-color:rgba(34,211,238,.3);box-shadow:inset 0 0 26px rgba(34,211,238,.05)}
-.log-head{display:flex;align-items:center;justify-content:space-between;padding:4px 8px;
-  border-bottom:1px solid rgba(255,255,255,.05);font-size:8px;letter-spacing:.18em;color:var(--mut)}
-.log-head button{background:none;border:0;color:var(--mut);font:inherit;letter-spacing:.1em;cursor:pointer;font-size:8px}
-.log-head button:hover{color:var(--cy)}
-#logBody{
-  flex:1;overflow-y:auto;padding:5px 8px 6px;font-size:9.5px;line-height:1.5;
-  color:#9db4c6;white-space:pre-wrap;word-break:break-word;
+.card::before{                    /* accent rail: which fact belongs to which lever */
+  content:"";position:absolute;left:0;top:6px;bottom:6px;width:2px;border-radius:2px;
+  background:rgba(34,211,238,.35);
+}
+.card.cy::before{background:linear-gradient(180deg,var(--cy),rgba(34,211,238,.15))}
+.card.vi::before{background:linear-gradient(180deg,var(--vio),rgba(167,139,250,.15))}
+.card:hover{border-color:rgba(34,211,238,.26);background:rgba(34,211,238,.032)}
+.card b{display:block;font-size:11.5px;font-weight:600;color:#dff2ff;letter-spacing:.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-variant-numeric:tabular-nums}
+.card span{display:block;font-size:var(--t7);letter-spacing:.16em;color:var(--faint);margin-top:2px}
+.card.cy b{color:#a5f3fc}
+.card.vi b{color:#c4b5fd}
+.card.ok::before{background:linear-gradient(180deg,var(--ok),rgba(52,211,153,.15))}
+.card.ok b{color:#a7f3d0}
+
+/* ---------- model strip + key/value table -----------------------
+   the identity pane used to be six equal cards plus a one-line flex row that
+   squeezed five facts into 15px and clipped every one of them. two shapes
+   now: the model strip (the facts that decide whether a prompt lands) and a
+   key/value table (state, label beside value, on its own baseline). */
+.mstrip{display:grid;grid-template-columns:0.72fr 1.5fr 0.78fr;gap:var(--s2);
+  margin-top:var(--s2);position:relative;z-index:2}
+.ms{display:flex;flex-direction:column;gap:1px;padding:5px 8px;min-width:0;
+  border-radius:var(--r2);background:var(--l0);border:1px solid rgba(255,255,255,.055);
+  transition:border-color .18s,background .18s}
+.ms b{font-size:11px;font-weight:600;color:#dff2ff;line-height:1.2;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-variant-numeric:tabular-nums}
+.ms span{font-size:6.5px;letter-spacing:.13em;color:var(--faint);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ms span s{text-decoration:none;color:#7f9bb0;letter-spacing:.04em}
+.ms.ok b{color:#a7f3d0}
+.ms.bad b{color:#fecdd3}
+.ms:hover{border-color:rgba(34,211,238,.26);background:rgba(34,211,238,.032)}
+
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:0 var(--s4);
+  margin-top:var(--s2);position:relative;z-index:2}
+.kv .k{display:flex;align-items:baseline;justify-content:space-between;gap:var(--s2);
+  min-width:0;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.045)}
+.kv .k span{font-size:var(--t7);letter-spacing:.13em;color:var(--faint);white-space:nowrap;flex:none}
+.kv .k b{font-size:var(--t9);font-weight:600;color:#c8e6f5;letter-spacing:.02em;
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;min-width:0;text-align:right}
+#mBucket{color:#c8e6f5}
+#mBucket.ok{color:#a7f3d0}
+#mBucket.bad{color:#fecdd3}
+#pxChip{cursor:pointer;border-radius:4px;transition:background .14s}
+#pxChip:hover{background:rgba(34,211,238,.08)}
+#pxChip:hover b{color:var(--cy)}
+#pxChip b.up{color:var(--ok)}
+#pxChip b.on{color:var(--cy)}
+#pxChip b.warn{color:var(--warn)}
+
+/* ---------- key pool -------------------------------------------- */
+.keys{padding:7px 9px;border-radius:var(--r2);
+  border:1px solid rgba(167,139,250,.18);background:rgba(7,14,22,.55);position:relative;z-index:2}
+.keys .kh{display:flex;align-items:center;gap:var(--s2);font-size:var(--t7);
+  letter-spacing:.16em;color:var(--faint)}
+.keys .kh .kt{color:#8fa7b9;font-weight:600}
+.keys .kh b{color:#a5f3fc;font-size:var(--t10);letter-spacing:.06em}
+.keys .klive{margin-left:auto;display:flex;align-items:center;gap:4px;min-width:0;
+  color:#c4b5fd;font-size:var(--t9);letter-spacing:.02em;text-transform:none}
+.keys .klive i{width:5px;height:5px;border-radius:50%;flex:none;
+  background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.keys .klive i.bad{background:var(--bad);box-shadow:0 0 6px var(--bad)}
+.keys .klive i.warn{background:var(--warn);box-shadow:0 0 6px var(--warn)}
+.keys .klive span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.keys .kb{display:flex;gap:5px;margin-top:var(--s2)}
+.keys .kr{display:flex;gap:5px;margin-top:5px}
+.keys .kr .act{flex:1 1 0;min-width:0}
+.keys input{
+  flex:1;min-width:0;height:23px;background:rgba(0,0,0,.35);
+  border:1px solid var(--cy-dim);border-radius:var(--r1);color:var(--txt);
+  font:var(--t9) var(--mono);padding:0 7px;outline:none;
   -webkit-user-select:text;user-select:text;
 }
-#logPanel{flex:1 1 auto;min-height:96px}
-#logBody::-webkit-scrollbar{width:4px}
-#logBody::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
+.keys input:focus{border-color:rgba(34,211,238,.5)}
+.keys input::placeholder{color:#3f5464}
+
+/* ---------- stats pane ------------------------------------------- */
+.spark{border-radius:var(--r2);border:1px solid rgba(255,255,255,.05);
+  background:var(--l0);padding:5px 7px 2px;position:relative;z-index:2}
+.spark-top{display:flex;justify-content:space-between;align-items:baseline;gap:var(--s3);
+  font-size:var(--t7);letter-spacing:.16em;color:var(--faint);margin-bottom:3px;white-space:nowrap}
+.spark-top b{font-weight:600;color:rgba(244,114,182,.85);letter-spacing:0}
+.spark canvas{display:block;width:100%;height:40px}
+.models{display:flex;flex-direction:column;gap:var(--s1);margin-top:var(--s2)}
+.models .m{display:flex;align-items:center;gap:var(--s2);font-size:var(--t9);color:#9db4c6}
+.models .m i{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.06);
+  overflow:hidden;position:relative}
+.models .m i s{position:absolute;inset:0;width:0;border-radius:2px;text-decoration:none;
+  background:linear-gradient(90deg,rgba(34,211,238,.9),rgba(167,139,250,.9))}
+.models .m span{flex:0 0 auto;max-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.models .m b{flex:0 0 42px;text-align:right;font-weight:600;color:#cfe4f0;
+  font-variant-numeric:tabular-nums}
+
+/* ---------- console ---------------------------------------------- */
+.log{margin-top:var(--s2);flex:1 1 auto;min-height:92px;max-height:230px;
+  display:flex;flex-direction:column;
+  border-radius:var(--r2);border:1px solid rgba(255,255,255,.06);
+  background:var(--bed);position:relative;z-index:2;overflow:hidden;
+  transition:border-color .2s}
+.log.live{border-color:rgba(34,211,238,.28);box-shadow:inset 0 0 26px rgba(34,211,238,.045)}
+.log.small{flex:0 0 auto;height:92px}
+.log-head{display:flex;align-items:center;gap:var(--s2);padding:4px var(--s3);
+  border-bottom:1px solid rgba(255,255,255,.05);
+  font-size:var(--t7);letter-spacing:.18em;color:var(--faint);flex:0 0 auto}
+.log-head>span{margin-right:auto}
+.log-head button{background:none;border:0;color:var(--faint);font:inherit;
+  letter-spacing:.1em;cursor:pointer;padding:1px 3px;border-radius:3px}
+.log-head button:hover{color:var(--cy);background:rgba(34,211,238,.1)}
+#logBody{flex:1 1 auto;overflow-y:auto;padding:5px var(--s3) 6px;
+  font-size:var(--t9);line-height:1.55;color:#9db4c6;
+  white-space:pre-wrap;word-break:break-word;
+  -webkit-user-select:text;user-select:text}
+#logBody::-webkit-scrollbar{width:4px}#logBody::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
 #logBody .ok{color:var(--ok)}
 #logBody .bad{color:var(--bad)}
 #logBody .warn{color:var(--warn)}
 #logBody .cy{color:var(--cy)}
-.log-foot{display:flex;justify-content:space-between;padding:3px 8px;border-top:1px solid rgba(255,255,255,.04);
-  font-size:8px;letter-spacing:.1em;color:var(--mut)}
-#lastSession{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px}
+#logBody:empty::before{
+  content:"quiet — the lane has nothing to report";
+  color:var(--faint);letter-spacing:.06em;
+}
+.log-foot{display:flex;justify-content:space-between;gap:var(--s2);padding:3px var(--s3);
+  border-top:1px solid rgba(255,255,255,.04);flex:0 0 auto;
+  font-size:var(--t7);letter-spacing:.1em;color:var(--faint)}
+#lastSession{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px;cursor:pointer}
+#lastSession:hover{color:var(--cy)}
+/* the clock doubles as the heartbeat light. when status.sh stops landing
+   (a crashed probe, a wedged sqlite) the numbers freeze silently — an amber
+   clock is the one honest tell that the sheet is showing stale truth. */
+#clock{transition:color .3s ease,opacity .3s ease}
+#clock.stale{color:#f59e0b;opacity:.9}
+#clock.stale::after{content:" · stale";letter-spacing:.06em}
 
-/* ---------- toast ---------- */
-/* ---------- proxy sheet ----------
-   the panel does not grow for this layer. every control lives on a sheet that
-   covers the panel while it is open and gets out of the way again, so the
-   tabs, the identity pane and the console keep their exact heights. */
-#sheet{position:absolute;inset:0;z-index:40;display:none;flex-direction:column;
-  padding:10px 11px 9px;gap:7px;border-radius:18px;
-  background-color:#050a11;
-  background-image:linear-gradient(170deg,rgba(10,19,30,.94),rgba(4,7,12,.97));
-  box-shadow:inset 0 0 0 1px rgba(34,211,238,.22),0 0 40px rgba(0,0,0,.65)}
-#sheet.on{display:flex}
-.sheet-head{display:flex;align-items:center;gap:6px}
-.stab{border:0;background:transparent;color:#5f778a;font:700 8px var(--mono);
-  letter-spacing:.14em;padding:3px 7px;border-radius:6px;cursor:pointer}
-.stab:hover{color:#a9c6d8}
-.stab.on{background:rgba(34,211,238,.13);color:#bff3ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.3)}
-.stab b{font-weight:600;color:rgba(167,139,250,.9);margin-left:3px}
-.sbody{display:none;flex:1 1 auto;min-height:0;flex-direction:column;gap:7px}
-.sbody.on{display:flex}
-.px-hint{margin-top:9px;padding:8px 10px;border-radius:8px;font:9px/1.6 var(--mono);
-  color:#4d6e82;letter-spacing:.03em;
-  background:rgba(34,211,238,.035);box-shadow:inset 0 0 0 1px rgba(34,211,238,.09)}
-.mx-head{display:flex;align-items:baseline;gap:7px;font:8px var(--mono);letter-spacing:.1em;color:#5d7486}
-.mx-head b{color:#c8e6f5;font-weight:600;font-size:9px;letter-spacing:.02em;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sheet-head .sc{margin-left:auto;font:700 9px var(--mono);letter-spacing:.1em;color:var(--mut)}
-.sheet-head .sc.up{color:var(--ok)}
-.sx{background:none;border:0;color:var(--mut);font:inherit;cursor:pointer;font-size:11px;padding:2px 4px}
-.sx:hover{color:var(--cy)}
-.sheet-status{font:9px/1.5 var(--mono);color:var(--mut);letter-spacing:.06em;
-  border-top:1px solid rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.05);padding:4px 0}
-.sheet-status b{color:#c8e6f5;font-weight:600}
-.sheet-status .pxfix{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;color:#fbbf24}
-.sheet-status .pxfix:hover{color:#fde68a}
-.px-list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:3px}
-.px-list::-webkit-scrollbar{width:3px}
-.px-list::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
-.pxr{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;cursor:pointer;
-  background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.045);font:9px var(--mono)}
-.pxr:hover{background:rgba(34,211,238,.09)}
-.pxr.cur{background:rgba(34,211,238,.13);border-color:rgba(34,211,238,.3)}
-.pxr .pxd{width:5px;height:5px;border-radius:50%;background:var(--mut);flex:0 0 auto}
-.pxr .pxd.live{background:var(--ok);box-shadow:0 0 6px rgba(52,211,153,.7)}
-.pxr .pxd.dead{background:var(--bad)}
-.pxr b{color:var(--vio);font-weight:600;min-width:13px}
-.pxr .pxa{flex:1 1 auto;color:#a9c6d8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pxr .pxm{color:var(--mut);flex:0 0 auto}
-.pxdel{background:none;border:0;color:rgba(251,113,133,.55);font:inherit;cursor:pointer;padding:0 2px}
-.pxdel:hover{color:var(--bad)}
-.px-empty{color:var(--mut);font:9px/1.6 var(--mono);padding:10px 2px;text-align:center}
-.px-add{display:flex;gap:5px;flex:0 0 auto}
-.px-add input{flex:1 1 auto;min-width:0;height:22px;background:rgba(0,0,0,.35);
-  border:1px solid rgba(34,211,238,.18);border-radius:6px;color:var(--txt);
-  font:10px var(--mono);padding:0 7px;-webkit-user-select:text;user-select:text;outline:none}
-.px-add input:focus{border-color:rgba(34,211,238,.45)}
-.px-row{display:flex;gap:5px;flex:0 0 auto}
-.px-row .act.mini{flex:1 1 0}
-.sheet-foot{font:8px/1.5 var(--mono);letter-spacing:.08em;color:var(--mut);text-align:center;flex:0 0 auto}
-/* the chip is a 10px text run; give it a real target without moving the row */
-.meta #pxChip{cursor:pointer;padding:4px 5px;margin:-4px -5px;border-radius:5px;
-  box-shadow:inset 0 0 0 1px rgba(34,211,238,.22);color:#8fb3c6}
-.meta #pxChip:hover{background:rgba(34,211,238,.1);box-shadow:inset 0 0 0 1px rgba(34,211,238,.45)}
-.meta #pxChip:hover b{color:var(--cy)}
-.meta #pxChip b.up{color:var(--ok)}
-.meta #pxChip b.on{color:var(--cy)}
-
+/* ---------- toast ------------------------------------------------ */
 #toast{
   position:absolute;left:50%;bottom:14px;transform:translate(-50%,10px);
-  padding:5px 11px;border-radius:20px;font-size:9px;letter-spacing:.12em;
+  padding:5px var(--s4);border-radius:20px;font-size:var(--t9);letter-spacing:.12em;
   background:rgba(34,211,238,.14);border:1px solid rgba(34,211,238,.4);color:#c8f7ff;
   opacity:0;pointer-events:none;transition:all .22s;z-index:60;white-space:nowrap;
   box-shadow:0 0 18px rgba(34,211,238,.25);
 }
 #toast.on{opacity:1;transform:translate(-50%,0)}
 
-/* ============================================================
-   collapsed — one circular bubble
-   ============================================================ */
+/* ---------- proxy / model sheet ---------------------------------- */
+#sheet{position:absolute;inset:0;z-index:40;display:none;flex-direction:column;
+  padding:var(--s4) var(--s4) var(--s3);gap:var(--s2);border-radius:var(--r4);
+  background-color:#050a11;
+  background-image:linear-gradient(170deg,rgba(10,19,30,.95),rgba(4,7,12,.975));
+  box-shadow:inset 0 0 0 1px rgba(34,211,238,.22),0 0 44px rgba(0,0,0,.65)}
+#sheet.on{display:flex}
+.sheet-head{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+.stab{border:0;background:transparent;color:#5f778a;font:700 var(--t7) var(--mono);
+  letter-spacing:.16em;padding:3px 7px;border-radius:var(--r1);cursor:pointer}
+.stab:hover{color:#a9c6d8}
+.stab.on{background:rgba(34,211,238,.13);color:#bff3ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.3)}
+.stab b{font-weight:600;color:rgba(167,139,250,.9);margin-left:3px}
+.sheet-head .sc{margin-left:auto;font:700 var(--t9) var(--mono);letter-spacing:.1em;color:var(--faint)}
+.sheet-head .sc.up{color:var(--ok)}
+.sx{background:none;border:0;color:var(--faint);font:inherit;cursor:pointer;
+  font-size:11px;padding:2px 4px;border-radius:3px}
+.sx:hover{color:var(--cy)}
+.sheet-status{font:var(--t9)/1.5 var(--mono);color:var(--mut);letter-spacing:.05em;
+  border-top:1px solid rgba(255,255,255,.055);border-bottom:1px solid rgba(255,255,255,.055);
+  padding:4px 0;flex:0 0 auto}
+.sheet-status b{color:#c8e6f5;font-weight:600}
+.sheet-status .pxfix{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;
+  color:var(--warn)}
+.sheet-status .pxfix:hover{color:#fde68a}
+.sbody{display:none;flex:1 1 auto;min-height:0;flex-direction:column;gap:var(--s2)}
+.sbody.on{display:flex}
+.px-list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;
+  display:flex;flex-direction:column;gap:3px}
+.px-list::-webkit-scrollbar{width:3px}
+.px-list::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
+.pxr{display:flex;align-items:center;gap:var(--s2);padding:4px 7px;border-radius:var(--r1);
+  cursor:pointer;font:var(--t9) var(--mono);
+  background:var(--l0);border:1px solid rgba(255,255,255,.045)}
+.pxr:hover{background:rgba(34,211,238,.09)}
+.pxr.cur{background:rgba(34,211,238,.13);border-color:rgba(34,211,238,.3)}
+.pxr .pxd{width:5px;height:5px;border-radius:50%;background:var(--faint);flex:0 0 auto}
+.pxr .pxd.live{background:var(--ok);box-shadow:0 0 6px rgba(52,211,153,.7)}
+.pxr .pxd.dead{background:var(--bad)}
+.pxr b{color:var(--vio);font-weight:600;min-width:14px}
+.pxr .pxa{flex:1 1 auto;color:#a9c6d8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pxr .pxm{color:var(--faint);flex:0 0 auto;font-variant-numeric:tabular-nums}
+.pxdel{background:none;border:0;color:rgba(251,113,133,.55);font:inherit;
+  cursor:pointer;padding:0 2px}
+.pxdel:hover{color:var(--bad)}
+.px-empty{color:var(--faint);font:var(--t9)/1.6 var(--mono);padding:10px 2px;text-align:center}
+.px-hint{margin-top:9px;padding:8px 10px;border-radius:var(--r1);
+  font:var(--t9)/1.6 var(--mono);color:#5d7f94;letter-spacing:.03em;
+  background:rgba(34,211,238,.035);box-shadow:inset 0 0 0 1px rgba(34,211,238,.09)}
+.px-add{display:flex;gap:5px;flex:0 0 auto}
+.px-add input{flex:1 1 auto;min-width:0;height:23px;background:rgba(0,0,0,.35);
+  border:1px solid rgba(34,211,238,.18);border-radius:var(--r1);color:var(--txt);
+  font:var(--t10) var(--mono);padding:0 7px;outline:none;
+  -webkit-user-select:text;user-select:text}
+.px-add input:focus{border-color:rgba(34,211,238,.5)}
+.px-row{display:flex;gap:5px;flex:0 0 auto}
+.px-row .act.mini{flex:1 1 0}
+.mx-head{display:flex;align-items:baseline;gap:var(--s2);flex:0 0 auto;
+  font:var(--t7) var(--mono);letter-spacing:.12em;color:var(--faint)}
+.mx-head .k{font-weight:600}
+.mx-head b{color:#c8e6f5;font-weight:600;font-size:var(--t9);letter-spacing:.02em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sheet-foot{font:var(--t7)/1.5 var(--mono);letter-spacing:.08em;
+  color:var(--faint);text-align:center;flex:0 0 auto}
+
+/* ---------- collapsed bubble ------------------------------------- */
 #bubble{
   position:fixed;inset:0;border-radius:50%;cursor:pointer;
   display:none;place-items:center;
@@ -423,25 +501,27 @@ button.act.busy .dot{display:none}
 }
 #bubble:hover{transform:scale(1.05);box-shadow:0 0 30px rgba(34,211,238,.55),inset 0 0 20px rgba(34,211,238,.16)}
 #bubble:active{transform:scale(.97)}
-#bubble .core{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;pointer-events:none}
-#bubble .cnt{font-size:13px;font-weight:700;color:#eafcff;letter-spacing:-.02em;text-shadow:0 0 12px rgba(34,211,238,.7)}
-#bubble .lbl{font-size:6.5px;letter-spacing:.2em;color:var(--mut)}
+#bubble .core{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:1px;pointer-events:none}
+#bubble .cnt{font-size:13px;font-weight:700;color:#eafcff;letter-spacing:-.02em;
+  text-shadow:0 0 12px rgba(34,211,238,.7)}
+#bubble .lbl{font-size:6.5px;letter-spacing:.2em;color:var(--faint)}
 #bubble .ringwrap{position:absolute;inset:0;pointer-events:none}
 #bubble svg{width:100%;height:100%;transform:rotate(-90deg)}
 #bubble .btrack{stroke:rgba(255,255,255,.07)}
-#bubble .bfill{stroke:var(--cy);stroke-width:2;stroke-linecap:round;filter:drop-shadow(0 0 4px rgba(34,211,238,.8));transition:stroke-dashoffset .6s}
-#bubble .bdot{
-  position:absolute;right:7px;top:8px;width:7px;height:7px;border-radius:50%;
-  background:var(--ok);box-shadow:0 0 8px var(--ok);border:1px solid #05090f;
-}
+#bubble .bfill{stroke:var(--cy);stroke-width:2;stroke-linecap:round;
+  filter:drop-shadow(0 0 4px rgba(34,211,238,.8));transition:stroke-dashoffset .6s}
+#bubble .bdot{position:absolute;right:7px;top:8px;width:7px;height:7px;border-radius:50%;
+  background:var(--ok);box-shadow:0 0 8px var(--ok);border:1px solid #05090f}
 #bubble .bdot.bad{background:var(--bad);box-shadow:0 0 8px var(--bad)}
 #bubble .bdot.warn{background:var(--warn);box-shadow:0 0 8px var(--warn)}
-#bubble .spin2{width:14px;height:14px;border-radius:50%;border:2px solid rgba(34,211,238,.2);border-top-color:var(--cy);
-  animation:sp .8s linear infinite;display:none}
+#bubble .spin2{width:14px;height:14px;border-radius:50%;display:none;
+  border:2px solid rgba(34,211,238,.2);border-top-color:var(--cy);
+  animation:sp .8s linear infinite}
 #bubble.busy .spin2{display:block}
 #bubble.busy .cnt,#bubble.busy .lbl{display:none}
 
-body.collapsed{background:#04070c;border-radius:50%}
+body.collapsed{background:var(--bg);border-radius:50%}
 body.collapsed #app{opacity:0;transform:scale(.94);pointer-events:none}
 body.collapsed #bubble{display:grid}
 </style>
@@ -453,29 +533,34 @@ body.collapsed #bubble{display:grid}
   <div class="corner bl"></div><div class="corner br"></div>
 
   <header id="drag">
-    <div class="brand"><span class="glyph">◈</span>OLLIE<span class="dim">//</span>UNLTD</div>
+    <div class="brand"><span class="glyph">◈</span>OLLIE<span class="dim">/unltd</span></div>
     <div class="hdr-spacer"></div>
-    <button class="hbtn" id="btnDock" title="dock to other side">⇄</button>
-    <button class="hbtn" id="btnMin" title="collapse to bubble">−</button>
+    <button class="hbtn" id="btnDock" title="dock to the other side">⇄</button>
+    <button class="hbtn" id="btnMin" title="collapse to a bubble">−</button>
     <button class="hbtn close" id="btnClose" title="hide — reopen from the menu bar">✕</button>
   </header>
 
-  <div class="project"><i class="pdot"></i><span class="pname" id="project">idle — no session</span></div>
+  <div class="project"><i class="pdot"></i><span class="pname" id="project">idle — no session</span><span class="pmodel" id="pmodel" title="the model this session is pinned to"><i></i><b id="pmodelName">—</b></span></div>
+
+  <section class="health" id="health"></section>
 
   <section class="hero">
+    <div class="hero-head">
+      <span class="caps">TOKENS · IN + OUT</span>
+      <span class="sess" id="sessCount">0 sessions</span>
+    </div>
     <div class="hero-top">
-      <div>
-        <div class="label">TOKENS · IN + OUT</div>
+      <div class="hero-main">
         <div class="big"><span id="tokTotal">0</span><span class="unit" id="tokUnit"></span></div>
         <div class="hero-sub">
-          <span>↑<b id="tokIn">0</b></span>
-          <span>↓<b id="tokOut">0</b></span>
+          <span title="input tokens">↑<b id="tokIn">0</b></span>
+          <span title="output tokens">↓<b id="tokOut">0</b></span>
           <span title="prompt cache reads — real work, billed at a fraction">⚡<b id="tokCache">0</b></span>
           <span class="cost" id="tokCost">$0</span>
         </div>
       </div>
       <div class="ring">
-        <svg width="52" height="52">
+        <svg width="52" height="52" viewBox="0 0 52 52">
           <defs><linearGradient id="rg" x1="0" y1="0" x2="1" y2="1">
             <stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a78bfa"/>
           </linearGradient></defs>
@@ -487,25 +572,22 @@ body.collapsed #bubble{display:grid}
       </div>
     </div>
     <div class="bars">
-      <div class="seg in"><i id="barIn"></i></div>
-      <div class="seg out"><i id="barOut"></i></div>
-      <div class="seg hit"><i id="barHit"></i></div>
-    </div>
-    <div class="legend">
-      <span><s style="background:#22d3ee"></s>IN</span>
-      <span><s style="background:#a78bfa"></s>OUT</span>
-      <span><s style="background:#34d399"></s>CACHE HIT</span>
-      <span style="margin-left:auto" id="sessCount">0 sessions</span>
+      <div class="seg in" title="input"><i id="barIn"></i></div>
+      <div class="seg out" title="output"><i id="barOut"></i></div>
+      <div class="seg hit" title="cache hit"><i id="barHit"></i></div>
     </div>
     <div class="stats">
       <div class="hi"><b id="sToday">0</b><span>TODAY</span></div>
-      <div><b id="sRate">—</b><span>RATE / MIN</span></div>
-      <div class="ok"><b id="sHit">0%</b><span>CACHE HIT</span></div>
-      <div><b id="sActive">0h</b><span>SESSION TIME</span></div>
+      <div><b id="sRate">—</b><span>RATE/MIN</span></div>
+      <div class="ok"><b id="sHit">0%</b><span>CACHE</span></div>
+      <div><b id="sActive">0h</b><span>SESSION</span></div>
     </div>
   </section>
 
-  <section class="health" id="health"></section>
+  <section class="actions">
+    <button class="act" id="btnHop"><span class="dot"></span><span class="spin"></span>HOP</button>
+    <button class="act ghost" id="btnDoctor">DOCTOR</button>
+  </section>
 
   <nav class="tabs" id="tabs">
     <button class="tab on" data-tab="id">IDENTITY<i></i></button>
@@ -522,13 +604,22 @@ body.collapsed #bubble{display:grid}
         <div class="card"><b id="hops">0</b><span>ROTATIONS</span></div>
         <div class="card"><b id="device">—</b><span>DEVICE</span></div>
       </section>
-      <div class="meta">
-        <span>BUCKET<b id="mBucket">—</b></span>
-        <span>WALLS<b id="mWalls">0</b></span>
-        <span>BURNED<b id="mBurned">0</b></span>
-        <span>LAST HOP<b id="mSince">—</b></span>
-        <span id="pxChip" title="proxy pool — add, test, rotate, system proxy">PROXY<b id="mProxy">—</b></span>
-      </div>
+
+      <!-- the second lever: how many models answer right now and how old the
+           measurement is. this predicts whether the next prompt lands better
+           than any tunnel fact does, so it sits on its own row. -->
+      <section class="mstrip">
+        <div class="ms" id="cardLive"><b id="mLive">—</b><span>MODELS LIVE</span></div>
+        <div class="ms" id="cardBest"><b id="mBest">—</b><span>BEST · <s id="mLadder">—</s></span></div>
+        <div class="ms"><b id="mBucket">—</b><span>BUCKET</span></div>
+      </section>
+
+      <section class="kv">
+        <div class="k"><span>LAST HOP</span><b id="mSince">—</b></div>
+        <div class="k"><span>WALLS</span><b id="mWalls">0</b></div>
+        <div class="k"><span>BURNED</span><b id="mBurned">0</b></div>
+        <div class="k" id="pxChip" title="proxy pool — add, test, rotate, system proxy"><span>PROXY</span><b id="mProxy">—</b></div>
+      </section>
     </div>
 
     <div class="pane" data-pane="keys">
@@ -564,21 +655,20 @@ body.collapsed #bubble{display:grid}
 
   </div>
 
-  <section class="actions">
-    <button class="act" id="btnHop"><span class="dot"></span><span class="spin"></span>HOP</button>
-    <button class="act ghost" id="btnDoctor">DOCTOR</button>
-  </section>
-
   <section class="log" id="logPanel">
-    <div class="log-head"><span>CONSOLE</span><button id="btnClear">CLEAR</button></div>
+    <div class="log-head">
+      <span>CONSOLE</span>
+      <button id="btnClear">CLEAR</button>
+      <button id="btnLogSize" title="shrink the console">▾</button>
+    </div>
     <pre id="logBody"></pre>
     <div class="log-foot"><span id="lastSession">no session yet</span><span id="clock">--:--:--</span></div>
   </section>
 
-<!-- ============ proxy sheet =============================================
-     the panel does not grow a single pixel for the proxy layer. every
-     control lives here, on a sheet that covers the panel while it is open
-     and leaves the tabs, the console and the tokens exactly where they were.
+<!-- ============ sheet ===================================================
+     the proxy and model layers never grow the panel. every control lives
+     here, on a sheet that covers the panel while open and leaves the tabs,
+     the console and the tokens exactly where they were.
      ==================================================================== -->
 <div id="sheet" aria-hidden="true">
   <div class="sheet-head">
@@ -639,8 +729,6 @@ body.collapsed #bubble{display:grid}
   <div class="sheet-foot" id="pxFoot">client → 127.0.0.1:8899 · rotation behind a fixed address</div>
 </div>
 
-
-
 </div>
 
 <div id="bubble" title="opencode unlimited — click to expand">
@@ -656,9 +744,6 @@ body.collapsed #bubble{display:grid}
 </div>
 
 <div id="toast"></div>
-
-
-
 
 <script>
 "use strict";
@@ -704,6 +789,27 @@ function healthChip(label, state, hint, act){
   const attr = act ? ` data-act="${act}"` : "";
   const cur = act ? " pointer" : "";
   return `<span class="chip ${cls}${cur}" id="chip${label}"${attr} title="${hint||""}"><i></i>${label}</span>`;
+}
+
+// the guard's own verdict, painted from one document instead of five fields.
+// `p` may come from status.sh (the whole snapshot) or from the native brain
+// push (health only), so both shapes land here and nowhere else.
+function paintBrain(p){
+  const el = document.getElementById("chipBRAIN");
+  if (!el) return;
+  const live = p.live !== false;
+  const sc = (typeof p.score === "number") ? p.score : -1;
+  const st = p.state || "";
+  const cls = !live ? "warn"
+            : (st === "ok" || sc >= 90) ? "ok"
+            : (st === "warn" || sc >= 60) ? "warn" : "bad";
+  const num = (live && sc >= 0) ? " " + sc : "";
+  el.className = "chip " + cls;
+  el.innerHTML = "<i></i>BRAIN" + num;
+  const a = p.advice || "";
+  el.title = !live
+    ? "the rotator has not published a heartbeat — these chips are being probed live"
+    : (a ? ("brain " + sc + " · " + a) : ("brain " + sc + " · no advisories"));
 }
 
 function render(d){
@@ -758,6 +864,12 @@ function render(d){
   $("barHit").style.width = Math.max(1.5, wHit) + "%";
 
   $("egress").textContent = d.egress4 || "—";
+  // the v4 tile is a cached probe, not a live socket. if the last probe failed
+  // say so in the tooltip instead of letting a stale address pass as current.
+  const pr = d.probe || {};
+  $("egress").title = (typeof pr.age === "number" && pr.age >= 0)
+    ? ("measured " + age(pr.age) + (pr.ok ? " · probe ok" : " · last probe failed — showing the last known exit"))
+    : "no probe has completed yet";
   $("prefix").textContent = id.prefix || "—";
   $("hops").textContent = id.hops || 0;
 
@@ -767,9 +879,12 @@ function render(d){
   window._px = Object.assign(window._px || {}, px);
   const chip = $("mProxy");
   if (chip) {
-    chip.textContent = px.up ? (px.healthy || 0) + "/" + (px.pool || 0) : "off";
-    chip.className = px.up ? "up" : "";
-    $("pxChip").title = px.up
+    // three states, not two: the mux can be listening with an empty pool, and
+    // that fails closed — calling it "off" hid that its requests never land.
+    const pxPool = px.pool || 0, pxHi = px.healthy || 0;
+    chip.textContent = !px.up ? "off" : (pxPool === 0 ? "empty" : pxHi + "/" + pxPool);
+    chip.className = !px.up ? "" : (pxHi > 0 ? "up" : "warn");
+    $("pxChip").title = (px.up && pxPool > 0)
       ? "proxy mux up · " + (px.current || "—") + " · click to manage"
       : "proxy pool " + (px.pool || 0) + " · click to manage";
     if (sheet && sheet.classList.contains("on")) renderSheet();
@@ -794,20 +909,47 @@ function render(d){
   if ($("mWalls")) $("mWalls").textContent = String(id.bucketWalls || 0);
   if ($("mBurned")) $("mBurned").textContent = String(id.blacklist || 0);
   if ($("mSince")) {
+    const parked = (typeof id.parked === "number" && id.parked > 0);
     const fresh = (typeof id.since === "number" && id.since >= 0);
-    $("mSince").textContent = fresh ? age(id.since) : "—";
-    $("mSince").title = fresh
-      ? ("last hop changed the " + (id.kind === "v4" ? "v4 exit" : "/64") +
-         (id.v4Changed ? " and the v4 exit" : ""))
-      : "no rotation recorded yet";
+    // a parked rotator stamps last_hop in the future. showing "0s ago" there
+    // claimed a rotation that had not happened — read the hold instead.
+    $("mSince").textContent = parked ? "held " + age(id.parked) : (fresh ? age(id.since) : "—");
+    $("mSince").title = parked
+      ? ("rotation is held for " + age(id.parked) +
+         " — the wall is account-side, not the /64")
+      : fresh
+        ? ((id.kind === "v4"
+            ? "last hop changed the v4 exit"
+            : "last hop changed the /64" + (id.v4Changed ? " and the v4 exit" : "")))
+        : "no rotation recorded yet";
   }
 
   const chips = [
+    (function(){
+      // first, because it is the only chip that has already weighed the rest.
+      const b = d.brain || {};
+      const sc = (typeof b.score === "number") ? b.score : -1;
+      const live = !!b.live;
+      const cls = !live ? "warn"
+                : (b.state === "ok" || sc >= 90) ? "ok"
+                : (b.state === "warn" || sc >= 60) ? "warn" : "bad";
+      return `<span class="chip ${cls}" id="chipBRAIN"><i></i>BRAIN`
+           + ((live && sc >= 0) ? " " + sc : "") + `</span>`;
+    })(),
     healthChip("WARP", w.connected ? true : false,
                (w.mode || "") + " — click to open Cloudflare WARP", "warp"),
     healthChip("DNS", !!d.dns, "opencode.ai resolution"),
     healthChip("KEEPER", !!d.keeper, "user launch agent — com.ouc.keeper"),
-    healthChip("GUARD", !!d.guard, "user launch agent — com.ouc.guard"),
+    (function(){
+      // the launchd chip answers "is it loaded"; the heartbeat answers "is it
+      // actually ticking". a guard that hangs keeps its launchd row green, so
+      // the chip has to read the heartbeat, not the job.
+      const ga = (typeof d.guardAge === "number") ? d.guardAge : -1;
+      if (!d.guard) return healthChip("GUARD", false, "user launch agent — ai.ocul.guard (not loaded)");
+      if (ga < 0) return healthChip("GUARD", "warn", "loaded but has not heartbeat yet — rotator starting");
+      if (ga > 90) return healthChip("GUARD", "warn", "loaded but heartbeat is " + ga + "s old — the rotator may be wedged");
+      return healthChip("GUARD", true, "rotator alive · heartbeat " + ga + "s ago");
+    })(),
     healthChip("CREDIT", d.credit ? true : "idle",
                d.credit
                  ? "credit stamp on — sign-off line appended to replies"
@@ -820,6 +962,31 @@ function render(d){
                  : d.leakguard)
   ];
   $("health").innerHTML = chips.join("");
+  paintBrain(d.brain || {live: false});
+
+  // the HOP button must not offer a rotation that is already running. the
+  // guard owns the lock and a second caller just gets "rotation already in
+  // progress" — so show the attempt instead of inviting the click.
+  (function(){
+    const rot = d.rotation || {};
+    const hop = $("btnHop");
+    if (!hop) return;
+    if (rot.active && !hop.classList.contains("busy")) {
+      window._brainRot = true;
+      hop.disabled = true;
+      hop.classList.add("busy");
+      hop.innerHTML = '<span class="spin" style="display:block"></span>ROTATING';
+      hop.title = "rotation " + (rot.phase || "starting")
+                + (rot.max ? " · attempt " + (rot.attempt || 0) + "/" + rot.max : "")
+                + " — the guard owns the lock";
+    } else if (window._brainRot && !rot.active) {
+      window._brainRot = false;
+      hop.disabled = false;
+      hop.classList.remove("busy");
+      hop.innerHTML = '<span class="dot"></span>HOP';
+      hop.title = "";
+    }
+  })();
 
   // project
   const p = d.context || {};
@@ -827,6 +994,66 @@ function render(d){
     const name = p.dir.replace(/\/+$/, "").split("/").pop() || p.dir;
     $("project").textContent = name + (p.age >= 0 ? " · " + age(p.age) : "");
     $("project").title = p.dir;
+  }
+
+  // ---- the pinned model, and the ladder behind it --------------------
+  // "will the next prompt work" is not answered by the tunnel, the /64 or the
+  // key pool — it is answered by whether the model this session is pinned to
+  // still answers. the ladder measures that; this row states it. the pin is a
+  // guess with a timestamp, so the chip carries both the pin and its verdict.
+  const md = d.model || {};
+  const ld = d.ladder || {};
+  const pin = md.current || "";
+  const bestFull = (ld.best || (md.ladder || {}).best || "");
+  const liveN = (typeof ld.live === "number") ? ld.live : (md.ladder || {}).live;
+  const scanAge = (typeof ld.age === "number") ? ld.age : (md.ladder || {}).age;
+  const wallsN = (typeof ld.wall === "number") ? ld.wall : 0;
+  const pinEl = $("pmodel"), pinName = $("pmodelName");
+  if (pinEl && pinName) {
+    pinName.textContent = pin || "no pin";
+    // the ladder reports `provider/model`; the config may carry either shape.
+    // a suffix match is the honest test — "9router/oc/x" and "oc/x" are one pin.
+    const samePin = !!pin && !!bestFull &&
+      (bestFull === pin || bestFull.endsWith("/" + pin));
+    let st = "", why = "";
+    if (!pin) { st = "bad"; why = "no model pinned in opencode.json"; }
+    else if (samePin) { st = "live"; why = "pinned model answers — measured " + age(scanAge); }
+    else if (!bestFull) { st = "warn"; why = "no ladder scan yet — pin unverified"; }
+    else { st = "warn"; why = "pin is not the measured best (" + bestFull + ")"; }
+    pinEl.className = "pmodel" + (st ? " " + st : "");
+    pinEl.title = why + (liveN != null ? " · " + liveN + " live" : "");
+  }
+  if ($("mLive")) {
+    // a count, not a ratio: "7 / 41" reads as a budget and it is not one. the
+    // wall count has its own cell below; the probe total belongs in the tip.
+    $("mLive").textContent = (liveN == null) ? "—" : String(liveN);
+    const cl = $("cardLive");
+    if (cl) {
+      cl.className = "ms" + (liveN > 0 ? " ok" : (liveN === 0 ? " bad" : ""));
+      const tot = (typeof ld.probed === "number") ? ld.probed
+        : ((md.ladder || {}).probed || 0);
+      cl.title = (liveN == null) ? "no ladder measurement yet"
+        : (liveN + " of " + (tot || "?") + " models answered · " + wallsN + " walled");
+    }
+  }
+  if ($("mLadder")) {
+    $("mLadder").textContent = (scanAge == null || scanAge < 0)
+      ? "—" : age(scanAge).replace(" ago", "");
+  }
+  if ($("mBest")) {
+    // the measured best is the answer to "what should I switch to", so it is
+    // stated as a name, not implied by the age of a scan. provider prefix is
+    // noise at 11px; the tooltip carries the full id.
+    $("mBest").textContent = bestFull ? bestFull.split("/").pop() : "—";
+    const cb = $("cardBest");
+    if (cb) {
+      const isPin = !!pin && !!bestFull && (bestFull === pin || bestFull.endsWith("/" + pin));
+      cb.className = "ms" + (liveN === 0 ? " bad" : (isPin ? " ok" : ""));
+      cb.title = bestFull
+        ? ("measured best: " + bestFull + " · " + (scanAge >= 0 ? "probed " + age(scanAge) : "age unknown")
+           + (isPin ? " · pinned" : " · not the pinned model"))
+        : "no ladder measurement yet — run: model-ladder scan";
+    }
   }
 
   // sparkline
@@ -995,6 +1222,12 @@ function setBusy(cmd, on){
 window.ouc = function(ev){
   if (!ev || !ev.type) return;
   if (ev.type === "log") logLine(ev.payload.line || "");
+  else if (ev.type === "brain") {
+    // the guard writes every 6s and the push fires only when `seq` moved, so
+    // this lands a rotation start in ~0.3s instead of waiting for status.sh.
+    paintBrain(ev.payload || {});
+    if (S && S.brain) S.brain = Object.assign(S.brain, ev.payload || {});
+  }
   else if (ev.type === "busy") setBusy(ev.payload.cmd, ev.payload.on);
   else if (ev.type === "toast") toast(ev.payload.text || "");
   else if (ev.type === "window") {
@@ -1427,6 +1660,16 @@ setInterval(() => {
   const d = new Date();
   $("clock").textContent = [d.getHours(), d.getMinutes(), d.getSeconds()]
     .map(x => String(x).padStart(2, "0")).join(":");
+  // heartbeat check: if no fresh status has landed in 12s the panel is showing
+  // frozen numbers. the poller covers a dead status.sh by keeping lastStatus,
+  // so without this the sheet looked live while it was quietly stale.
+  const last = window.oucLastUpdate || 0;
+  // a hidden panel refreshes every 8s (1/4 the spawns), and a network probe
+  // can add a couple of seconds on top — 12s flipped the marker yellow while
+  // the data was still current. 20s is stale, not busy.
+  const stale = last > 0 && (Date.now() / 1000 - last) > 20;
+  const c = $("clock");
+  if (c) c.classList.toggle("stale", stale);
 }, 1000);
 
 /* tabs — one pane at a time. the console lives outside them on purpose:
@@ -1448,6 +1691,23 @@ setInterval(() => {
 /* expand on load */
 document.body.classList.remove("collapsed");
 bridge("refresh");
+</script>
+
+<script>
+/* console height — the panel is 642px and the panes are fixed, so the console
+   is the only section with slack. default is tall; the chevron gives the
+   panes their space back without hiding the log entirely. */
+(function(){
+  var panel = document.getElementById('logPanel');
+  var btn = document.getElementById('btnLogSize');
+  if (!panel || !btn) return;
+  btn.addEventListener('click', function(e){
+    e.stopPropagation();
+    var small = panel.classList.toggle('small');
+    btn.textContent = small ? '▴' : '▾';
+    btn.title = small ? 'expand the console' : 'shrink the console';
+  });
+})();
 </script>
 </body>
 </html>

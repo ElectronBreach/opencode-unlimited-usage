@@ -105,6 +105,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // ignores the session watcher; an auto-raised one follows opencode.
     var pinned = false
     var tickCount = 0
+    var brainPoll: Timer?
+    var brainSig = ""
+    // true while the guard is publishing a fresh document. when it is, the
+    // shell probe is insurance rather than the source, so it runs at half rate.
+    var brainLive = false
     // the user closed the panel deliberately. the session watcher must not
     // reopen it until they ask again — otherwise ✕ does nothing.
     var manualHide = false
@@ -180,7 +185,14 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             // every tick; the status probe drops to every fourth (8s), which is
             // 1/4 the process spawns and still instant to the eye on show.
             self.tickCount += 1
-            if !self.hidden || self.tickCount % 4 == 0 { self.refresh(force: false) }
+            // with a live brain, `seq` already drives the repaint: a change
+            // reaches the panel in ~0.3s, so this probe is only insurance and
+            // half the spawns is still more than enough. without one, nothing
+            // else knows anything and every tick is due.
+            let due = self.brainLive ? (self.tickCount % 2 == 0) : true
+            if (!self.hidden && due) || (self.hidden && self.tickCount % 4 == 0) {
+                self.refresh(force: false)
+            }
             self.healthTick()
             self.warpWindowTick()
             self.sessionTick()
@@ -191,6 +203,12 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 self.lastDump = now
                 self.dumpState()
             }
+        }
+        // 0.35s: a file read, not a fork. refresh() is only called when the
+        // sequence actually moved, so this adds latency-free reaction without
+        // adding a single extra status.sh run.
+        brainPoll = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
+            self.brainTick()
         }
         seedCommandCursor()
         cmdWatch = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { _ in
@@ -966,6 +984,45 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     }
 
     // ---------------------------------------------------------------- data
+    // the guard publishes one document per tick. watching it is cheaper than
+    // polling a shell script and faster than the 2s timer: a rotation starting
+    // or finishing reaches the panel in a fraction of a second instead of up to
+    // two. `seq` moves only when the content actually changed, so an idle guard
+    // costs one small file read and no repaint at all.
+    func brainTick() {
+        let f = guardDir.appendingPathComponent("brain.json")
+        guard let d = try? Data(contentsOf: f),
+              let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let seq = obj["seq"] as? Int else {
+            brainLive = false
+            brainSig = ""
+            return
+        }
+        // a stale brain is a fossil, not a snapshot. status.sh already refuses
+        // to read one, so the panel must not paint from it either.
+        let beat = obj["beat"] as? Int ?? 0
+        let age = Int(Date().timeIntervalSince1970) - beat
+        let fresh = age <= 20
+        if fresh != brainLive { brainSig = "" }
+        brainLive = fresh
+        let rot = (obj["rotation"] as? [String: Any])?["phase"] as? String ?? ""
+        let sig = "\(seq)|\(rot)|\(fresh)"
+        if sig == brainSig { return }
+        brainSig = sig
+        if !fresh { return }
+        if let h = obj["health"] as? [String: Any] {
+            var p: [String: Any] = ["score": h["score"] as? Int ?? -1,
+                                    "state": h["state"] as? String ?? "",
+                                    "seq": seq, "age": age]
+            if let a = obj["advice"] as? [[String: Any]], let first = a.first {
+                p["advice"] = first["text"] as? String ?? ""
+                p["level"] = first["level"] as? String ?? ""
+            }
+            push("brain", p)
+        }
+        refresh(force: false)
+    }
+
     func refresh(force: Bool) {
         if statusBusy { pendingRefresh = pendingRefresh || force; return }
         statusBusy = true
