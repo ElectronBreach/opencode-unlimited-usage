@@ -83,6 +83,13 @@ OVERLAY_STATE = OVERLAY_GUARD / "state.json"
 OVERLAY_LEDGER = OVERLAY_GUARD / "identities.json"
 OVERLAY_KEEPER_PAUSE = OVERLAY_GUARD / "keeper.pause"
 OVERLAY_ROTLOCK = OVERLAY_GUARD / "rotate.lock"
+# the App Support state.json predates ocul and is still read by status.sh,
+# doctor.sh and the older `ouc` CLI. nothing writes it any more, so its
+# current_64 froze and every panel that preferred it showed the previous /64
+# forever. ocul now mirrors the live egress there on every publish.
+LEGACY_APP = Path(os.environ.get(
+    "OCUL_LEGACY_APP", HOME / "Library/Application Support/opencode-unlimited"))
+LEGACY_STATE = LEGACY_APP / "state.json"
 OVERLAY_SYNC = os.environ.get("OCUL_NO_OVERLAY_SYNC", "0") not in ("1", "true", "yes")
 
 OPENCODE_LOG = Path(
@@ -226,22 +233,45 @@ class FileLock:
         self.path = Path(path)
         self.fh = None
 
-    def acquire(self):
+    def acquire(self, timeout=0.0, poll=0.2):
+        """Take the lock, waiting up to `timeout` seconds for it.
+
+        This used to try exactly once and give up. A HUD hop that landed while
+        the guard was mid-surgery therefore printed
+
+            rotation failed: another rotator holds the global lock
+
+        for work that was already happening — the panel reported a fault for a
+        system doing exactly what it should. A flock is released by the kernel
+        the instant the holder exits, so there is no stale case worth forcing:
+        the honest answer is to wait, then decide. `timeout=0` keeps the old
+        non-blocking behaviour for callers that want it (rotation_in_progress).
+        """
         ensure_dirs()
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.fh = open(self.path, "a+")
-            fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            if self.fh:
-                self.fh.close()
-                self.fh = None
-            return False
-        self.fh.seek(0)
-        self.fh.truncate()
-        self.fh.write(f"{os.getpid()} {stamp()}\n")
-        self.fh.flush()
-        return True
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            fh = None
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                fh = open(self.path, "a+")
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                if fh is not None:
+                    try:
+                        fh.close()
+                    except OSError:
+                        pass
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(poll)
+                continue
+            self.fh = fh
+            self.fh.seek(0)
+            self.fh.truncate()
+            self.fh.write(f"{os.getpid()} {stamp()}\n")
+            self.fh.flush()
+            return True
+        # unreachable
 
     def release(self):
         if not self.fh:
@@ -260,6 +290,81 @@ GUARD_LOCK = STATE / "guard.lock"
 
 class RotationBusy(RuntimeError):
     """Another process already owns ROTATE_LOCK. Not an error to alarm on."""
+
+
+ROTATE_OWNER = STATE / "rotate.owner.json"
+
+
+def lock_holder(path):
+    """(pid, age_seconds) of whoever last stamped a FileLock, best effort.
+
+    The flock itself is invisible from outside, so the pid the holder wrote and
+    the file's mtime are the only honest evidence. Used to say *who* owns the
+    tunnel instead of "another rotator" — a message the user can act on.
+    """
+    pid = 0
+    try:
+        pid = int(Path(path).read_text().split()[0])
+    except Exception:
+        pid = 0
+    try:
+        age = max(0, int(time.time() - Path(path).stat().st_mtime))
+    except OSError:
+        age = 0
+    return pid, age
+
+
+LAST_MODE = {"mode": ""}
+
+
+def mark_rotation_phase(phase, extra=None):
+    """Publish what the in-flight rotation is doing.
+
+    The HUD, `ocul status` and a second `ocul hop` all read this. Without it a
+    few minutes of legitimate surgery is indistinguishable from a wedged
+    process, and the user's only lever is clicking HOP harder.
+    """
+    data = {"pid": os.getpid(), "phase": phase, "started": now()}
+    if extra:
+        data.update(extra)
+    try:
+        jsave(ROTATE_OWNER, data)
+    except Exception:
+        pass
+
+
+def clear_rotation_phase():
+    try:
+        ROTATE_OWNER.unlink()
+    except OSError:
+        pass
+
+
+def rotation_phase():
+    return jload(ROTATE_OWNER, {}) or {}
+
+
+def api_park_left():
+    """Seconds the shared `warp api busy` parking order has left.
+
+    Cloudflare throttles registration creation, and every rotator on the box
+    used to discover that independently: 14 attempts at 45 s each, twice over,
+    per wall. The stamp makes one process' throttle teach the others, which is
+    the difference between "stalled for 40 minutes" and "waited two".
+    """
+    st = jload(GUARD_STATE, {}) or {}
+    return max(0, int(st.get("api_busy_until") or 0) - now())
+
+
+def park_api(seconds, why=""):
+    seconds = int(max(5, min(900, seconds)))
+    st = jload(GUARD_STATE, {}) or {}
+    until = now() + seconds
+    if int(st.get("api_busy_until") or 0) >= until:
+        return
+    st["api_busy_until"] = until
+    jsave(GUARD_STATE, st)
+    log(GUARD_LOG, f"warp api throttled — rotations parked {seconds}s ({why or 'busy'})")
 
 
 def save_if_changed(path, data):
@@ -481,32 +586,68 @@ def prefix64(addr):
 
 
 def trace_v6(src, edge=None):
-    """What the server sees, measured on the same path the lane uses."""
-    try:
-        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        s.settimeout(CONNECT_TIMEOUT)
-        s.bind((src, 0))
-        target = edge or random.choice(aaaa(TRACE_HOST) or ["2606:4700::6810:84e5"])
-        s.connect((target, 443))
-        tls = ssl.create_default_context().wrap_socket(s, server_hostname=TRACE_HOST)
-        tls.sendall(
-            f"GET {TRACE_PATH} HTTP/1.1\r\nHost: {TRACE_HOST}\r\n"
-            "User-Agent: ocul\r\nConnection: close\r\n\r\n".encode()
-        )
-        raw = b""
-        while len(raw) < 65536:
-            chunk = tls.recv(4096)
-            if not chunk:
-                break
-            raw += chunk
-        tls.close()
-        body = raw.split(b"\r\n\r\n", 1)[-1].decode("latin1")
-        fields = dict(
-            line.split("=", 1) for line in body.splitlines() if "=" in line
-        )
-        return fields
-    except (OSError, ssl.SSLError):
+    """What the server sees, measured on the same path the lane uses.
+
+    A single pinned edge that happens to be unreachable does not mean "there is
+    no egress" — it means "we could not measure it this second". Trying a few
+    edges keeps a dead one from making refresh_egress read a fresh /64 as a
+    drift to empty (which then burns a rotation correcting a phantom).
+    """
+    if not src:
         return {}
+    cands = []
+    if edge:
+        cands.append(edge)
+    try:
+        cands.extend(aaaa(TRACE_HOST)[:3])
+    except Exception:
+        pass
+    cands.append("2606:4700::6810:84e5")
+    seen = set()
+    tries = 0
+    # cap the sweep: this runs on the guard tick and in rotate(), never in the
+    # proxy's per-request path, but a fully-down trace must still not stall the
+    # guard for half a minute. three edges at 4s is a bounded worst case.
+    timeout = min(CONNECT_TIMEOUT, 4.0)
+    for target in cands:
+        if tries >= 3:
+            break
+        if not target or target in seen:
+            continue
+        seen.add(target)
+        tries += 1
+        s = None
+        try:
+            s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            s.bind((src, 0))
+            s.connect((target, 443))
+            tls = ssl.create_default_context().wrap_socket(s, server_hostname=TRACE_HOST)
+            tls.sendall(
+                f"GET {TRACE_PATH} HTTP/1.1\r\nHost: {TRACE_HOST}\r\n"
+                "User-Agent: ocul\r\nConnection: close\r\n\r\n".encode()
+            )
+            raw = b""
+            while len(raw) < 65536:
+                chunk = tls.recv(4096)
+                if not chunk:
+                    break
+                raw += chunk
+            tls.close()
+            body = raw.split(b"\r\n\r\n", 1)[-1].decode("latin1")
+            fields = dict(
+                line.split("=", 1) for line in body.splitlines() if "=" in line
+            )
+            if fields.get("ip"):
+                return fields
+        except (OSError, ssl.SSLError):
+            if s is not None:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+            continue
+    return {}
 
 
 # ---- daemon health, GUI parking, one global lock ---------------------------
@@ -558,21 +699,26 @@ def daemon_alive():
 
 
 def ensure_daemon():
-    """The WARP.app daemon is a root LaunchDaemon. When the front-end is
-    updating, or was quit while the registration was deleted, its socket file
-    vanishes and every warp-cli call dies with 'No such file or directory'.
-    Relaunch the app so launchd resurrects the daemon, then wait for the socket.
+    """Wait for the WARP root daemon's socket.
+
+    The daemon (`com.cloudflare.1dot1dot1dot1.macos.warp.daemon`) is a root
+    LaunchDaemon with KeepAlive=true, so launchd restarts it on its own after a
+    blip — it does not need the front-end app to be launched to come back.
+
+    Opening WARP.app to "resurrect the daemon" was the wrong lever: the app is
+    what calls IpcStatus and paints "Something went wrong. Please try again
+    later." when the registration is missing, which is exactly the state during
+    a rotation. Waiting is free and produces no window.
     """
     if daemon_alive():
         return True
-    log(GUARD_LOG, "warp daemon unreachable — relaunching the front-end")
-    run(["open", "-g", "-a", WARP_APP], timeout=15)
     deadline = time.time() + 45
     while time.time() < deadline:
         time.sleep(2)
         if daemon_alive():
-            log(GUARD_LOG, "warp daemon back up")
+            log(GUARD_LOG, "warp daemon back up (restarted by launchd)")
             return True
+    log(GUARD_LOG, "warp daemon still unreachable after 45s — leaving the GUI alone")
     return False
 
 
@@ -584,56 +730,158 @@ def _gui_running():
 
 
 def pause_gui():
-    """Quit the WARP window before the registration is deleted.
+    """Close the WARP window once, gracefully, before the surgery.
 
-    The GUI is a separate front-end from the root daemon. If it is open when
-    the registration disappears it paints the Zero Trust 'Enroll your device'
-    page — the 'Something went wrong. Please try again later.' screen — and
-    keeps it after the tunnel is healthy again. Park it for the surgery.
+    Leaving it open was the other half of the stuck dialog: the window survives
+    the registration delete, its IPC drops to missingRegistration(), and it
+    paints "Awaiting external log in" with a browser hand-off that the surgery
+    already invalidated. It never recovers on its own.
+
+    A single graceful quit is not the pkill watchdog that caused the earlier
+    regression — nothing holds it down, nothing resurrects it, and the window
+    is only a viewer for a daemon that keeps the tunnel. Returns whether it was
+    up, so the caller can report honestly (and deliberately not reopen it).
     """
-    if not _gui_running():
+    was_up = _gui_running()
+    if was_up:
+        quit_warp_gui()
+    return was_up
+
+
+def gui_age():
+    """(pid, seconds alive) of the WARP front-end, or (None, 0)."""
+    rc, out, _ = run(["pgrep", "-f", f"{WARP_APP}/Contents/MacOS/Cloudflare WARP"],
+                     timeout=6)
+    if rc != 0 or not out.strip():
+        return None, 0
+    pid = out.split()[0].strip()
+    rc2, et, _ = run(["ps", "-o", "etimes=", "-p", pid], timeout=6)
+    try:
+        age = int(et.strip() or 0)
+    except ValueError:
+        age = 0
+    return (int(pid) if pid.isdigit() else None), max(0, age)
+
+
+def gui_stuck_login():
+    """True when the window is parked on a login flow that can never finish.
+
+    The tell is simple and local: the front-end is up, the daemon says the
+    tunnel is down, and nothing about that changes. Right after a registration
+    swap the registration can legitimately be missing for a few seconds, so a
+    window younger than ~20 s on a live registration is left alone; anything
+    older is the dead dialog and gets closed.
+    """
+    pid, age = gui_age()
+    if not pid:
         return False
-    run(["osascript", "-e", 'tell application "Cloudflare WARP" to quit'], timeout=10)
-    time.sleep(1)
-    run(["pkill", "-f", f"{WARP_APP}/Contents/MacOS/Cloudflare WARP"], timeout=8)
-    return True
+    if warp_connected():
+        return False
+    if not registered():
+        return age >= 5
+    return age >= 20
+
+
+def heal_login(force=False):
+    """Close a dead login dialog and put the tunnel back up behind it.
+
+    The window is a viewer. Closing it costs the user nothing and is the only
+    exit from "Awaiting external log in" — that page is waiting on a browser
+    hand-off tied to a registration that no longer exists. Re-enrol only when
+    the registration is genuinely gone; otherwise a plain connect is the whole
+    repair.
+    """
+    if not (force or gui_stuck_login()):
+        return False
+    log_throttled(GUARD_LOG, "gui-login",
+                  "WARP window parked on a dead login flow — closing it and reconnecting",
+                  every=300)
+    quit_warp_gui()
+    ensure_daemon()
+    if not registered():
+        run([WARP, "--accept-tos", "registration", "new"], timeout=60)
+    run([WARP, "--accept-tos", "connect"], timeout=25)
+    for _ in range(15):
+        if warp_connected() and iface_v6(force=True):
+            drop_caches()
+            log(GUARD_LOG, "login flow cleared — tunnel up, window left closed")
+            return True
+        time.sleep(2)
+    return False
 
 
 def resume_gui(was_up):
-    if was_up:
-        time.sleep(1)
-        run(["open", "-g", "-a", WARP_APP], timeout=15)
+    """Put the window back, but only onto a tunnel that already works.
+
+    Order matters and that is the whole fix. Launching WARP.app while the
+    registration is missing paints "Awaiting external log in"; launching it
+    after the tunnel is up simply shows a connected client. So: reopen when
+    warp-cli says connected AND a registration exists, once, no watchdog, no
+    loop — after every rotation, not just when it happened to be open before.
+    If either check fails the window stays closed: the tunnel does not need it,
+    and a closed window beats a dead dialog.
+    """
+    if _gui_running():
+        return False
+    for _ in range(10):
+        if warp_connected() and registered():
+            break
+        time.sleep(1.5)
+    else:
+        return False
+    rc, _, err = run(["open", "-a", WARP_APP], timeout=15)
+    if rc == 0:
+        log_throttled(GUARD_LOG, "gui-reopen",
+                      "WARP window reopened on a healthy tunnel", every=120)
+        return True
+    log_throttled(GUARD_LOG, "gui-reopen-fail",
+                  f"WARP window would not reopen: {err[:80]}", every=600)
+    return False
+
+
+def quit_warp_gui():
+    """Close the WARP window without killing it in a loop.
+
+    `pkill` in a watchdog is what used to manufacture the stuck dialog: launchd
+    resurrected the front-end *while the registration was missing*, it called
+    IpcStatus.missingRegistration(), and it sat on
+
+        Awaiting external log in — complete your login in the secure browser
+        window that opened
+
+    for ever, because that browser flow was invalidated by the surgery. One
+    graceful quit, then one plain kill only if the app ignored it, is enough.
+    Nothing reopens it: the tunnel is a daemon, the window is a viewer.
+    """
+    if not _gui_running():
+        return False
+    run(["osascript", "-e", 'tell application "Cloudflare WARP" to quit'], timeout=12)
+    deadline = time.time() + 6
+    while time.time() < deadline and _gui_running():
+        time.sleep(0.4)
+    if _gui_running():
+        run(["pkill", "-f", f"{WARP_APP}/Contents/MacOS/Cloudflare WARP"], timeout=8)
+        time.sleep(1.0)
+    return True
 
 
 GUI_HOLD = STATE / "gui-hold"
 
 
 def hold_gui_down():
-    """WARP is a login item, so launchd resurrects the window seconds after it
-    is killed. One quit is not enough: the fresh window lands while the
-    registration is deleted, calls IpcStatus.missingRegistration() and paints
-    the enrollment page with 'Something went wrong. Please try again later.'
-    — which is exactly the screen this whole fix exists to prevent.
+    """No longer used.
 
-    Keep a background watchdog killing it for the duration of the surgery, then
-    relaunch once, after the tunnel is healthy again.
+    This ran a watchdog pkill loop for the whole surgery so launchd could not
+    bring the window back mid-rotation. It worked, but it also guaranteed that
+    the *next* WARP.app process started at the worst possible moment — right
+    after the registration was deleted — which is what painted
+    "Something went wrong. Please try again later." and kept it.
+
+    With nothing killing the GUI there is nothing for launchd to resurrect, so
+    there is no fresh front-end during surgery and no stale page. Returns None
+    so the call site stays shape-compatible.
     """
-    pat = f"{WARP_APP}/Contents/MacOS/Cloudflare WARP"
-    try:
-        STATE.mkdir(parents=True, exist_ok=True)
-        GUI_HOLD.write_text(str(os.getpid()))
-    except OSError:
-        return None
-    cmd = (f'while [ -f "{GUI_HOLD}" ]; do '
-           f'pkill -f "{pat}" >/dev/null 2>&1; sleep 0.4; done')
-    try:
-        return subprocess.Popen(
-            ["/bin/bash", "-c", cmd],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, start_new_session=True,
-        )
-    except OSError:
-        return None
+    return None
 
 
 def release_gui_hold(proc, was_up):
@@ -649,27 +897,37 @@ def release_gui_hold(proc, was_up):
                 proc.kill()
             except OSError:
                 pass
-    resume_gui(was_up)
+    # deliberately no resume: see pause_gui()
 
 
-def rotate(verbose=True, lock_timeout=15):
-    """Burn the registration, take a new one, confirm the egress /64 moved.
+def rotate(verbose=True, lock_timeout=30, cheap_first=True):
+    """Take a fresh egress /64, confirm it moved, come back up.
 
     Serialised on three levels, in fixed order:
       1. GLOBAL_ROTATE_LOCK — the flock every rotator on this Mac shares.
       2. ROTATE_LOCK — ocul's own.
       3. OVERLAY_GUARD/rotate.lock — the mkdir the shell stack (zen-hop) takes.
 
-    The WARP GUI is parked and the daemon proven alive before warp-cli is
-    touched. Registration attempts back off on API errors instead of hammering,
-    and a rotation is only accepted when the egress /64 is both different from
-    the block we left AND not already on the burned blacklist.
+    `lock_timeout` seconds are spent *waiting* for a peer rotation instead of
+    failing: the guard and the HUD button routinely want the tunnel at the same
+    moment, and the second one used to print a failure for work already in
+    flight. Waiting is bounded by the caller (the HUD's watchdog), so a wedged
+    holder still ends the wait — it just does not end it in the first 200 ms.
+
+    `cheap_first` tries a plain reconnect before burning the registration. The
+    quota key is the egress /64 and WARP re-pins an existing registration to a
+    new block often enough that this clears a large share of walls with zero
+    WARP API calls. Those calls are the scarce resource: the API throttles
+    registration creation, and a throttled rotator is a rotator that stops
+    working for tens of minutes. Burn second, not first.
     """
     glock = FileLock(GLOBAL_ROTATE_LOCK)
-    if not glock.acquire():
-        raise RotationBusy("another rotator holds the global lock")
+    if not glock.acquire(timeout=lock_timeout):
+        pid, age = lock_holder(GLOBAL_ROTATE_LOCK)
+        raise RotationBusy(
+            f"a rotation is already running (pid {pid or '?'}, {age}s in) — it owns the tunnel")
     lock = FileLock(ROTATE_LOCK)
-    if not lock.acquire():
+    if not lock.acquire(timeout=5):
         glock.release()
         raise RotationBusy("rotation already in progress (another guard or hop)")
 
@@ -680,6 +938,7 @@ def rotate(verbose=True, lock_timeout=15):
         glock.release()
         raise
 
+    mark_rotation_phase("starting")
     paused = pause_keeper()
     try:
         GUI_HOLD.unlink()
@@ -693,8 +952,99 @@ def rotate(verbose=True, lock_timeout=15):
 
         before_addr = iface_v6(force=True)
         before_pfx = prefix64(before_addr)
+
+        st = jload(GUARD_STATE, {})
+        burned = set((jload(OVERLAY_STATE, {}) or {}).get("blacklist") or [])
+        old_bucket = st.get("egress_prefix") or before_pfx
+        if old_bucket:
+            burned.add(old_bucket)
+
         say = print if verbose else (lambda *a, **k: None)
         say(f"old {before_pfx or '(none)'}  device {registration_id()[:8]}…")
+
+        def measure():
+            """(addr, device /64, egress ip, egress /64) as the server sees it."""
+            addr = iface_v6(force=True)
+            if not addr:
+                return "", "", None, ""
+            fields = trace_v6(addr) or {}
+            ip = fields.get("ip") or ""
+            egress = ip if ":" in ip else None
+            return addr, prefix64(addr), egress, (prefix64(egress) if egress else "")
+
+        def settled(seconds=40):
+            deadline = time.time() + seconds
+            while time.time() < deadline:
+                if warp_connected() and iface_v6(force=True):
+                    return True
+                time.sleep(1.5)
+            return False
+
+        # Cheap pass first. A plain reconnect re-pins the existing registration
+        # to a new /64 often enough to clear most walls with zero WARP API
+        # calls, and those calls are the throttled resource: a rotator that
+        # hammers registration/new spends the next forty minutes parked. Burn
+        # the device only when the reconnect genuinely handed the same block
+        # back.
+        if cheap_first and not api_park_left():
+            mark_rotation_phase("rotate-keys")
+            say("-- cheap pass: rotate the tunnel key pair, stay connected --")
+            last_key = old_bucket
+            api_refused = 0
+            for round_no in range(1, 3):
+                # `tunnel rotate-keys` mints a new key pair on the SAME
+                # registration. The edge hands back a different egress /64,
+                # the tunnel never drops, and no registration is burned — the
+                # one resource Cloudflare throttles. This is the pass that
+                # should clear most walls; measuring proves whether it did.
+                rc, out, err = run([WARP, "--accept-tos", "tunnel", "rotate-keys"],
+                                   timeout=30)
+                if rc != 0:
+                    msg = (out + " " + err).strip()
+                    if api_busy(msg):
+                        park_api(25, "tunnel rotate-keys")
+                        api_refused += 1
+                    say(f"   key rotation {round_no}/2 refused: {msg[:80] or 'error'}")
+                    time.sleep(3 + round_no)
+                    continue
+                if not settled(20):
+                    say("   tunnel did not settle — moving to the device burn")
+                    break
+                c_addr, c_pfx, c_egress, c_key = measure()
+                if c_key and c_key != old_bucket and c_key not in burned:
+                    did = registration_id()
+                    _OVERLAY_DEV.update(id=did, ts=time.time())
+                    st.update({"last_hop": now(), "hops": st.get("hops", 0) + 1,
+                               "prefix": c_pfx, "addr": c_addr,
+                               "egress": c_egress, "egress_prefix": c_key,
+                               "egress_seen": int(time.time()), "collisions": 0})
+                    jsave(GUARD_STATE, st)
+                    drop_caches()
+                    record_wall("rotated", f"egress {c_key} via rotate-keys "
+                                           f"(device {before_pfx})")
+                    overlay_rotate(old_bucket, c_key, did)
+                    publish_overlay_state("rotate")
+                    LAST_MODE["mode"] = "rotate-keys"
+                    mark_rotation_phase("done", {"moved": c_key})
+                    say(f"new {c_pfx}  egress {c_key}  (rotate-keys, no device burn)")
+                    return True, before_pfx, c_pfx
+                last_key = c_key or last_key
+                say(f"   key rotation {round_no}/2 kept {last_key or '?'}")
+            if api_refused >= 2:
+                # the WARP API is throttling us. Burning the device needs the
+                # same API, so it would only delete a working registration and
+                # sit in the dark until the park lifts. Keep the tunnel.
+                left = api_park_left()
+                raise RuntimeError(
+                    f"cloudflare is throttling key rotation — {left}s of park left; "
+                    f"the tunnel is still on a live /64")
+            say("   burning the device instead")
+
+        parked = api_park_left()
+        if parked > 15:
+            raise RuntimeError(
+                f"cloudflare is throttling registrations — {parked}s of park left; "
+                f"the tunnel is still on a live /64")
 
         def drop_registration():
             last = ""
@@ -725,14 +1075,13 @@ def rotate(verbose=True, lock_timeout=15):
         accepted, last_err = None, ""
         attempts = 14          # per wall turn; across turns there is no limit
         burned_hits = 0
+        tried = {old_bucket} if old_bucket else set()
         started = time.time()
         for attempt in range(1, attempts + 1):
-            if time.time() - started > 600:
+            if time.time() - started > 300:
                 last_err = last_err or "rotation ran past its time budget"
                 break
             say(f"-- rotation attempt {attempt}/{attempts} --")
-            run([WARP, "--accept-tos", "disconnect"], timeout=20)
-            time.sleep(1)
 
             ok, msg = drop_registration()
             if not ok and daemon_down(msg) and not ensure_daemon():
@@ -746,10 +1095,14 @@ def rotate(verbose=True, lock_timeout=15):
                 if daemon_down(msg):
                     ensure_daemon()
                 if api_busy(msg):
-                    # cloudflare is throttling registrations; hammering turns a
-                    # 30 s blip into a 40 min outage and leaks the home IP
+                    # Cloudflare throttles registration creation. Every rotator
+                    # on the box used to rediscover that alone, 14 times a turn;
+                    # the park stamp makes one process' throttle teach the rest,
+                    # so a single API blip costs seconds, not forty minutes.
                     wait = min(45, 5 * (2 ** (attempt - 1)))
-                    log(GUARD_LOG, f"warp api busy — backing off {wait}s")
+                    park_api(wait + 10, "registration new")
+                    log_throttled(GUARD_LOG, "api-busy",
+                                  f"warp api busy — parked {wait}s", every=30)
                     time.sleep(wait)
                 else:
                     time.sleep(min(12, attempt * 2))
@@ -776,10 +1129,12 @@ def rotate(verbose=True, lock_timeout=15):
                 last_err = "no cloudflare egress after rotation"
                 time.sleep(3)
                 continue
-            if key == old_bucket:
-                last_err = f"same bucket ({key})"
+            if key in tried:
+                last_err = f"same bucket ({key}) — cloudflare pinned it"
                 say("   same /64 handed back — rotating again")
+                tried.add(key)
                 continue
+            tried.add(key)
             if key in burned:
                 burned_hits += 1
                 last_err = f"landed on a burned bucket ({key})"
@@ -813,11 +1168,13 @@ def rotate(verbose=True, lock_timeout=15):
             jsave(GUARD_STATE, st)
             raise RuntimeError(last_err or "no fresh /64 after retries")
 
+        LAST_MODE["mode"] = "burn"
         key, after_addr, after_pfx, egress, did = accepted
         _OVERLAY_DEV.update(id=did, ts=time.time())
         st.update({"last_hop": now(), "hops": st.get("hops", 0) + 1,
                    "prefix": after_pfx, "addr": after_addr,
-                   "egress": egress, "egress_prefix": key, "collisions": 0})
+                   "egress": egress, "egress_prefix": key,
+                   "egress_seen": int(time.time()), "collisions": 0})
         jsave(GUARD_STATE, st)
         drop_caches()
         record_wall("rotated", f"egress {key} (device {before_pfx} -> {after_pfx})")
@@ -827,10 +1184,12 @@ def rotate(verbose=True, lock_timeout=15):
         return True, before_pfx, after_pfx
     finally:
         release_gui_hold(gui_hold, gui_was_up)
+        resume_gui(gui_was_up)
         if paused:
             resume_keeper()
         if foreign:
             release_foreign_rotlock()
+        clear_rotation_phase()
         lock.release()
         glock.release()
 
@@ -1341,19 +1700,36 @@ def cmd_lane(args):
 
     src = iface_v6()
     if not warp_connected() or not src:
-        log(LANE_LOG, "warp down at launch — attempting one repair")
+        # Never refuse a lane the user asked for. The tunnel is down here for
+        # three ordinary reasons — a rotation is mid-surgery, the daemon died,
+        # or the registration is stale — and every one of them is repairable in
+        # a few seconds. The old path printed "refusing to launch (fail-closed)"
+        # on a two-second blip, which is what turned a rotation into a dead
+        # terminal and a HUD frozen on the previous /64.
+        log(LANE_LOG, "warp down at launch — repairing before opening the lane")
         try:
-            run([WARP, "--accept-tos", "connect"], timeout=20)
-            for _ in range(15):
-                src = iface_v6()
-                if warp_connected() and src:
-                    break
-                time.sleep(2)
-        except Exception:
-            pass
+            heal_tunnel()
+        except Exception as exc:
+            log(LANE_LOG, f"launch repair failed: {exc}")
+        src = iface_v6()
+        if not warp_connected() or not src:
+            # one last, fuller attempt: a fresh registration rather than a
+            # reconnect. this is the same path the guard takes on a wall.
+            try:
+                rotate(verbose=False)
+            except RotationBusy:
+                log(LANE_LOG, "launch repair deferred: a rotation already owns warp-cli")
+                deadline = time.time() + 30
+                while time.time() < deadline and not (warp_connected() and iface_v6(force=True)):
+                    time.sleep(2)
+            except Exception as exc:
+                log(LANE_LOG, f"launch rotation failed: {exc}")
+            src = iface_v6()
     if not warp_connected() or not src:
-        print("ocul: WARP IPv6 tunnel is not up — refusing to launch (fail-closed).", file=sys.stderr)
-        print("      run: ocul hop    or    warp-cli connect", file=sys.stderr)
+        # genuinely unreachable. stay closed so nothing leaks, but say what to
+        # run and leave the HUD message honest instead of pretending success.
+        print("ocul: WARP tunnel could not be repaired — lane closed (no leak).", file=sys.stderr)
+        print("      ocul doctor   ·   warp-cli connect   ·   ocul hop", file=sys.stderr)
         return 3
 
     if not ensure_proxy(known.port):
@@ -1442,7 +1818,16 @@ def publish_overlay_state(reason="tick"):
     st = jload(GUARD_STATE, {})
     egress = st.get("egress") or ""
     pfx = st.get("egress_prefix") or (prefix64(egress) if ":" in egress else "")
-    edge = jload(EDGE_STATE, {}).get("edge") or ""
+    est = jload(EDGE_STATE, {})
+    edge = est.get("edge") or ""
+    # an edge pinned long ago is not this session's edge; printing it as the
+    # "current" path would claim a route the proxy is not actually using. drop
+    # it once it is clearly stale so the HUD shows "-> /64" instead of a lie.
+    try:
+        if now() - float(est.get("ts") or 0) > max(EDGE_CACHE_TTL * 4, 600):
+            edge = ""
+    except Exception:
+        edge = ""
     device = overlay_device() or ""
 
     px = jload(OVERLAY_PROXY_STATE, {}) or {}
@@ -1468,9 +1853,14 @@ def publish_overlay_state(reason="tick"):
         "ts": now(),
     })
     after = {k: v for k, v in px.items() if k != "ts"}
-    # a tick that changes nothing must not rewrite the file just to bump a clock
-    if before != after:
-        jsave(OVERLAY_PROXY_STATE, px)
+    # Heartbeat, not a diff. The HUD has to be able to tell "live" from
+    # "fossil": a proxy-state.json with an old `ts` is a mux that died, and the
+    # panel must show that instead of rendering yesterday's numbers as current.
+    # Writing one small file per tick is the cheapest way to keep that honest.
+    px["age"] = 0
+    px["stale"] = False
+    px["source"] = "ocul"
+    jsave(OVERLAY_PROXY_STATE, px)
 
     ov = jload(OVERLAY_STATE, {}) or {}
     ov_before = {k: v for k, v in ov.items() if k != "ocul_ts"}
@@ -1483,10 +1873,32 @@ def publish_overlay_state(reason="tick"):
     # install, so the max keeps the tile monotonic without double-counting
     ov["hops"] = max(int(ov.get("hops") or 0), int(st.get("hops") or 0))
     ov["collisions"] = max(int(ov.get("collisions") or 0), int(st.get("collisions") or 0))
+    try:
+        last_hb = float(ov.get("ocul_ts") or 0)
+    except Exception:
+        last_hb = 0.0
     ov["ocul_ts"] = now()
     ov_after = {k: v for k, v in ov.items() if k != "ocul_ts"}
-    if ov_before != ov_after:
+    # Write on change, and at least every 30s even when nothing moved. A healthy
+    # idle guard and a wedged guard otherwise write byte-identical files, and
+    # status.sh had no way to tell "nothing to report" from "nothing is running"
+    # — the HUD happily painted a dead rotator as green.
+    if ov_before != ov_after or (now() - last_hb) >= 30:
         jsave(OVERLAY_STATE, ov)
+
+    # mirror into the legacy App Support state so status.sh / doctor.sh / the
+    # `ouc` CLI read the same truth instead of a file that stopped updating
+    # when the old engine was retired.
+    if LEGACY_STATE.parent.is_dir():
+        ls = jload(LEGACY_STATE, {}) or {}
+        if pfx:
+            ls["current_64"] = pfx
+        if egress:
+            ls["egress"] = egress
+        ls["hops"] = max(int(ls.get("hops") or 0), int(st.get("hops") or 0))
+        ls["last_hop"] = float(st.get("last_hop") or time.time())
+        ls["guard_ts"] = time.time()
+        jsave(LEGACY_STATE, ls)
     return {"proxy": px, "state": ov}
 
 
@@ -1601,7 +2013,10 @@ def refresh_egress():
     "moved" against a stale value, which is how a real collision gets counted as
     a success.
     """
-    src = iface_v6()
+    # force a fresh read: this runs on the guard tick, never in the proxy hot
+    # path, so a cached utun address from two seconds ago is not this tick's
+    # truth. measuring a stale source is exactly how drift gets reported wrong.
+    src = iface_v6(force=True)
     if not src:
         return None
     ip = trace_v6(src).get("ip", "")
@@ -1643,6 +2058,8 @@ def heal_tunnel():
     if rotation_in_progress():
         # a rotation owns warp-cli right now; it restores the tunnel itself
         return True
+    if heal_login(force=True):
+        return True
     log_throttled(GUARD_LOG, "tunnel-down", "tunnel down — reconnect", every=120)
     # a dead daemon answers every warp-cli verb with 'No such file or directory';
     # bring it back before asking it to connect
@@ -1665,7 +2082,7 @@ def heal_tunnel():
     return False
 
 
-def on_wall():
+def on_wall(session_ids=None):
     st = jload(GUARD_STATE, {})
     t = now()
     # the third-party guard tails the same log and stamps last_hop when it
@@ -1691,10 +2108,20 @@ def on_wall():
     try:
         moved, before, after = rotate(verbose=False)
         log(GUARD_LOG, f"wall rotated {before} -> {after} moved={moved}")
-        notify("ocul", f"new /64 {after or 'unknown'} — resend the message")
+        # the rotation was never the point on its own: the turn is dead and the
+        # user had to retype. put the message back into every chat it cut off.
+        sent = dispatch_resume(session_ids)
+        if sent:
+            notify("ocul", f"new /64 {after or 'unknown'} — resumed {sent} chat(s)")
+        else:
+            notify("ocul", f"new /64 {after or 'unknown'} — resend the message")
     except RotationBusy:
         log_throttled(GUARD_LOG, "busy", "wall: rotation already in progress", every=60)
     except Exception as exc:
+        if "throttling" in str(exc):
+            log_throttled(GUARD_LOG, "wall-throttle",
+                          f"wall: {exc}", every=120)
+            return
         log(GUARD_LOG, f"wall rotation failed: {exc}")
         notify("ocul", "rotation failed — see ocul logs")
 
@@ -1731,12 +2158,115 @@ def pump_log(path, offset):
     return offset + len(chunk), chunk
 
 
+RESUME_LOG = STATE / "resume.log"
+RESUME_STATE = STATE / "resume.json"
+
+
+def _oc_bin():
+    return os.environ.get("OCUL_OC_BIN") or shutil.which("opencode") or ""
+
+
+def _resume_recent(sid):
+    st = jload(RESUME_STATE, {}) or {}
+    return time.time() - float(st.get(sid, 0) or 0) < 60
+
+
+def _resume_stamp(sid):
+    st = jload(RESUME_STATE, {}) or {}
+    st[sid] = int(time.time())
+    if len(st) > 200:
+        st = dict(sorted(st.items(), key=lambda kv: kv[1])[-100:])
+    jsave(RESUME_STATE, st)
+
+
+def session_from_line(line):
+    m = re.search(r"sessionID=(ses_[A-Za-z0-9]+)", line or "")
+    return m.group(1) if m else ""
+
+
+def _spawn_resume(argv, delay=0.0):
+    """Detach one `opencode run` per chat. Never blocks, never retries.
+
+    A rotation finishes while the guard tick is still running; poking the chat
+    straight away sometimes lands before the edge has finished moving the /64.
+    A few seconds of quiet fixes that, and a daemon thread keeps the wait off
+    the tick entirely.
+    """
+    def _go():
+        try:
+            if delay > 0:
+                time.sleep(delay)
+            fh = open(RESUME_LOG, "ab")
+            subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fh, stderr=fh,
+                             start_new_session=True, cwd=str(Path.home()))
+            fh.close()
+        except Exception as exc:
+            log(GUARD_LOG, f"resume spawn failed: {exc}")
+    threading.Thread(target=_go, name="resume", daemon=True).start()
+
+
+def dispatch_resume(session_ids):
+    """Send 'continue' into the chats a wall cut off, through the lane.
+
+    A rotation on its own does not resume anything — the turn is dead and the
+    user has to retype. `opencode run --session <id> continue` talks to the
+    same background service the TUI uses, so the chat picks up where it stopped
+    on the new /64. One message per session per minute; never a retry loop.
+    """
+    if os.environ.get("OCUL_RESUME", "1") == "0":
+        return 0
+    msg = os.environ.get("OCUL_RESUME_MSG") or "continue"
+    oc = _oc_bin()
+    if not oc:
+        log_throttled(GUARD_LOG, "resume-no-oc",
+                      "resume skipped: opencode is not on PATH", every=600)
+        return 0
+    sent = 0
+    for sid in list(dict.fromkeys(s for s in (session_ids or []) if s)) or [""]:
+        if sid and _resume_recent(sid):
+            continue
+        argv = [oc, "run"]
+        argv += ["--session", sid] if sid else ["--continue"]
+        if os.environ.get("OCUL_RESUME_AUTO", "1") == "1":
+            argv.append("--auto")
+        argv.append(msg)
+        if os.environ.get("OCUL_RESUME_DRY") == "1":
+            log(GUARD_LOG, "resume dry-run: " + " ".join(argv))
+            continue
+        try:
+            ensure_dirs()
+            _resume_stamp(sid or "-")
+            delay = float(os.environ.get("OCUL_RESUME_DELAY", "4") or 0)
+            _spawn_resume(argv, delay)
+            sent += 1
+            log(GUARD_LOG,
+                "resume queued for " + (sid[:14] + "…" if sid else "the latest chat")
+                + (f" in {delay:g}s" if delay > 0 else ""))
+        except Exception as exc:
+            log(GUARD_LOG, f"resume failed: {exc}")
+    return sent
+
+
 def matched_line(chunk):
     text = chunk.decode("utf-8", "replace")
     for line in text.splitlines():
         if WALL_RE.search(line):
             return line.strip()[:200]
     return ""
+
+
+def matched_walls(chunk):
+    """Every wall line in the chunk, with the session it cut off.
+
+    A burst usually arrives together (one per retrying turn), and resuming only
+    the first leaves the other chats dead until the user notices.
+    """
+    out = []
+    text = chunk.decode("utf-8", "replace")
+    for line in text.splitlines():
+        if WALL_RE.search(line):
+            out.append((line.strip(), session_from_line(line)))
+    return out
 
 
 def cmd_guard(args):
@@ -1783,10 +2313,11 @@ def cmd_guard(args):
             ticks += 1
             try:
                 offset, chunk = pump_log(OPENCODE_LOG, offset)
-                line = matched_line(chunk) if chunk else ""
-                if line:
-                    record_wall("detected", line)
-                    on_wall()
+                walls = matched_walls(chunk) if chunk else []
+                if walls:
+                    for line, _sid in walls:
+                        record_wall("detected", line)
+                    on_wall([sid for _line, sid in walls])
 
                 st = jload(GUARD_STATE, {})
                 st["offset"] = offset
@@ -1821,9 +2352,25 @@ def cmd_guard(args):
 
 
 def cmd_hop(args):
+    wait = float(getattr(args, "wait", 20.0) or 0)
+    cheap = not bool(getattr(args, "no_cheap", False))
+    started = time.time()
     try:
-        moved, before, after = rotate(verbose=True)
+        moved, before, after = rotate(verbose=True, lock_timeout=wait, cheap_first=cheap)
+    except RotationBusy as exc:
+        # Not a fault: the guard (or another hop) owns the tunnel and is doing
+        # exactly this work. Say what is true and what to do, once.
+        st = jload(GUARD_STATE, {})
+        live = st.get("egress_prefix") or before_or_none()
+        print(f"rotation deferred: {exc}")
+        if live:
+            print(f"egress  {live}  (still live — the tunnel is up, retry when the turn ends)")
+        return 3
     except Exception as exc:
+        if "throttling" in str(exc):
+            print(f"rotation deferred: {exc}")
+            print("tunnel unchanged and up — a wall burns the same API, so retrying now only wastes it")
+            return 3
         print(f"rotation failed: {exc}")
         return 2
     src = iface_v6()
@@ -1832,7 +2379,13 @@ def cmd_hop(args):
     print(f"exit   {seen}   warp={fields.get('warp','?')} colo={fields.get('colo','?')}")
     print(f"bucket {prefix64(seen) if ':' in seen else prefix64(after)}")
     print("fresh /64" if moved else "same /64 — cloudflare handed back the old block, run it again")
+    print(f"took   {time.time() - started:.1f}s  ({LAST_MODE['mode'] or 'rotate'})")
     return 0 if moved else 1
+
+
+def before_or_none():
+    addr = iface_v6()
+    return prefix64(addr) if addr else ""
 
 
 def cmd_edges(args):
@@ -1979,6 +2532,16 @@ def cmd_status(args):
         print(f"proxy    {'foreign listener (no ocul health)' if port_open(port) else 'down'}")
     print(f"edge     {jload(EDGE_STATE, {}).get('edge') or 'unset'}")
     print(f"guard    {'running pid %s' % guard_pid() if guard_pid() else 'not running'}")
+    ph = rotation_phase()
+    if ph:
+        started = ph.get("started") or 0
+        age = int(now() - started) if started else 0
+        print(f"rotation {ph.get('phase','?')} pid {ph.get('pid','?')} {age}s")
+    else:
+        print("rotation idle")
+    park = api_park_left()
+    if park:
+        print(f"api park {park}s left (cloudflare throttling registrations)")
     print(f"rotations {st.get('hops',0)}  collisions {st.get('collisions',0)}")
     return 0
 
@@ -2223,7 +2786,11 @@ def main(argv):
 
     sub.add_parser("doctor")
     sub.add_parser("status")
-    sub.add_parser("hop")
+    p = sub.add_parser("hop", help="burn the device and take a fresh egress /64")
+    p.add_argument("--wait", type=float, default=20.0,
+                   help="seconds to wait for a peer rotation to finish (default 20)")
+    p.add_argument("--no-cheap", action="store_true",
+                   help="skip the reconnect pass and burn the registration immediately")
     sub.add_parser("edges")
     sub.add_parser("overlay", help="publish ocul state into the overlay HUD files")
     sub.add_parser("proxy-on", help="start the lane proxy (HUD PROXY chip)")

@@ -905,7 +905,6 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "proxyRotate":
             if let slot = body["slot"] as? String, !slot.isEmpty { proxyCmd(["rotate", slot]) }
             else { proxyCmd(["rotate"]) }
-        case "proxyCli": proxyCmd(["cli"])
         case "proxyOn": proxyCmd(["on"])
         case "proxyOff": proxyCmd(["off"])
         case "proxyTest": proxyCmd(["test"])
@@ -922,14 +921,6 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "modelBurn": modelCmd(["burn-current"])
         case "modelReset": modelCmd(["reset"])
         case "modelRefresh": modelCmd(["refresh"])
-        // ---- providers already in opencode.json. the free pool is one
-        // provider; when it is walled this is the working answer.
-        case "providerList":
-            toolCmd("model-levers.sh", ["providers", "json"], json: true, tag: "provider")
-        case "providerSet":
-            if let ref = body["ref"] as? String, !ref.isEmpty {
-                toolCmd("model-levers.sh", ["set", ref], tag: "provider")
-            }
         default: break
         }
     }
@@ -1140,18 +1131,21 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
 
         // a hop or a doctor that never exits (dead tunnel, a sudo prompt with
         // nowhere to type) would hold `busy` forever and refuse every command
-        // after it. 90s is longer than any real run, short enough to recover.
+        // after it. A hop is allowed to spend minutes: it waits out a peer
+        // rotation instead of failing, and a Cloudflare API park is a minute of
+        // that. 90s is the doctor's cap; the hop gets 4 minutes.
+        let cap: Double = isHopScript ? 240 : 90
         let watchdog = DispatchWorkItem { [weak self] in
             guard p.isRunning else { return }
             DispatchQueue.main.async {
-                self?.push("log", ["line": "… \(which) exceeded 90s — stopping it"])
+                self?.push("log", ["line": "… \(which) exceeded \(Int(cap))s — stopping it"])
             }
             p.terminate()
             DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
                 if p.isRunning { kill(p.processIdentifier, SIGKILL) }
             }
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 90, execute: watchdog)
+        DispatchQueue.global().asyncAfter(deadline: .now() + cap, execute: watchdog)
 
         var buffer = ""
         pipe.fileHandleForReading.readabilityHandler = { fh in
