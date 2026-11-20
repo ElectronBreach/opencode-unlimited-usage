@@ -1284,7 +1284,6 @@ window.ouc = function(ev){
   else if (ev.type === "busy") setBusy(ev.payload.cmd, ev.payload.on);
   else if (ev.type === "toast") toast(ev.payload.text || "");
   else if (ev.type === "snapshot") paintSnapshotState(!!ev.payload.ok, ev.payload.text || "");
-  else if (ev.type === "snapshot") paintSnapshotState(!!ev.payload.ok, ev.payload.text || "");
   else if (ev.type === "window") {
     document.body.classList.toggle("collapsed", !!ev.payload.collapsed);
   }
