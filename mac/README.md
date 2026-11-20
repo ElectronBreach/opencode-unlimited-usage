@@ -171,6 +171,18 @@ Three rules the earlier engine got wrong:
   recycler had handed us because the utun leg had been burned into the list.
 - **a duplicate block is remembered.** `tried` holds every /64 seen this turn,
   so a pinned bucket stops re-burning the device.
+- **every measurement is corroborated and budgeted.** the exit is asked for
+  twice over: Cloudflare's `cdn-cgi/trace` (the only source that also says
+  `warp=on`) and, when that is silent or says the traffic bypassed the tunnel, a
+  plain IPv6 echo from a different operator. readings are cached for 8s and
+  single-flighted, so a guard tick, a HUD `where` and a rotation share one probe;
+  the whole measurement has a 10s budget so a dead network costs a tick, not a
+  minute. two answers that disagree are `unstable` — retaken, never recorded.
+- **drift takes two samples.** a guard tick that reads a different /64 only
+  *arms* a confirmation; the next tick records it. nothing is measured while a
+  rotator holds the shared lock, because mid-hop the tunnel is between exits on
+  purpose and that reading is a coin flip. three confirmed moves in ten minutes
+  is a flapping tunnel, not a re-pin, and it gets healed.
 - **unmeasured is not a block.** If the traceroute cannot name an exit, the
   answer is "not measured" — never the `2606:4700:110:…` utun leg, which is a
   state address. That fallback once wrote the tunnel into the burn list and made

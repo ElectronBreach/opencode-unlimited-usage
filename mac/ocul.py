@@ -585,7 +585,7 @@ def prefix64(addr):
     return ":".join(parts)
 
 
-def trace_v6(src, edge=None):
+def trace_v6(src, edge=None, probe_timeout=None):
     """What the server sees, measured on the same path the lane uses.
 
     A single pinned edge that happens to be unreachable does not mean "there is
@@ -608,7 +608,7 @@ def trace_v6(src, edge=None):
     # cap the sweep: this runs on the guard tick and in rotate(), never in the
     # proxy's per-request path, but a fully-down trace must still not stall the
     # guard for half a minute. three edges at 4s is a bounded worst case.
-    timeout = min(CONNECT_TIMEOUT, 4.0)
+    timeout = probe_timeout or min(CONNECT_TIMEOUT, 4.0)
     for target in cands:
         if tries >= 3:
             break
@@ -648,6 +648,138 @@ def trace_v6(src, edge=None):
                     pass
             continue
     return {}
+
+
+# ---- egress measurement -----------------------------------------------------
+# Two questions, one answer. `www.cloudflare.com/cdn-cgi/trace` names the exit
+# *and* whether WARP is carrying it (`warp=on`) — the only source that does.
+# When that host is the broken thing, or when it says the traffic bypassed the
+# tunnel, a plain echo from a different operator names the address instead.
+# One source failing is a bad minute, not a new /64.
+ECHO_HOSTS = ("icanhazip.com", "api64.ipify.org")
+EGRESS_TTL = 8.0
+EGRESS_BUDGET = 9.0         # whole measurement, trace + corroboration
+EGRESS_PROBE_TIMEOUT = 2.5  # per socket, so three dead edges cost 7.5s not 12
+_EGRESS_CACHE = {"src": None, "ts": 0.0, "info": {}}
+_EGRESS_LOCK = threading.Lock()
+# drift confirmation: one reading arms, two agree, three changes in ten minutes
+# means the tunnel is moving under us rather than Cloudflare re-pinning.
+_DRIFT = {"pfx": "", "n": 0, "events": []}
+
+
+def _probe_body(src, host, path="/", timeout=None, hostname=None):
+    """One HTTPS GET over the tunnel, bound to the WARP source address."""
+    timeout = timeout or min(CONNECT_TIMEOUT, 4.0)
+    if host.count(":") >= 3:
+        target = host
+    else:
+        try:
+            target = next((a for a in aaaa(host)[:3] if a), "")
+        except Exception:
+            target = ""
+    if not target:
+        return ""
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.bind((src, 0))
+        s.connect((target, 443))
+        tls = ssl.create_default_context().wrap_socket(
+            s, server_hostname=hostname or host)
+        tls.sendall(f"GET {path} HTTP/1.1\r\nHost: {hostname or host}\r\n"
+                    "User-Agent: ocul\r\nConnection: close\r\n\r\n".encode())
+        raw = b""
+        while len(raw) < 65536:
+            chunk = tls.recv(4096)
+            if not chunk:
+                break
+            raw += chunk
+        tls.close()
+        return raw.split(b"\r\n\r\n", 1)[-1].decode("latin1").strip()
+    except (OSError, ssl.SSLError):
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+        return ""
+
+
+def measure_egress(src=None, force=False, cache_ttl=EGRESS_TTL):
+    """Where the far end says we are coming from — measured, not assumed.
+
+    Returns {"ip", "prefix", "colo", "warp", "loc", "sources", "unstable", "ts"}
+    or {} when nothing could be measured. An empty answer is a *fact* ("not
+    reachable right now"), never a licence to fall back to the utun leg.
+
+    Cached briefly and single-flighted: the guard tick, the HUD's `where` and a
+    rotation all ask, and three simultaneous probes of the same source address
+    is three ways to get a half-open connection and call it drift.
+    """
+    src = src or iface_v6(force=True)
+    if not src:
+        return {}
+    c = _EGRESS_CACHE
+    if not force and c["info"] and c["src"] == src \
+            and time.monotonic() - c["ts"] < cache_ttl:
+        return c["info"]
+    if not _EGRESS_LOCK.acquire(timeout=15):
+        return c["info"] or {}
+    try:
+        if not force and c["info"] and c["src"] == src \
+                and time.monotonic() - c["ts"] < cache_ttl:
+            return c["info"]
+        # one tick must not spend half a minute measuring. the whole reading is
+        # budgeted: probe, corroborate, give up — in that order, against a clock.
+        t0 = time.monotonic()
+        deadline = t0 + EGRESS_BUDGET
+        fields = trace_v6(src, probe_timeout=EGRESS_PROBE_TIMEOUT) or {}
+        ip = fields.get("ip") if ":" in (fields.get("ip") or "") else ""
+        sources = ["trace"] if ip else []
+        unstable = False
+        # ask a second operator when the trace is silent, or when it reports the
+        # traffic did not go through the tunnel — that block is the ISP, not an
+        # exit we can rotate or burn.
+        if not ip or fields.get("warp") == "off":
+            echo = ""
+            for host in ECHO_HOSTS:
+                left = deadline - time.monotonic()
+                if left <= 0.8:
+                    break
+                body = _probe_body(src, host, timeout=min(EGRESS_PROBE_TIMEOUT, left))
+                cand = (body.split() or [""])[0] if body else ""
+                if ":" in cand:
+                    echo = cand
+                    break
+            if echo:
+                sources.append("echo")
+                if not ip:
+                    ip = echo
+                elif prefix64(echo) != prefix64(ip):
+                    # the exit moved while we were asking. that is a retry, not
+                    # a new block, and not drift.
+                    unstable = True
+                if fields.get("warp") == "off":
+                    # the trace says this traffic did not go through the tunnel:
+                    # the address it named is the ISP. the echo was bound to the
+                    # utun source, so that is the tunnel's answer — take it, and
+                    # say plainly that the trace disagreed.
+                    ip, unstable = echo, True
+        if not ip:
+            _EGRESS_CACHE.update(src=src, ts=time.monotonic(), info={})
+            return {}
+        info = {"ip": ip, "prefix": prefix64(ip),
+                "colo": fields.get("colo") or "",
+                "warp": fields.get("warp") or "",
+                "loc": fields.get("loc") or "",
+                "sources": sources, "unstable": unstable,
+                "ms": int((time.monotonic() - t0) * 1000),
+                "ts": time.time()}
+        _EGRESS_CACHE.update(src=src, ts=time.monotonic(), info=info)
+        return info
+    finally:
+        _EGRESS_LOCK.release()
 
 
 # ---- daemon health, GUI parking, one global lock ---------------------------
@@ -982,30 +1114,42 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
 
         st = jload(GUARD_STATE, {})
         burned = set((jload(OVERLAY_STATE, {}) or {}).get("blacklist") or [])
-        # the bucket we are leaving is the last *measured* egress. before_pfx is
-        # the utun leg (2606:4700:110:…) — a state address, never an exit — so
-        # seeding `burned`/`tried` with it blacklisted a block we were never on.
-        old_bucket = st.get("egress_prefix") or ""
-        if not old_bucket:
-            _f = trace_v6(before_addr) if before_addr else {}
-            _ip = _f.get("ip") or ""
-            old_bucket = prefix64(_ip) if ":" in _ip else ""
+        # The bucket we are leaving is what the far end says *right now*, not
+        # what the guard last wrote. WARP moves the exit on a plain reconnect, so
+        # a guard that is one minute behind would have us compare a fresh block
+        # against a stale one and call the block we are already on "fresh".
+        # before_pfx is the utun leg (2606:4700:110:…) — a state address, never
+        # an exit — so it is never a candidate for this.
+        here = measure_egress(before_addr, force=True) if before_addr else {}
+        old_bucket = here.get("prefix") or st.get("egress_prefix") or ""
+        old_from = ("measured" if here.get("prefix")
+                    else ("state" if old_bucket else "unknown"))
+        if old_bucket:
+            burned.add(old_bucket)
         if old_bucket:
             burned.add(old_bucket)
 
         say = print if verbose else (lambda *a, **k: None)
-        say(f"old {old_bucket or '(unmeasured)'}  tunnel {before_pfx or '(down)'}"
-            f"  device {registration_id()[:8]}…")
+        say(f"old {old_bucket or '(unmeasured)'} ({old_from})"
+            f"  tunnel {before_pfx or '(down)'}  device {registration_id()[:8]}…")
 
         def measure():
-            """(addr, device /64, egress ip, egress /64) as the server sees it."""
+            """(tunnel addr, tunnel /64, egress ip, egress /64) as seen remotely.
+
+            One code path for every measurement in the rotator: retried, cached
+            per source address, corroborated by a second operator when the trace
+            host is the broken thing. An unstable reading (the exit moved while
+            we asked) is re-taken once before it is allowed to decide anything.
+            """
             addr = iface_v6(force=True)
             if not addr:
                 return "", "", None, ""
-            fields = trace_v6(addr) or {}
-            ip = fields.get("ip") or ""
-            egress = ip if ":" in ip else None
-            return addr, prefix64(addr), egress, (prefix64(egress) if egress else "")
+            m = measure_egress(addr, force=True)
+            if m.get("unstable"):
+                time.sleep(1.0)
+                m = measure_egress(addr, force=True)
+            return (addr, prefix64(addr), (m.get("ip") or None),
+                    (m.get("prefix") or ""))
 
         def settled(seconds=40):
             deadline = time.time() + seconds
@@ -1162,21 +1306,18 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
             after_pfx = prefix64(after_addr)
             # The quota key is the *egress* /64 the server sees (2a09:bac…),
             # not the utun leg (2606:4700:110:…). Measure it or the check lies.
-            # A failed trace means "not measured", never a licence to call the
-            # utun leg a bucket: falling back to after_pfx wrote
-            # 2606:4700:110:… into the blacklist and counted an unmeasured
-            # rotation as a move. Retry, then treat it as no egress at all.
-            key, egress, egress_pfx = "", None, None
-            for _ in range(3):
-                fields = trace_v6(after_addr) if after_addr else {}
-                ip = fields.get("ip") or ""
-                egress = ip if ":" in ip else None
-                egress_pfx = prefix64(egress) if egress else None
-                key = egress_pfx or ""
-                if key:
-                    break
+            # Measurement decides, and only measurement. The probe retries and
+            # corroborates internally; a *failed* reading is "not measured" and
+            # goes round again, never the utun leg dressed up as a bucket.
+            m = measure_egress(after_addr, force=True) if after_addr else {}
+            if m.get("unstable"):
                 time.sleep(1.5)
-            say(f"   -> bucket {key or '?'}  (old {old_bucket or '?'})")
+                m = measure_egress(after_addr, force=True)
+            egress = m.get("ip") or None
+            key = m.get("prefix") or ""
+            say(f"   -> bucket {key or 'unmeasured'}"
+                f"  ({'+'.join(m.get('sources') or ['none'])},"
+                f" warp={m.get('warp') or '?'})  (old {old_bucket or '?'})")
 
             if not key:
                 last_err = "no cloudflare egress after rotation"
@@ -2083,32 +2224,63 @@ def release_foreign_rotlock():
 
 
 def refresh_egress():
-    """Record the /64 the server actually sees, whenever it changes.
+    """Record the /64 the far end actually sees, whenever it really changes.
 
-    WARP hands back a different egress block on a plain reconnect, not only on a
-    registration burn — so the quota key moves by itself sometimes. If the guard
-    does not notice, `doctor` reports drift forever and `rotate()` measures
-    "moved" against a stale value, which is how a real collision gets counted as
-    a success.
+    WARP hands back a different exit on a plain reconnect, not only on a burn, so
+    the quota key moves by itself. Two rules keep that honest:
+
+    - never sample while any rotator holds the shared lock. mid-hop the tunnel is
+      being re-keyed and a reading taken then is a coin flip between the block we
+      left and the block arriving — which is exactly how `egress moved … without
+      a rotation` was being logged for the guard's own noise.
+    - one reading is a claim, two is a fact. a single sample only arms a
+      confirmation; the second agreeing sample records the move. drift that
+      resolves itself before the next tick was never drift.
     """
-    # force a fresh read: this runs on the guard tick, never in the proxy hot
-    # path, so a cached utun address from two seconds ago is not this tick's
-    # truth. measuring a stale source is exactly how drift gets reported wrong.
+    if rotation_in_progress():
+        return None
     src = iface_v6(force=True)
     if not src:
         return None
-    ip = trace_v6(src).get("ip", "")
-    if ":" not in ip:
+    m = measure_egress(src, force=True)
+    pfx = m.get("prefix") or ""
+    if not pfx or m.get("unstable"):
         return None
-    pfx = prefix64(ip)
     st = jload(GUARD_STATE, {})
-    if pfx != st.get("egress_prefix"):
-        prev = st.get("egress_prefix")
-        st.update({"egress": ip, "egress_prefix": pfx, "egress_seen": now()})
-        save_if_changed(GUARD_STATE, st)
-        log(GUARD_LOG, f"egress moved {prev or '(none)'} -> {pfx} without a rotation")
-        record_wall("egress-drift", f"{prev} -> {pfx}")
-        publish_overlay_state("egress")
+    cur = st.get("egress_prefix") or ""
+    if pfx == cur:
+        _DRIFT.update(pfx="", n=0)
+        return pfx
+    if _DRIFT["pfx"] == pfx:
+        _DRIFT["n"] += 1
+    else:
+        _DRIFT.update(pfx=pfx, n=1)
+    if _DRIFT["n"] < 2:
+        log_throttled(GUARD_LOG, "egress-arm",
+                      f"egress reads {pfx} (state {cur or 'none'}) — confirming",
+                      every=300)
+        return cur or None
+    _DRIFT.update(pfx="", n=0)
+    st.update({"egress": m.get("ip") or "", "egress_prefix": pfx,
+               "egress_seen": now(), "egress_warp": m.get("warp") or ""})
+    save_if_changed(GUARD_STATE, st)
+    srcs = "+".join(m.get("sources") or []) or "?"
+    log(GUARD_LOG, f"egress moved {cur or '(none)'} -> {pfx}"
+                   f"  ({srcs}, warp={m.get('warp') or '?'})")
+    record_wall("egress-drift", f"{cur} -> {pfx}")
+    publish_overlay_state("egress")
+    t = time.time()
+    ev = [x for x in (_DRIFT.get("events") or []) if t - x < 600] + [t]
+    _DRIFT["events"] = ev
+    if len(ev) >= 3:
+        _DRIFT["events"] = []
+        if not warp_connected():
+            log(GUARD_LOG, "egress flapping on a dead tunnel — healing")
+            heal_tunnel()
+        else:
+            log_throttled(GUARD_LOG, "egress-flap",
+                          f"egress re-pinned {len(ev)}x in 10m — tunnel healthy, "
+                          f"leaving it alone", every=600)
     return pfx
 
 
@@ -2525,39 +2697,40 @@ def cmd_resume(args):
 
 
 def cmd_where():
-    """Read-only: what /64 are we on, is it burnt, is the tunnel alive.
+    """Read-only: what /64 are we on, how sure are we, is the tunnel alive.
 
-    The HUD has a WHERE button that runs the hop script with --where. It used
-    to be swallowed by the hop itself, so asking "where am I" quietly spent a
-    fresh egress. This path takes no lock, writes no state, calls no API.
+    The HUD's WHERE chip runs the hop script with --where. It used to be
+    swallowed by the hop, so asking "where am I" quietly spent an egress; it then
+    answered with the utun leg whenever the trace failed. Now it takes no lock,
+    writes no state, rotates nothing, and prints *how* the address was measured —
+    `trace`, `echo`, or both — because a bucket nobody can corroborate is not an
+    answer.
     """
     st = jload(GUARD_STATE, {})
     last = st.get("egress_prefix") or ""
     addr = iface_v6(force=True)
-    fields, seen = {}, ""
-    # one failed probe is not "no egress". mid-hop, or one dead edge, the
-    # trace comes back empty — and the WARP interface address is a state
-    # address, not an exit. answering with it made the HUD show a bucket that
-    # was never an egress (2a09:... -> 2606:4700:110:...). retry, then say
-    # "last seen" and name the last measured block instead of inventing one.
-    for _ in range(3):
-        fields = trace_v6(addr) if addr else {}
-        seen = fields.get("ip") or ""
-        if seen:
-            break
-        time.sleep(1.0)
-    bucket = prefix64(seen) if ":" in seen else ""
+    m = measure_egress(addr, force=True) if addr else {}
+    seen = m.get("ip") or ""
+    bucket = m.get("prefix") or ""
     stale = False
     if not bucket and last:
         bucket, stale = last, True
     bl = (jload(OVERLAY_STATE, {}) or {}).get("blacklist") or []
-    print(f"bucket   {bucket or 'unknown'}"
-          + ("  (last measured — egress not reachable right now)" if stale else ""))
+    srcs = "+".join(m.get("sources") or []) or "none"
+    note = ""
+    if stale:
+        note = "  (last measured — egress not reachable right now)"
+    elif m.get("unstable"):
+        note = "  (unstable — the exit moved while measuring)"
+    print(f"bucket   {bucket or 'unknown'}{note}")
     print(f"v6       {seen or 'none'}")
+    print(f"measure  {srcs}"
+          + (f"  colo {m.get('colo')}" if m.get("colo") else "")
+          + (f"  warp={m.get('warp')}" if m.get("warp") else "")
+          + (f"  {m['ms']}ms" if m.get("ms") else ""))
+    print(f"tunnel   {st.get('prefix') or prefix64(addr) or 'none'}")
     print(f"device   {registration_id() or 'none'}")
-    print(f"state    {st.get('prefix') or 'none'}")
-    print(f"warp     {'connected' if warp_connected() else 'down'}"
-          f"  colo {fields.get('colo') or '?'}")
+    print(f"warp     {'connected' if warp_connected() else 'down'}")
     print(f"burnt    {'yes' if bucket and bucket in bl else 'no'}")
     if bl:
         print("blacklist")
