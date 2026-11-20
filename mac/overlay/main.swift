@@ -189,8 +189,12 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             // reaches the panel in ~0.3s, so this probe is only insurance and
             // half the spawns is still more than enough. without one, nothing
             // else knows anything and every tick is due.
-            let due = self.brainLive ? (self.tickCount % 2 == 0) : true
-            if (!self.hidden && due) || (self.hidden && self.tickCount % 4 == 0) {
+            // a dead snapshot is the one case where polling should tighten, not
+            // loosen: while status.sh cannot be parsed nothing else knows the
+            // truth, so probe every tick until it parses again.
+            let due = (self.brainLive && self.statusOk) ? (self.tickCount % 2 == 0) : true
+            let hiddenEvery = self.statusOk ? 4 : 2
+            if (!self.hidden && due) || (self.hidden && self.tickCount % hiddenEvery == 0) {
                 self.refresh(force: false)
             }
             self.healthTick()
@@ -1069,6 +1073,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                     // snapshot arrives. clear it once, here, not on every tick.
                     if !self.statusOk {
                         self.statusOk = true
+                        self.statusFailSig = ""
+                        self.statusFailAt = 0
                         self.push("snapshot", ["ok": true])
                     }
                 } else {
@@ -1088,24 +1094,25 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // one toast per distinct error, everything appended to guard/status.err.
     private var statusFailSig = ""
     private var statusOk = true
+    private var statusFailAt: TimeInterval = 0
     private func reportStatusFailure(err: String) {
         let first = err.split(separator: "\n").first.map(String.init) ?? "no output"
         statusOk = false
-        push("snapshot", ["ok": false, "text": first])
-        if first != statusFailSig {
-            statusFailSig = first
-            let log = guardDir.appendingPathComponent("status.err")
-            let stamp = ISO8601DateFormatter().string(from: Date())
-            let line = "\(stamp)  status.sh: \(first)\n"
-            if let h = try? FileHandle(forWritingTo: log) {
-                h.seekToEndOfFile()
-                h.write(Data(line.utf8))
-                try? h.close()
-            } else {
-                try? Data(line.utf8).write(to: log)
-            }
-            push("toast", ["text": "snapshot failed"])
+        guard first != statusFailSig else { return }
+        statusFailSig = first
+        statusFailAt = Date().timeIntervalSince1970
+        push("snapshot", ["ok": false, "text": first, "since": statusFailAt])
+        let log = guardDir.appendingPathComponent("status.err")
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let line = "\(stamp)  status.sh: \(first)\n"
+        if let h = try? FileHandle(forWritingTo: log) {
+            h.seekToEndOfFile()
+            h.write(Data(line.utf8))
+            try? h.close()
+        } else {
+            try? Data(line.utf8).write(to: log)
         }
+        push("toast", ["text": "snapshot failed"])
     }
 
     // the key pool is deliberately driven by the same shell script a terminal
