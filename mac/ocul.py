@@ -324,7 +324,14 @@ def mark_rotation_phase(phase, extra=None):
     few minutes of legitimate surgery is indistinguishable from a wedged
     process, and the user's only lever is clicking HOP harder.
     """
-    data = {"pid": os.getpid(), "phase": phase, "started": now()}
+    prev = rotation_phase()
+    # `started` belongs to the attempt, not to the phase line: rewriting it on
+    # every round made a two-minute rotation report "0s in".
+    try:
+        started = int(prev.get("started") or 0) if int(prev.get("pid") or 0) == os.getpid() else 0
+    except Exception:
+        started = 0
+    data = {"pid": os.getpid(), "phase": phase, "started": started or now()}
     if extra:
         data.update(extra)
     try:
@@ -1095,7 +1102,7 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
         glock.release()
         raise
 
-    mark_rotation_phase("starting")
+    mark_rotation_phase("starting", {"max": 14})
     paused = pause_keeper()
     try:
         GUI_HOLD.unlink()
@@ -1166,11 +1173,16 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
         # the device only when the reconnect genuinely handed the same block
         # back.
         if cheap_first and not api_park_left():
-            mark_rotation_phase("rotate-keys")
+            # the phase is published per round, never before the loop binds
+            # `round_no` — referencing it here raised UnboundLocalError and
+            # killed the cheap pass before its first call.
             say("-- cheap pass: rotate the tunnel key pair, stay connected --")
             last_key = old_bucket
             api_refused = 0
             for round_no in range(1, 3):
+                mark_rotation_phase("rotate-keys",
+                                    {"attempt": round_no, "max": 2,
+                                     "old": old_bucket})
                 # `tunnel rotate-keys` mints a new key pair on the SAME
                 # registration. The edge hands back a different egress /64,
                 # the tunnel never drops, and no registration is burned — the
@@ -1996,7 +2008,7 @@ def overlay_device():
     return _OVERLAY_DEV["id"]
 
 
-def publish_overlay_state(reason="tick"):
+def publish_overlay_state(reason="tick", health=None):
     """Write ocul's live truth into the files the HUD already reads.
 
     Everything comes out of local state — no probe, no DNS, no trace — because
@@ -2007,7 +2019,9 @@ def publish_overlay_state(reason="tick"):
         return None
 
     port = int(os.environ.get("OCUL_PORT", 40123))
-    health = proxy_health(port)
+    # one health socket per tick, shared with the brain — the HUD and the brain
+    # asking the same listener twice in the same second is pure waste
+    health = proxy_health(port) if health is None else health
     live = bool(health) and health.get("proto") == PROTO
     st = jload(GUARD_STATE, {})
     egress = st.get("egress") or ""
@@ -2332,6 +2346,353 @@ def heal_tunnel():
     return False
 
 
+# ---- the brain ------------------------------------------------------------
+# One file, one writer, many readers.
+#
+# Every consumer used to re-derive the same facts from four state files plus a
+# handful of `warp-cli` and `launchctl` calls — which is why the HUD needed a
+# 641-line shell script and two sudo calls per two-second refresh just to know
+# whether the tunnel was up. The guard already holds all of it. So the guard
+# writes it once, atomically, and everybody else reads.
+#
+# `beat` moves on every write, even when nothing changed, so a reader can tell
+# "idle" from "wedged" by looking at one number instead of waiting for a stamp
+# to age. `seq` moves only when the content actually changed, so a reader that
+# re-renders can skip the repaint.
+#
+# Three workers, three failure modes, no shared blocking:
+#   guard   6s   tail the wall log, own the rotate lock      (wedged tail)
+#   sensor  20s  measure the exit and DNS                   (slow network)
+#   rotator  on  rotate, publish its phase here             (API throttle)
+# The sensor is a thread, not a process: it shares the measurement cache with
+# the guard, and file-based IPC for a 20-second probe would cost more than the
+# probe does.
+
+BRAIN_SCHEMA = 1
+BRAIN_FRESH = 20        # seconds a reader may trust `beat`
+SENSOR_EVERY = 20       # seconds between sensor sweeps
+_BRAIN_LOCK = threading.Lock()
+_KEEPER = {"ok": False, "ts": 0.0}
+_WARP_MODE = {"mode": "", "ts": 0.0}
+
+
+def brain_path():
+    return (OVERLAY_GUARD / "brain.json") if OVERLAY_GUARD.is_dir() \
+        else STATE / "brain.json"
+
+
+def brain_read():
+    b = jload(brain_path(), None)
+    return b if isinstance(b, dict) else {}
+
+
+def brain_age(b=None):
+    b = brain_read() if b is None else b
+    try:
+        return max(0, now() - int(b.get("beat") or 0))
+    except Exception:
+        return 10 ** 6
+
+
+def brain_update(**sections):
+    """Merge sections into the brain atomically.
+
+    Section dicts merge key-by-key so a caller can publish `egress` without
+    clobbering `proxy`. Everything else replaces. The write is an atomic rename
+    via jsave, so a reader never sees half a document.
+    """
+    with _BRAIN_LOCK:
+        b = brain_read()
+        if b.get("v") != BRAIN_SCHEMA:
+            b = {"v": BRAIN_SCHEMA, "seq": 0}
+        changed = False
+        for k, v in sections.items():
+            if isinstance(v, dict) and isinstance(b.get(k), dict):
+                merged = dict(b[k])
+                merged.update(v)
+                if merged != b[k]:
+                    b[k] = merged
+                    changed = True
+            elif b.get(k) != v:
+                b[k] = v
+                changed = True
+        if changed:
+            b["seq"] = int(b.get("seq") or 0) + 1
+        b["beat"] = now()
+        b["ts"] = now()
+        jsave(brain_path(), b)
+        return b
+
+
+def warp_mode(ttl=60.0):
+    """The client's operating mode (`TunnelOnly`, `warp`, `doh`, …).
+
+    One `warp-cli settings` call a minute instead of one per UI refresh: the
+    value changes when a human changes it, which is roughly never."""
+    if _WARP_MODE["mode"] and time.time() - _WARP_MODE["ts"] < ttl:
+        return _WARP_MODE["mode"]
+    rc, out, _ = run([WARP, "--accept-tos", "settings"], timeout=8)
+    if rc != 0:
+        return _WARP_MODE["mode"]
+    mode = ""
+    for ln in out.splitlines():
+        if "Mode:" in ln:
+            mode = ln.split("Mode:", 1)[1].strip()
+            break
+    if mode:
+        _WARP_MODE.update(mode=mode, ts=time.time())
+    return mode
+
+
+def keeper_running(ttl=30.0):
+    """Is the keeper agent loaded? launchctl is a fork, and the answer changes
+    only on install or removal — so ask at most every 30s, not every tick."""
+    if time.time() - _KEEPER["ts"] < ttl:
+        return _KEEPER["ok"]
+    uid = os.getuid()
+    ok = False
+    for label in ("com.ouc.keeper", "com.opencode-unlimited.keeper"):
+        for domain in (f"gui/{uid}", "system"):
+            rc, _, _ = run(["launchctl", "print", f"{domain}/{label}"], timeout=3)
+            if rc == 0:
+                ok = True
+                break
+        if ok:
+            break
+    _KEEPER.update(ok=ok, ts=time.time())
+    return ok
+
+
+def advise(b):
+    """Read the document and say what it means. Pure: no probe, no clock skew.
+
+    This is the part that makes it a brain rather than a status file. Every
+    consumer used to re-derive the same interpretation — is the guard alive, is
+    the rotation legitimate, is the proxy actually serving — and each did it
+    slightly differently, which is how the HUD once painted a hung guard green.
+    """
+    score, advice = 100, []
+    w = b.get("warp") or {}
+    px = b.get("proxy") or {}
+    rot = b.get("rotation") or {}
+    eg = b.get("egress") or {}
+    park = b.get("park") or {}
+    ident = b.get("identity") or {}
+    sens = b.get("sensors") or {}
+
+    def hit(code, level, text, cost):
+        nonlocal score
+        score -= cost
+        advice.append({"code": code, "level": level, "text": text})
+
+    age = brain_age(b)
+    if age > BRAIN_FRESH:
+        hit("stale", "bad",
+            f"guard has not written for {age}s — it is wedged or stopped", 60)
+    if not w.get("connected") and not rot.get("active"):
+        hit("tunnel-down", "bad",
+            "tunnel is down and nothing is rotating — the healer will reconnect", 35)
+    if rot.get("active"):
+        try:
+            sat = max(0, now() - int(rot.get("since") or now()))
+        except Exception:
+            sat = 0
+        hit("rotating", "info",
+            f"rotation in progress: {rot.get('phase') or 'starting'}"
+            f" (attempt {rot.get('attempt') or 0}/{rot.get('max') or 14},"
+            f" {sat}s) — do not click HOP", 0)
+    if int(park.get("left") or 0) > 0:
+        hit("parked", "warn",
+            f"Cloudflare throttled the API — rotations parked {park['left']}s", 10)
+    if eg.get("unstable"):
+        hit("egress-unstable", "warn",
+            "the exit moved while measuring — the reading is being retaken", 8)
+    if not eg.get("prefix"):
+        hit("egress-unknown", "warn",
+            "no measured exit — the quota key is unknown right now", 15)
+    if ident.get("burnt"):
+        hit("burnt", "warn",
+            "the current /64 is already on the blacklist", 10)
+    if not px.get("up"):
+        hit("proxy-down", "bad",
+            "the lane proxy is not listening — the guard will restart it", 30)
+    if int(px.get("refused") or 0) > 200:
+        hit("proxy-refused", "warn",
+            f"{px['refused']} refused connections — something upstream is unhappy", 5)
+    if sens.get("dns") is False:
+        hit("dns", "warn",
+            "name resolution through the tunnel is failing", 12)
+    if (b.get("guard") or {}).get("pending"):
+        hit("wall-pending", "warn",
+            "a wall was hit while rotations were parked — it retries on its own", 8)
+
+    score = max(0, min(100, score))
+    state = "ok" if score >= 90 else ("warn" if score >= 60 else "bad")
+    return {"score": score, "state": state}, advice
+
+
+def brain_publish(health=None, reason="tick"):
+    """Assemble the machine's truth from local state and write it once.
+
+    Cheap on purpose: no probe, no subprocess beyond the proxy health socket the
+    caller already paid for. Everything expensive lives in the sensor thread,
+    which is exactly why a slow network can no longer delay wall detection.
+    """
+    port = int(os.environ.get("OCUL_PORT", 40123))
+    health = proxy_health(port) if health is None else health
+    live = bool(health) and health.get("proto") == PROTO
+    st = jload(GUARD_STATE, {}) or {}
+    est = jload(EDGE_STATE, {}) or {}
+    ov = jload(OVERLAY_STATE, {}) or {}
+    rot = rotation_phase()
+    cached = _EGRESS_CACHE.get("info") or {}
+
+    # the sensor's reading is fresher than guard.json and lives in this process;
+    # prefer it, and fall back to the last recorded one when it has never run.
+    eg_ip = cached.get("ip") or st.get("egress") or ""
+    eg_pfx = cached.get("prefix") or st.get("egress_prefix") \
+        or (prefix64(eg_ip) if ":" in eg_ip else "")
+    try:
+        eg_at = float(cached.get("ts") or st.get("egress_seen") or 0)
+    except Exception:
+        eg_at = 0.0
+
+    edge = est.get("edge") or ""
+    try:
+        if now() - float(est.get("ts") or 0) > max(EDGE_CACHE_TTL * 4, 600):
+            edge = ""
+    except Exception:
+        edge = ""
+
+    device = overlay_device() or ""
+    bl = [x for x in (ov.get("blacklist") or []) if x]
+    src6 = iface_v6() or ""
+
+    sections = {
+        "writer": {"pid": os.getpid(), "kind": "guard", "reason": reason},
+        # merge semantics: omitting `mode` keeps the last one the sensor
+        # learned, so a tick never blanks a known mode into "?".
+        "warp": dict({"connected": warp_connected()},
+                     **({"mode": warp_mode()} if warp_mode() else {})),
+        "guard": {"running": True, "pid": os.getpid(), "tick": TICK,
+                  "pending": bool(st.get("pending_wall"))},
+        "keeper": {"running": keeper_running()},
+        "egress": {"ip": eg_ip, "prefix": eg_pfx, "at": int(eg_at),
+                   "colo": cached.get("colo") or "",
+                   "warp": cached.get("warp") or "",
+                   "loc": cached.get("loc") or "",
+                   "sources": cached.get("sources") or [],
+                   "unstable": bool(cached.get("unstable")),
+                   "ms": int(cached.get("ms") or 0)},
+        "tunnel": {"src6": src6, "prefix": prefix64(src6) if src6 else "",
+                   "edge": edge, "device": device},
+        "proxy": {"up": live, "pid": int(health.get("pid") or 0) if live else 0,
+                  "listen": f"127.0.0.1:{port}", "proto": PROTO,
+                  "active": int(health.get("active") or 0) if live else 0,
+                  "total": int(health.get("total") or 0) if live else 0,
+                  "errors": int(health.get("errors") or 0) if live else 0,
+                  "refused": int(health.get("refused") or 0) if live else 0},
+        "rotation": {"active": bool(rot), "phase": rot.get("phase") or "",
+                     "pid": int(rot.get("pid") or 0),
+                     "since": int(rot.get("started") or 0),
+                     "attempt": int(rot.get("attempt") or 0),
+                     "max": int(rot.get("max") or 14),
+                     "mode": LAST_MODE["mode"] or ""},
+        "park": {"left": api_park_left(),
+                 "until": int(st.get("api_busy_until") or 0)},
+        "identity": {"prefix": eg_pfx, "seen6": eg_ip,
+                     "device": (device or "")[:8],
+                     "hops": int(st.get("hops") or 0),
+                     "collisions": int(st.get("collisions") or 0),
+                     "blacklist": len(bl),
+                     "burnt": bool(eg_pfx and eg_pfx in bl)},
+    }
+    view = dict(brain_read())
+    for k, v in sections.items():
+        if isinstance(v, dict) and isinstance(view.get(k), dict):
+            merged = dict(view[k])
+            merged.update(v)
+            view[k] = merged
+        else:
+            view[k] = v
+    health_doc, advice = advise(view)
+    sections["health"] = health_doc
+    sections["advice"] = advice
+    return brain_update(**sections)
+
+
+def sensor_tick(force=False):
+    """Measure what only a probe can tell: the exit, and whether DNS answers.
+
+    Never during a rotation. Mid-hop the tunnel is between two exits on purpose
+    and a reading taken then is a coin flip — the exact condition that used to
+    write `egress moved … without a rotation` for the guard's own working hop.
+    """
+    if rotation_in_progress():
+        return {}
+    src = iface_v6(force=True)
+    if not src:
+        return {}
+    m = measure_egress(src, force=force)
+    if not m.get("prefix"):
+        # one dead probe is a bad minute, not a verdict: retry once before
+        # telling the brain there is no exit at all
+        time.sleep(1.5)
+        m = measure_egress(src, force=True)
+    rc, out, _ = run(["dig", "+short", "+time=2", "+tries=1", "opencode.ai"],
+                     timeout=4)
+    dns = None if rc == 127 else bool(out.strip())
+    data = {"dns": dns, "at": now(), "src": src,
+            "ok": bool(m.get("prefix")),
+            "ms": int(m.get("ms") or 0)}
+    brain_update(sensors=data)
+    return data
+
+
+def sensor_loop():
+    """The slow loop. Owns every network probe so the guard tick never blocks."""
+    time.sleep(3)
+    while True:
+        try:
+            sensor_tick()
+        except Exception as exc:
+            log_throttled(GUARD_LOG, "sensor", f"sensor error: {exc!r}", every=300)
+        time.sleep(SENSOR_EVERY)
+
+
+def cmd_brain(args=None):
+    """`ocul brain` — the whole document, or the one paragraph that matters."""
+    b = brain_read()
+    if getattr(args, "json", False):
+        print(json.dumps(b, indent=2, sort_keys=True))
+        return 0
+    if not b:
+        print("brain    not written yet — is the guard running?")
+        return 1
+    age = brain_age(b)
+    h = b.get("health") or {}
+    eg = b.get("egress") or {}
+    tr = b.get("tunnel") or {}
+    px = b.get("proxy") or {}
+    rot = b.get("rotation") or {}
+    w = b.get("warp") or {}
+    print(f"brain    seq {b.get('seq')}  beat {age}s ago  "
+          + ("LIVE" if age <= BRAIN_FRESH else "STALE"))
+    print(f"health   {h.get('score')}  {h.get('state')}")
+    print(f"warp     {'connected' if w.get('connected') else 'down'}"
+          f"  mode {w.get('mode') or '?'}")
+    print(f"egress   {eg.get('prefix') or 'unknown'}"
+          f"  {eg.get('ip') or ''}".rstrip())
+    print(f"tunnel   {tr.get('prefix') or 'none'}  edge {tr.get('edge') or 'unset'}")
+    print(f"proxy    {'up' if px.get('up') else 'down'}  {px.get('listen') or ''}"
+          + (f"  {px.get('active')}/{px.get('total')}" if px.get("up") else ""))
+    print(f"rotation " + (f"in progress — {rot.get('phase') or 'starting'}"
+                         if rot.get("active") else "idle"))
+    for a in b.get("advice") or []:
+        print(f"  [{a.get('level')}] {a.get('text')}")
+    return 0
+
+
 def on_wall(session_ids=None):
     st = jload(GUARD_STATE, {})
     t = now()
@@ -2623,6 +2984,11 @@ def cmd_guard(args):
         log(GUARD_LOG,
             f"guard up pid={os.getpid()} tick={TICK}s log={OPENCODE_LOG} offset={offset}")
         publish_overlay_state("guard-up")
+        brain_publish(reason="guard-up")
+        # the sensor owns every network probe. a separate thread on purpose: a
+        # dead network can cost the sensor nine seconds and the wall detector
+        # will not notice, because it never asked the network anything.
+        threading.Thread(target=sensor_loop, name="sensor", daemon=True).start()
 
         ticks = 0
         while True:
@@ -2668,7 +3034,9 @@ def cmd_guard(args):
                                       f"proxy would not start on {port}", every=300)
                 # the HUD renders these files; keep them a tick behind reality,
                 # never a stack behind it
-                publish_overlay_state("tick")
+                h = proxy_health(port)
+                publish_overlay_state("tick", health=h)
+                brain_publish(health=h, reason="tick")
             except Exception as exc:
                 log(GUARD_LOG, f"tick error: {exc!r}")
             time.sleep(TICK)
@@ -3186,6 +3554,9 @@ def main(argv):
     p = sub.add_parser("resume", help="send 'continue' into a chat (wall resume, by hand)")
     p.add_argument("session", nargs="?", default="", help="session id (ses_…), or latest")
     sub.add_parser("where", help="read-only: what /64 we are on, burnt or not")
+    p = sub.add_parser("brain",
+                       help="the whole machine in one read: health, advice, phase")
+    p.add_argument("--json", action="store_true", help="raw document")
     sub.add_parser("edges")
     sub.add_parser("overlay", help="publish ocul state into the overlay HUD files")
     sub.add_parser("proxy-on", help="start the lane proxy (HUD PROXY chip)")
@@ -3211,6 +3582,8 @@ def main(argv):
         return cmd_hop(args)
     if args.cmd == "where":
         return cmd_where()
+    if args.cmd == "brain":
+        return cmd_brain(args)
     if args.cmd == "resume":
         return cmd_resume(args)
     if args.cmd == "resume":

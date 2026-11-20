@@ -199,10 +199,54 @@ the new /64 is live, never more than once a minute per chat. Four fresh
 addresses in fifteen minutes with the wall still there means the quota is on the
 account, not the exit — rotation stops and logs it instead of spending the API.
 
+## One brain, three workers
+
+The guard used to be the only writer and everyone else re-derived the same
+facts: the HUD shelled `warp-cli` twice through `sudo`, called `launchctl print`
+four times and `curl`ed, per refresh; a `where` re-probed the exit; a second
+`hop` guessed at liveness. Five readers, five slightly different answers — which
+is how a hung guard once painted green.
+
+Now the guard publishes one document, `guard/brain.json`, and every other
+surface reads it.
+
+- `v`/`seq`/`beat` — schema, a counter that moves only when content changed,
+  and a heartbeat that moves on every write. `beat` is how a reader tells
+  "idle" from "wedged" by looking at one number instead of waiting for a stamp
+  to age. `seq` is how the HUD knows to repaint at all.
+- **the writer never blocks on the network.** wall detection is the job that
+  must not slip, so the probes live in a `sensor` thread inside the guard
+  (egress, DNS, edge latency, every 20s) and never run during a rotation. A
+  dead network costs the sensor nine seconds and costs the wall detector
+  nothing.
+- **the rotator is not a writer.** `ocul hop` runs in its own process and owns
+  the lock; it publishes `rotate.owner.json`, and the brain *reads* that. One
+  writer means no merged half-documents and no lock between processes.
+- **`advise()` is derived once.** The guard turns the document into a health
+  score and a list of advisories (`stale`, `tunnel-down`, `rotating`, `parked`,
+  `egress-unstable`, `proxy-down`, `dns`, `wall-pending`). The HUD's BRAIN chip
+  and `ocul brain` show the same verdict because they read the same field
+  instead of each deciding for itself.
+- **the fast path is a fallback, not a replacement.** `status.sh` reads the
+  brain when it is fresh and skips every subprocess; when it is missing or
+  older than 20s it runs the old probe path unchanged, so a stopped guard can
+  never leave the panel blank.
+
+```
+ocul brain            # health, advice, phase, exit — one read
+ocul brain --json     # the whole document
+```
+
+`brain.seq` also drives the panel: the HUD watches the file, and a rotation
+starting reaches it in about a third of a second instead of waiting for the
+two-second timer. With a live brain the shell probe runs at half rate, because
+it is insurance rather than the source.
+
 ```
 ocul hop              # rotate now (cheap pass first)
 ocul hop --no-cheap   # skip straight to the burn
 ocul hop --where      # read-only: bucket, exit, device, blacklist. touches nothing
+ocul brain            # one read: health, advice, rotation phase, exit
 ocul hop --wait 8     # how long to wait for a peer rotation before deferring
 ocul resume           # push "continue" into the latest chat, by hand
 ocul resume ses_…     # …or into one specific chat
