@@ -2451,7 +2451,36 @@ def cmd_guard(args):
         lock.release()
 
 
+def cmd_where():
+    """Read-only: what /64 are we on, is it burnt, is the tunnel alive.
+
+    The HUD has a WHERE button that runs the hop script with --where. It used
+    to be swallowed by the hop itself, so asking "where am I" quietly spent a
+    fresh egress. This path takes no lock, writes no state, calls no API.
+    """
+    addr = iface_v6(force=True)
+    fields = trace_v6(addr) if addr else {}
+    seen = fields.get("ip") or ""
+    bucket = prefix64(seen) if ":" in seen else prefix64(addr)
+    st = jload(GUARD_STATE, {})
+    bl = (jload(OVERLAY_STATE, {}) or {}).get("blacklist") or []
+    print(f"bucket   {bucket or 'none'}")
+    print(f"v6       {seen or 'none'}")
+    print(f"device   {registration_id() or 'none'}")
+    print(f"state    {st.get('prefix') or 'none'}")
+    print(f"warp     {'connected' if warp_connected() else 'down'}"
+          f"  colo {fields.get('colo') or '?'}")
+    print(f"burnt    {'yes' if bucket and bucket in bl else 'no'}")
+    if bl:
+        print("blacklist")
+        for b in bl[-14:]:
+            print(f"         {b}")
+    return 0
+
+
 def cmd_hop(args):
+    if getattr(args, "where", False):
+        return cmd_where()
     wait = float(getattr(args, "wait", 20.0) or 0)
     cheap = not bool(getattr(args, "no_cheap", False))
     started = time.time()
@@ -2891,6 +2920,8 @@ def main(argv):
                    help="seconds to wait for a peer rotation to finish (default 20)")
     p.add_argument("--no-cheap", action="store_true",
                    help="skip the reconnect pass and burn the registration immediately")
+    p.add_argument("--where", "--dry-run", dest="where", action="store_true",
+                   help="say what identity we are on and touch nothing at all")
     sub.add_parser("edges")
     sub.add_parser("overlay", help="publish ocul state into the overlay HUD files")
     sub.add_parser("proxy-on", help="start the lane proxy (HUD PROXY chip)")

@@ -144,6 +144,47 @@ oldest blacklist entries are recycled — buckets reset roughly daily.
 
 ---
 
+## What a hop does now (and what it never does)
+
+A hop is two passes, cheapest first.
+
+1. **rotate-keys.** `warp-cli tunnel rotate-keys` mints a new key pair on the
+   *same* registration. The edge hands back a different egress /64, the tunnel
+   never drops, and no registration is burned — and registration creation is the
+   one call Cloudflare throttles. This pass clears most walls and takes ~10 s.
+2. **burn.** Only when rotate-keys hands the same block back twice. One
+   `registration delete` + `new` per attempt, 14 per turn, 300 s budget, parked
+   and retried when the API throttles.
+
+Three rules the earlier engine got wrong:
+
+- **the window is a viewer, not part of the tunnel.** A rotate-keys hop never
+  closes it, so there is nothing to reopen and nothing to click afterwards. Only
+  a burn closes it — the registration is about to vanish, which is the one
+  moment it would paint *Awaiting external log in* — and it is reopened only
+  onto a `connected && registered` tunnel, with a retry and an `activate`.
+- **a duplicate block is remembered.** `tried` holds every /64 seen this turn,
+  so a pinned bucket stops re-burning the device.
+- **a throttle is a deferral, not a failure.** `park_api()` stamps
+  `api_busy_until`; every rotator reads it. `ocul hop` exits 3 with the tunnel
+  untouched. A wall that lands while parked is stored as `pending_wall` and
+  retried when the park lifts.
+
+After a rotation lands, the chats the wall cut off get their message back:
+`opencode run --session <id> --auto continue`, one per chat, a few seconds after
+the new /64 is live, never more than once a minute per chat. Four fresh
+addresses in fifteen minutes with the wall still there means the quota is on the
+account, not the exit — rotation stops and logs it instead of spending the API.
+
+```
+ocul hop              # rotate now (cheap pass first)
+ocul hop --no-cheap   # skip straight to the burn
+ocul hop --where      # read-only: bucket, exit, device, blacklist. touches nothing
+ocul hop --wait 8     # how long to wait for a peer rotation before deferring
+```
+
+---
+
 ## Commands
 
 ```
