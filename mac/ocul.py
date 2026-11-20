@@ -2277,6 +2277,13 @@ def _spawn_resume(argv, delay=0.0):
         try:
             if delay > 0:
                 time.sleep(delay)
+            # the log is the transcript of every resumed run; cap it so a
+            # session that keeps talking cannot fill the state dir
+            try:
+                if RESUME_LOG.exists() and RESUME_LOG.stat().st_size > 4 * 1024 * 1024:
+                    RESUME_LOG.rename(RESUME_LOG.with_suffix(".log.1"))
+            except OSError:
+                pass
             fh = open(RESUME_LOG, "ab")
             subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fh, stderr=fh,
                              start_new_session=True, cwd=str(Path.home()))
