@@ -27,6 +27,8 @@ level. One process for the proxy, one for the guard, both user-owned.
     ocul proxy             foreground proxy (lane spawns it detached)
     ocul guard             wall watcher (launchd runs it)
     ocul hop               fresh /64 now
+    ocul probe [now|on|off]  measure a /64 instead of assuming it is fresh
+    ocul target [loc|prefix] pin the next rotations to a country or block
     ocul edges             probe the edge pool
     ocul overlay           publish state into the overlay HUD files
     ocul service [restart] report/repair the shared opencode server's proxy env
@@ -150,10 +152,11 @@ TAIL_WINDOW = 128 * 1024
 
 # ---------------------------------------------------------------- plumbing
 
-def run(cmd, timeout=30, env=None):
+def run(cmd, timeout=30, env=None, cwd=None):
     try:
         p = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env
+            cmd, capture_output=True, text=True, timeout=timeout, env=env,
+            cwd=str(cwd) if cwd else None
         )
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except FileNotFoundError:
@@ -1141,7 +1144,7 @@ def release_gui_hold(proc, was_up):
     # deliberately no resume: see pause_gui()
 
 
-def rotate(verbose=True, lock_timeout=30, cheap_first=True):
+def rotate(verbose=True, lock_timeout=30, cheap_first=True, reason=""):
     """Take a fresh egress /64, confirm it moved, come back up.
 
     Serialised on three levels, in fixed order:
@@ -1250,6 +1253,7 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
         # hammers registration/new spends the next forty minutes parked. Burn
         # the device only when the reconnect genuinely handed the same block
         # back.
+        cheap_probe = probe_enabled(reason)
         if cheap_first and not api_park_left():
             # the phase is published per round, never before the loop binds
             # `round_no` — referencing it here raised UnboundLocalError and
@@ -1281,6 +1285,29 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
                     break
                 c_addr, c_pfx, c_egress, c_key = measure()
                 if c_key and c_key != old_bucket and c_key not in burned:
+                    # measured, not assumed. the cheap pass is where a hop
+                    # normally lands, so it is also where a recycled block
+                    # would slip through: a /64 this Mac never saw, already
+                    # burned for the account, accepted on prefix arithmetic
+                    # alone. one cheap turn settles it.
+                    if cheap_probe:
+                        verdict = probe_bucket(c_key)
+                        if verdict is False:
+                            burned.add(c_key)
+                            ov = jload(OVERLAY_STATE, {}) or {}
+                            bl2 = [x for x in (ov.get("blacklist") or []) if x]
+                            if c_key not in bl2:
+                                bl2.append(c_key)
+                            ov["blacklist"] = bl2[-BLACKLIST_CAP:]
+                            save_if_changed(OVERLAY_STATE, ov)
+                            say(f"   probe says {c_key} is burned — trying again")
+                            continue
+                        if verdict is None:
+                            log_throttled(GUARD_LOG, "probe-blind",
+                                          "probe could not tell — accepting the /64 unmeasured",
+                                          every=300)
+                        else:
+                            say(f"   probe ok — {c_key} answers")
                     did = registration_id()
                     _OVERLAY_DEV.update(id=did, ts=time.time())
                     st.update({"last_hop": now(), "hops": st.get("hops", 0) + 1,
@@ -1346,7 +1373,15 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
         accepted, last_err = None, ""
         attempts = 14          # per wall turn; across turns there is no limit
         burned_hits = 0
+        pin_misses = 0
+        # a probe costs one free message, so it only runs when asked for, and
+        # a cheap pass (rotate-keys) is already the low-risk path — measuring
+        # there is the guard's wall rotation, not a manual nudge.
+        probe_now = probe_enabled()
         tried = {old_bucket} if old_bucket else set()
+        # one probe per rotation, not per attempt: the answer costs a message.
+        if probe_now:
+            say("   probe armed — one throwaway turn before accepting a /64")
         started = time.time()
         for attempt in range(1, attempts + 1):
             if time.time() - started > 300:
@@ -1451,6 +1486,46 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
                 say("   same /64 handed back — rotating again")
                 continue
             tried.add(key)
+
+            # optional exit pin: a block that misses the target is a miss, not
+            # a rotation. Capped so a pool that refuses to give the requested
+            # country cannot turn one wall into an endless loop.
+            tok, why = target_ok(key, m.get("loc"))
+            if not tok:
+                pin_misses += 1
+                last_err = f"target miss ({why})"
+                say(f"   {why} — asking again")
+                if pin_misses >= 6:
+                    log_throttled(GUARD_LOG, "target-miss",
+                                  f"6 candidates missed the target pin — "
+                                  f"accepting {key}", every=300)
+                    tok = True
+                if not tok:
+                    time.sleep(min(WALL_BACKOFF_MAX, 1.5 * attempt))
+                    continue
+
+            # measured, not assumed: one cheap turn on the candidate /64. A
+            # bucket that answers with a wall is burned for this account no
+            # matter what our own list says.
+            if probe_now:
+                verdict = probe_bucket(key)
+                if verdict is False:
+                    burned.add(key)
+                    bl = [x for x in ((jload(OVERLAY_STATE, {}) or {}).get("blacklist") or []) if x]
+                    if key not in bl:
+                        bl.append(key)
+                    ov = jload(OVERLAY_STATE, {}) or {}
+                    ov["blacklist"] = bl[-BLACKLIST_CAP:]
+                    save_if_changed(OVERLAY_STATE, ov)
+                    say(f"   probe says {key} is burned — rotating again")
+                    last_err = f"probe hit the wall on {key}"
+                    continue
+                if verdict is None:
+                    log_throttled(GUARD_LOG, "probe-blind",
+                                  "probe could not tell — accepting the /64 unmeasured",
+                                  every=300)
+                else:
+                    say(f"   probe ok — {key} answers")
 
             accepted = (key, after_addr, after_pfx, egress, registration_id())
             break
@@ -2700,6 +2775,7 @@ def brain_publish(health=None, reason="tick"):
                      "collisions": int(st.get("collisions") or 0),
                      "blacklist": len(bl),
                      "burnt": bool(eg_pfx and eg_pfx in bl)},
+        "probe": probe_summary(eg_pfx),
     }
     view = dict(brain_read())
     for k, v in sections.items():
@@ -2821,7 +2897,7 @@ def on_wall(session_ids=None):
     jsave(GUARD_STATE, st)
     notify("opencode wall", "rotating WARP /64…")
     try:
-        moved, before, after = rotate(verbose=False)
+        moved, before, after = rotate(verbose=False, reason="wall")
         st.pop("pending_wall", None)
         jsave(GUARD_STATE, st)
         log(GUARD_LOG, f"wall rotated {before} -> {after} moved={moved}")
@@ -2963,6 +3039,146 @@ def _spawn_resume(argv, delay=0.0):
         except Exception as exc:
             log(GUARD_LOG, f"resume spawn failed: {exc}")
     threading.Thread(target=_go, name="resume", daemon=True).start()
+
+
+PROBE_STATE = STATE / "probe.json"
+# Deliberately wider than WALL_RE. This pattern is matched against a probe's
+# own output, where "out of usage" can only mean the account is out of usage —
+# not against a chat transcript, where it might be someone discussing HTTP 402.
+PROBE_WALL_RE = re.compile(
+    r"QuotaExceeded|FreeUsageLimit|usage limit|free usage|"
+    r"out of usage|insufficient credits|no credits|quota exceeded",
+    re.I,
+)
+PROBE_MSG = os.environ.get("OCUL_PROBE_MSG") or "reply with the word ok"
+
+
+def probe_enabled(reason=""):
+    """Is a post-rotation probe wanted? Env wins, then the state flag.
+
+    With neither set, a rotation triggered by a wall probes and a manual hop
+    does not. At the wall the free quota is already gone, so one message to
+    learn a /64 is dead is cheaper than resuming a chat into it; on a manual
+    hop the user is probably working and does not need a message spent.
+    """
+    v = os.environ.get("OCUL_PROBE")
+    if v is not None:
+        return v.strip().lower() not in ("", "0", "off", "false", "no")
+    ov = jload(OVERLAY_STATE, {}) or {}
+    if "probe" in ov:
+        return bool(ov.get("probe"))
+    return reason == "wall"
+
+
+def set_probe(on):
+    ov = jload(OVERLAY_STATE, {}) or {}
+    ov["probe"] = bool(on)
+    save_if_changed(OVERLAY_STATE, ov)
+    return bool(on)
+
+
+def _probe_memory():
+    d = jload(PROBE_STATE, {})
+    return d if isinstance(d, dict) else {}
+
+
+def _probe_note(prefix, verdict, note=""):
+    d = _probe_memory()
+    d[str(prefix or "?")] = {"v": verdict, "at": int(time.time()),
+                             "note": str(note)[:160]}
+    # a verdict is good for one bucket-reset window, not for a week
+    cutoff = time.time() - 86400
+    d = {k: v for k, v in d.items()
+         if isinstance(v, dict) and float(v.get("at") or 0) >= cutoff}
+    if len(d) > 200:
+        d = dict(sorted(d.items(), key=lambda kv: kv[1].get("at", 0))[-100:])
+    jsave(PROBE_STATE, d)
+
+
+def probe_bucket(prefix="", timeout=None, fresh=False):
+    """One throwaway turn through the tunnel: True usable, False wall, None unknown.
+
+    "Not on the burn list" is not "usable". A recycled /64 that this Mac has
+    never seen passes the prefix check and dies on the chat's first message,
+    which is how a rotation can report success and still leave the wall in
+    place. This turns the assumption into a reading: one cheap message, on a
+    private server so a shared one cannot answer from a stale route, then the
+    session it created is deleted.
+
+    None means "could not tell" and is never treated as a wall — a broken probe
+    must not blacklist a healthy bucket.
+    """
+    if not fresh and os.environ.get("OCUL_PROBE_UNCACHED") != "1":
+        hit = _probe_memory().get(str(prefix or ""))
+        if isinstance(hit, dict) and hit.get("v") in (True, False) \
+                and time.time() - float(hit.get("at") or 0) < 1800:
+            return hit["v"]
+    oc = _oc_bin()
+    if not oc:
+        return None
+    timeout = timeout or float(os.environ.get("OCUL_PROBE_TIMEOUT", "60") or 60)
+    argv = [oc, "run", "--standalone", "--format", "json"]
+    model = os.environ.get("OCUL_PROBE_MODEL") or ""
+    if model:
+        argv += ["--model", model]
+    argv.append(PROBE_MSG)
+    t0 = time.time()
+    rc, out, err = run(argv, timeout=timeout)
+    blob = (out or "") + "\n" + (err or "")
+    # a probe must not leave a chat behind for the user to find
+    for sid in dict.fromkeys(re.findall(r"ses_[A-Za-z0-9]+", blob)):
+        run([oc, "session", "delete", sid], timeout=20)
+    if PROBE_WALL_RE.search(blob):
+        line = next((l.strip() for l in blob.splitlines()
+                     if PROBE_WALL_RE.search(l)), "wall")
+        _probe_note(prefix, False, line)
+        return False
+    if rc == 0:
+        _probe_note(prefix, True, f"{time.time() - t0:.1f}s")
+        return True
+    _probe_note(prefix, None, (err or out or f"rc {rc}")[:160])
+    return None
+
+
+def probe_summary(prefix=""):
+    """What the last measurement said, for the brain document.
+
+    Never a guess: an empty `last` means nothing has been measured, which is a
+    fact the HUD is allowed to print.
+    """
+    pm = _probe_memory()
+    last = {}
+    if pm:
+        k, v = max(pm.items(), key=lambda kv: float(kv[1].get("at") or 0))
+        last = {"prefix": k, "ok": v.get("v"),
+                "at": int(v.get("at") or 0), "note": v.get("note") or ""}
+    return {"enabled": probe_enabled("wall"),
+            "here": (pm.get(prefix) or {}).get("v") if prefix else None,
+            "last": last}
+
+
+def target_pin():
+    """Optional exit pin: {"loc": "SG", "prefix": "2a09:bac5:491"} or {}.
+
+    Cloudflare hands back whichever block the pool feels like. When a target
+    is set, a candidate that misses it is a miss, not a rotation — the loop
+    keeps asking rather than accepting an address the user did not want.
+    """
+    ov = jload(OVERLAY_STATE, {}) or {}
+    loc = (os.environ.get("OCUL_TARGET_LOC") or ov.get("target_loc") or "").strip().upper()
+    pfx = (os.environ.get("OCUL_TARGET_PREFIX") or ov.get("target_prefix") or "").strip().lower()
+    return {"loc": loc, "prefix": pfx}
+
+
+def target_ok(key, loc):
+    pin = target_pin()
+    if not pin["loc"] and not pin["prefix"]:
+        return True, ""
+    if pin["loc"] and (loc or "").upper() != pin["loc"]:
+        return False, f"wanted {pin['loc']}, got {loc or 'unknown'}"
+    if pin["prefix"] and not (key or "").lower().startswith(pin["prefix"]):
+        return False, f"wanted prefix {pin['prefix']}, got {key or 'unknown'}"
+    return True, ""
 
 
 def dispatch_resume(session_ids):
@@ -3156,6 +3372,84 @@ def cmd_resume(args):
     print(f"queued: continue -> {sid[:16] + '…' if sid else 'the latest chat'}")
     print(f"log    {RESUME_LOG}")
     return 0
+
+
+def cmd_probe(args):
+    """`ocul probe [now|on|off]` — measure a bucket instead of assuming it.
+
+    now  one throwaway turn through the tunnel on the current /64
+    on   arm the post-rotation probe (every rotation measures its result)
+    off  disarm it
+    """
+    action = getattr(args, "action", "now") or "now"
+    if action in ("on", "off"):
+        on = set_probe(action == "on")
+        print(f"post-rotation probe {'armed' if on else 'disarmed'}")
+        if on:
+            print("every rotation spends one cheap turn to prove its /64 answers")
+        return 0
+    addr = iface_v6(force=True)
+    m = measure_egress(addr, force=True) if addr else {}
+    key = m.get("prefix") or ""
+    if not key:
+        print("no measured egress — nothing to probe")
+        return 1
+    os.environ["OCUL_PROBE_UNCACHED"] = "1"
+    print(f"probing {key} …")
+    t0 = time.time()
+    verdict = probe_bucket(key, timeout=float(os.environ.get("OCUL_PROBE_TIMEOUT", "90") or 90))
+    took = time.time() - t0
+    if verdict is True:
+        print(f"{key} answers — usable  ({took:.1f}s)")
+        return 0
+    if verdict is False:
+        note = (_probe_memory().get(key) or {}).get("note") or "wall"
+        print(f"{key} is burned — the account is out of free usage here  ({took:.1f}s)")
+        print(f"  said: {note}")
+        return 2
+    print(f"{key} could not be read — the probe failed, not the bucket  ({took:.1f}s)")
+    return 3
+
+
+def cmd_target(args):
+    """`ocul target` — pin the next rotations to a country or a /64 block.
+
+    loc:DE            keep asking until the exit is in DE
+    prefix:2a09:bac5:5  keep asking until the /64 starts with that
+    none              clear both
+    (no argument)     print the current pin
+    """
+    arg = getattr(args, "want", None) or getattr(args, "spec", None) or "show"
+    spec = arg.strip()
+    ov = jload(OVERLAY_STATE, {}) or {}
+    if spec in ("", "show"):
+        pin = target_pin()
+        if not pin["loc"] and not pin["prefix"]:
+            print("no target pin — any /64 the pool offers is accepted")
+        else:
+            print(f"target: loc={pin['loc'] or 'any'}  prefix={pin['prefix'] or 'any'}")
+        return 0
+    if spec.lower() in ("none", "off", "clear", "-"):
+        ov.pop("target_loc", None)
+        ov.pop("target_prefix", None)
+        save_if_changed(OVERLAY_STATE, ov)
+        print("target cleared")
+        return 0
+    kind, _, val = spec.partition(":")
+    kind = kind.strip().lower()
+    val = val.strip()
+    if kind in ("loc", "country") and len(val) == 2:
+        ov["target_loc"] = val.upper()
+        save_if_changed(OVERLAY_STATE, ov)
+        print(f"target loc {val.upper()} — rotations will keep asking until one lands there")
+        return 0
+    if kind == "prefix" and val:
+        ov["target_prefix"] = val.lower()
+        save_if_changed(OVERLAY_STATE, ov)
+        print(f"target prefix {val.lower()} — rotations will keep asking until one starts there")
+        return 0
+    print("usage: ocul target loc:DE | prefix:2a09:bac5:5 | none")
+    return 1
 
 
 def cmd_where():
@@ -3647,6 +3941,12 @@ def main(argv):
                    help="say what identity we are on and touch nothing at all")
     p = sub.add_parser("resume", help="send 'continue' into a chat (wall resume, by hand)")
     p.add_argument("session", nargs="?", default="", help="session id (ses_…), or latest")
+    p = sub.add_parser("probe", help="measure whether the current /64 is burned (one cheap turn)")
+    p.add_argument("action", nargs="?", default="now",
+                   choices=["now", "on", "off"], help="run one now, or arm/disarm")
+    p = sub.add_parser("target", help="pin rotations to a country or a block")
+    p.add_argument("spec", nargs="?", default="",
+                   help="show | none | loc:DE | prefix:2a09:bac5:491")
     sub.add_parser("where", help="read-only: what /64 we are on, burnt or not")
     p = sub.add_parser("brain",
                        help="the whole machine in one read: health, advice, phase")
@@ -3676,10 +3976,12 @@ def main(argv):
         return cmd_hop(args)
     if args.cmd == "where":
         return cmd_where()
+    if args.cmd == "probe":
+        return cmd_probe(args)
+    if args.cmd == "target":
+        return cmd_target(args)
     if args.cmd == "brain":
         return cmd_brain(args)
-    if args.cmd == "resume":
-        return cmd_resume(args)
     if args.cmd == "resume":
         return cmd_resume(args)
     if args.cmd == "edges":
