@@ -979,18 +979,36 @@ def gui_stuck_login():
 def heal_login(force=False):
     """Close a dead login dialog and put the tunnel back up behind it.
 
-    The window is a viewer. Closing it costs the user nothing and is the only
-    exit from "Awaiting external log in" — that page is waiting on a browser
-    hand-off tied to a registration that no longer exists. Re-enrol only when
-    the registration is genuinely gone; otherwise a plain connect is the whole
-    repair.
+    The window is a viewer, but it is also the only thing the user can see.
+    Two ways this used to end with the user clicking the dock icon by hand:
+
+    - `heal_tunnel()` calls this with force on every tunnel blip, and force
+      quit the window unconditionally. A rotate-keys hop drops the tunnel for
+      a second, the guard tick lands in that second, and the window is gone
+      for a rotation that never needed it closed.
+    - nothing reopened what it closed.
+
+    So: quit the window only when the dialog is genuinely stuck, never while a
+    rotation owns the tunnel, and put back exactly the window that was there.
     """
-    if not (force or gui_stuck_login()):
+    if rotation_phase():
+        # a rotation closes and reopens the window itself. closing it here
+        # mid-surgery is how a hop ended with a tunnel up and no window.
         return False
-    log_throttled(GUARD_LOG, "gui-login",
-                  "WARP window parked on a dead login flow — closing it and reconnecting",
-                  every=300)
-    quit_warp_gui()
+    stuck = gui_stuck_login()
+    if not (force or stuck):
+        return False
+    was_up = _gui_running()
+    if stuck:
+        log_throttled(GUARD_LOG, "gui-login",
+                      "WARP window parked on a dead login flow — closing it and reconnecting",
+                      every=300)
+        quit_warp_gui()
+    else:
+        # a blip is not a login flow. reconnect behind the window.
+        log_throttled(GUARD_LOG, "login-flow-blip",
+                      "tunnel blipped — reconnecting without closing the window",
+                      every=300)
     ensure_daemon()
     if not registered():
         run([WARP, "--accept-tos", "registration", "new"], timeout=60)
@@ -998,7 +1016,12 @@ def heal_login(force=False):
     for _ in range(15):
         if warp_connected() and iface_v6(force=True):
             drop_caches()
-            log(GUARD_LOG, "login flow cleared — tunnel up, window left closed")
+            log(GUARD_LOG, "login flow cleared — tunnel up"
+                + (", window put back" if (stuck and was_up) else ""))
+            if stuck and was_up:
+                # there is a working tunnel now, which is the only state the
+                # window may be launched into
+                resume_gui(True)
             return True
         time.sleep(2)
     return False
@@ -1161,8 +1184,11 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
     except OSError:
         pass
     # the window is only in danger once the registration is deleted, so the
-    # cheap pass never touches it. gui_was_up is decided at burn time.
+    # cheap pass never touches it. gui_was_up is decided at burn time; want_gui
+    # is decided now, because a hop the user clicked is a request for the
+    # window and a background rotation only restores what it found.
     gui_was_up = False
+    want_gui = _gui_running() or os.environ.get("OCUL_USER_HOP") == "1"
     gui_hold = hold_gui_down()
     try:
         if not ensure_daemon():
@@ -1449,7 +1475,9 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
         return True, before_pfx, after_pfx
     finally:
         release_gui_hold(gui_hold, gui_was_up)
-        resume_gui(gui_was_up)
+        # a user hop always leaves the window open and in front. a guard
+        # rotation only puts back the window it found closed.
+        resume_gui(want_gui)
         if paused:
             resume_keeper()
         if foreign:

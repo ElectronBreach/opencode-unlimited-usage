@@ -36,6 +36,11 @@ fi
 # "Unable to connect to the CloudflareWARP daemon". Prefer ocul; ouc is only a
 # fallback when ocul is not installed.
 if [ "${OUC_OCUL_HOP:-1}" != "0" ] && [ -x "$HOME/.local/bin/ocul" ]; then
+  # this script is the user-facing hop: the HUD button and a typed `ocul hop`
+  # both land here. tell the rotator the window is wanted even if it is
+  # currently closed, so a clicked hop never ends with WARP looking off.
+  OCUL_USER_HOP=1
+  export OCUL_USER_HOP
   exec "$HOME/.local/bin/ocul" hop "$@"
 fi
 if [ "${OUC_ENGINE:-ouc}" != "legacy" ]; then
@@ -56,7 +61,25 @@ if [ -f "$SRC_DIR/zen-identity.sh" ]; then . "$SRC_DIR/zen-identity.sh"; fi
 WARP_APP="/Applications/Cloudflare WARP.app"
 gui_running(){ pgrep -f "$WARP_APP/Contents/MacOS/Cloudflare WARP" >/dev/null 2>&1; }
 gui_pause(){ if gui_running; then GUI_WAS_UP=1; osascript -e 'tell application "Cloudflare WARP" to quit' >/dev/null 2>&1 || true; pkill -f "$WARP_APP/Contents/MacOS/Cloudflare WARP" >/dev/null 2>&1 || true; fi; }
-gui_resume(){ [ "${GUI_WAS_UP:-0}" = "1" ] && { sleep 1; open -g -a "$WARP_APP" >/dev/null 2>&1 || open -a "$WARP_APP" >/dev/null 2>&1; GUI_WAS_UP=0; }; }
+gui_resume(){
+  [ "${GUI_WAS_UP:-0}" = "1" ] || return 0
+  GUI_WAS_UP=0
+  # the tunnel is up by now, so the window may be launched. it was closed by
+  # this script, and a hop that ends with WARP looking off is the bug this
+  # used to print instead of fix. background it so the hop returns on time.
+  (
+    for i in 1 2 3; do
+      open -a "$WARP_APP" >/dev/null 2>&1
+      j=0
+      while [ "$j" -lt 6 ]; do
+        sleep 0.5
+        gui_running && exit 0
+        j=$((j + 1))
+      done
+    done
+    echo "  · WARP window did not reopen — open it yourself" >&2
+  ) &
+}
 
 w(){  sudo -n "$WARP" --accept-tos "$@" >/dev/null 2>&1 && return 0; sudo -n "$WARP" "$@" >/dev/null 2>&1; }
 wo(){ sudo -n "$WARP" --accept-tos "$@" 2>/dev/null && return 0; sudo -n "$WARP" "$@" 2>/dev/null; }

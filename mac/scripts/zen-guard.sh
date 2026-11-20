@@ -412,10 +412,24 @@ _hop_body(){
   done
   w connect
   resume_keeper
-  # never reopen it: a WARP.app launched while the daemon is still settling
-  # reads IpcStatus, gets missingRegistration(), and paints "Something went
-  # wrong. Please try again later." The tunnel is up either way.
-  [ "$GUI_WAS_UP" = "1" ] && echo "  · WARP window left closed (open the app yourself if you want it)" >&2
+  # put back the window this hop closed — but only now, on a tunnel that is
+  # already up. launching WARP.app while the daemon is still settling reads
+  # IpcStatus, gets missingRegistration(), and paints "Something went wrong".
+  # a clicked hop must never end with WARP looking off.
+  if [ "$GUI_WAS_UP" = "1" ]; then
+    (
+      for i in 1 2 3; do
+        open -a "/Applications/Cloudflare WARP.app" >/dev/null 2>&1
+        j=0
+        while [ "$j" -lt 6 ]; do
+          sleep 0.5
+          pgrep -f "/Applications/Cloudflare WARP.app/Contents/MacOS/Cloudflare WARP" >/dev/null 2>&1 && exit 0
+          j=$((j + 1))
+        done
+      done
+      glog "WARP window did not reopen after the hop"
+    ) &
+  fi
   [ "$ok" = 1 ] || { tunnel_ensure || true; echo ""; return; }
   local V=""
   for i in $(seq 1 20); do
