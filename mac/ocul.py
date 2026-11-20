@@ -1063,8 +1063,14 @@ def resume_gui(was_up):
                       "WARP window: tunnel not up yet — reopening anyway, once",
                       every=300)
     if _gui_running():
+        # the window never went away, so "reopened (try 1)" would be a lie.
+        # raise it and say exactly that.
+        run(["osascript", "-e",
+             'tell application "Cloudflare WARP" to activate'], timeout=10)
         log_throttled(GUARD_LOG, "gui-already-up",
-                      "WARP window was still up — raising it", every=300)
+                      "WARP window was still up — raised it, nothing to reopen",
+                      every=300)
+        return True
     for try_no in range(1, 4):
         rc, _, err = run(["open", "-a", WARP_APP], timeout=15)
         if rc == 0:
