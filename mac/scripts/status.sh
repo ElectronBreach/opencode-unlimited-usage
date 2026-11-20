@@ -655,7 +655,8 @@ out["apiKeys"] = keys
 # died must read as down, so the pid is checked, not trusted.
 px = {"up": False, "pool": 0, "healthy": 0, "current": None, "index": -1,
       "rotations": 0, "served": 0, "failed": 0, "system": False,
-      "listen": "127.0.0.1:8899", "policy": "conn"}
+      "listen": "127.0.0.1:8899", "policy": "conn", "static": 0, "source": "",
+      "age": 0, "stale": False}
 try:
     gdir = os.path.dirname(PROBE)
     with open(os.path.join(gdir, "proxy-state.json")) as f:
@@ -670,22 +671,39 @@ try:
         alive = False
     px.update({k: st.get(k, px[k]) for k in px if k in st})
     px["up"] = bool(st.get("up")) and alive
+    # a live pid proves the process exists, not that it is moving. ocul rewrites
+    # this file every publish cycle, so a state file older than 90s is a wedged
+    # mux — the same shape as a dead status.sh painted as a live panel.
+    try:
+        px["age"] = max(0, int(time.time()) - int(st.get("ts") or 0))
+    except Exception:
+        px["age"] = 999
+    px["stale"] = px["age"] > 90
     if not px["up"]:
         px["current"] = None
     px["system"] = bool(st.get("system")) and px["up"]
 except Exception:
     pass
 
-pool_file = os.path.join(os.path.dirname(PROBE), "..", "proxies.txt")
+# proxies.txt is the legacy static pool. ocul's mux reports its own pool in
+# proxy-state.json (one upstream: the tunnel), so an absent or empty file must
+# not zero a mux that is up and serving. the static file wins only when it
+# actually lists an exit — otherwise it is a fossil, and the chip read "empty"
+# on a mux with 2k requests behind it.
+pool_file = os.path.normpath(os.path.join(os.path.dirname(PROBE), "..", "proxies.txt"))
+static = 0
 try:
-    with open(os.path.normpath(pool_file)) as f:
-        px["pool"] = sum(1 for l in f if l.strip() and not l.lstrip().startswith("#"))
+    with open(pool_file) as f:
+        static = sum(1 for l in f if l.strip() and not l.lstrip().startswith("#"))
 except Exception:
-    px["pool"] = px.get("pool") or 0
-if not px.get("pool"):
+    static = 0
+px["pool"] = static if static else (px.get("pool") or 0)
+px["static"] = static
+px["source"] = "proxies.txt" if static else (px.get("source") or "mux")
+if not px["pool"] or not px["up"]:
     px["healthy"] = 0
-elif px["up"]:
-    px["healthy"] = px.get("healthy") or px["pool"]
+else:
+    px["healthy"] = min(px.get("healthy") or px["pool"], px["pool"])
 out["proxy"] = px
 
 # ---- free-model lever. the wall text says "or switch models", and there are
