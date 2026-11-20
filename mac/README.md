@@ -163,6 +163,12 @@ Three rules the earlier engine got wrong:
   a burn closes it — the registration is about to vanish, which is the one
   moment it would paint *Awaiting external log in* — and it is reopened only
   onto a `connected && registered` tunnel, with a retry and an `activate`.
+- **the utun leg is not an egress.** the address the WARP client holds
+  (`2606:4700:110:…`) is a state address, not an exit anyone sees. it is never
+  reported as a bucket, never burned, never credited — a measurement that fails
+  says *"last measured"*, and a rotation whose trace fails is **not** counted as
+  a move. both of those used to happen, and a burn could land on a block the
+  recycler had handed us because the utun leg had been burned into the list.
 - **a duplicate block is remembered.** `tried` holds every /64 seen this turn,
   so a pinned bucket stops re-burning the device.
 - **a throttle is a deferral, not a failure.** `park_api()` stamps

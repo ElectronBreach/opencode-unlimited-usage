@@ -982,12 +982,20 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
 
         st = jload(GUARD_STATE, {})
         burned = set((jload(OVERLAY_STATE, {}) or {}).get("blacklist") or [])
-        old_bucket = st.get("egress_prefix") or before_pfx
+        # the bucket we are leaving is the last *measured* egress. before_pfx is
+        # the utun leg (2606:4700:110:…) — a state address, never an exit — so
+        # seeding `burned`/`tried` with it blacklisted a block we were never on.
+        old_bucket = st.get("egress_prefix") or ""
+        if not old_bucket:
+            _f = trace_v6(before_addr) if before_addr else {}
+            _ip = _f.get("ip") or ""
+            old_bucket = prefix64(_ip) if ":" in _ip else ""
         if old_bucket:
             burned.add(old_bucket)
 
         say = print if verbose else (lambda *a, **k: None)
-        say(f"old {before_pfx or '(none)'}  device {registration_id()[:8]}…")
+        say(f"old {old_bucket or '(unmeasured)'}  tunnel {before_pfx or '(down)'}"
+            f"  device {registration_id()[:8]}…")
 
         def measure():
             """(addr, device /64, egress ip, egress /64) as the server sees it."""
@@ -1053,7 +1061,8 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
                     publish_overlay_state("rotate")
                     LAST_MODE["mode"] = "rotate-keys"
                     mark_rotation_phase("done", {"moved": c_key})
-                    say(f"new {c_pfx}  egress {c_key}  (rotate-keys, no device burn)")
+                    say(f"bucket {c_key}  tunnel {c_pfx}"
+                        f"  (rotate-keys, no device burn)")
                     return True, before_pfx, c_pfx
                 last_key = c_key or last_key
                 say(f"   key rotation {round_no}/2 kept {last_key or '?'}")
@@ -1095,7 +1104,8 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
 
         st = jload(GUARD_STATE, {})
         burned = set((jload(OVERLAY_STATE, {}) or {}).get("blacklist") or [])
-        old_bucket = st.get("egress_prefix") or before_pfx
+        # keep the measured egress from above; only re-read if we never had one
+        old_bucket = old_bucket or st.get("egress_prefix") or ""
         if old_bucket:
             burned.add(old_bucket)
 
@@ -1152,10 +1162,20 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
             after_pfx = prefix64(after_addr)
             # The quota key is the *egress* /64 the server sees (2a09:bac…),
             # not the utun leg (2606:4700:110:…). Measure it or the check lies.
-            fields = trace_v6(after_addr) if after_addr else {}
-            egress = fields.get("ip") if ":" in fields.get("ip", "") else None
-            egress_pfx = prefix64(egress) if egress else None
-            key = egress_pfx or after_pfx
+            # A failed trace means "not measured", never a licence to call the
+            # utun leg a bucket: falling back to after_pfx wrote
+            # 2606:4700:110:… into the blacklist and counted an unmeasured
+            # rotation as a move. Retry, then treat it as no egress at all.
+            key, egress, egress_pfx = "", None, None
+            for _ in range(3):
+                fields = trace_v6(after_addr) if after_addr else {}
+                ip = fields.get("ip") or ""
+                egress = ip if ":" in ip else None
+                egress_pfx = prefix64(egress) if egress else None
+                key = egress_pfx or ""
+                if key:
+                    break
+                time.sleep(1.5)
             say(f"   -> bucket {key or '?'}  (old {old_bucket or '?'})")
 
             if not key:
@@ -1213,7 +1233,7 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
         record_wall("rotated", f"egress {key} (device {before_pfx} -> {after_pfx})")
         overlay_rotate(old_bucket, key, did)
         publish_overlay_state("rotate")
-        say(f"new {after_pfx or '(none)'}  egress {key}  device {did[:8]}…")
+        say(f"bucket {key}  tunnel {after_pfx or '(down)'}  device {did[:8]}…")
         return True, before_pfx, after_pfx
     finally:
         release_gui_hold(gui_hold, gui_was_up)
@@ -1955,6 +1975,19 @@ def overlay_credit(pfx, kind, device=""):
     save_if_changed(OVERLAY_LEDGER, led)
 
 
+# the addresses the WARP client itself holds (utun / the edge leg). they are
+# infrastructure we connect *to*, not exits a far end ever sees, so they must
+# never enter the quota bookkeeping.
+WARP_STATE_PREFIXES = ("2606:4700:110:", "2606:4700:100:", "2606:4700::")
+
+
+def is_egress_bucket(pfx):
+    """True when pfx could be an egress /64 someone is counted against."""
+    if not pfx or pfx.count(":") < 3:
+        return False
+    return not pfx.startswith(WARP_STATE_PREFIXES)
+
+
 def overlay_rotate(burned_pfx, fresh_pfx, device=""):
     """HUD bookkeeping for one real rotation: burn the old /64, credit the new,
     and move the counter the tile shows."""
@@ -1962,6 +1995,18 @@ def overlay_rotate(burned_pfx, fresh_pfx, device=""):
         return
     ov = jload(OVERLAY_STATE, {}) or {}
     bl = [x for x in (ov.get("blacklist") or []) if x]
+    if burned_pfx and not is_egress_bucket(burned_pfx):
+        # 2606:4700:110:… is the utun leg. burning it taught the recycler to
+        # hand back blocks we were never on, and hid a real collision.
+        log_throttled(GUARD_LOG, "bad-bucket",
+                      f"refusing to burn {burned_pfx} — not an egress block",
+                      every=600)
+        burned_pfx = ""
+    if fresh_pfx and not is_egress_bucket(fresh_pfx):
+        log_throttled(GUARD_LOG, "bad-bucket",
+                      f"refusing to credit {fresh_pfx} — not an egress block",
+                      every=600)
+        fresh_pfx = ""
     if burned_pfx and burned_pfx not in bl:
         bl.append(burned_pfx)
     ov["blacklist"] = bl
@@ -2486,13 +2531,28 @@ def cmd_where():
     to be swallowed by the hop itself, so asking "where am I" quietly spent a
     fresh egress. This path takes no lock, writes no state, calls no API.
     """
-    addr = iface_v6(force=True)
-    fields = trace_v6(addr) if addr else {}
-    seen = fields.get("ip") or ""
-    bucket = prefix64(seen) if ":" in seen else prefix64(addr)
     st = jload(GUARD_STATE, {})
+    last = st.get("egress_prefix") or ""
+    addr = iface_v6(force=True)
+    fields, seen = {}, ""
+    # one failed probe is not "no egress". mid-hop, or one dead edge, the
+    # trace comes back empty — and the WARP interface address is a state
+    # address, not an exit. answering with it made the HUD show a bucket that
+    # was never an egress (2a09:... -> 2606:4700:110:...). retry, then say
+    # "last seen" and name the last measured block instead of inventing one.
+    for _ in range(3):
+        fields = trace_v6(addr) if addr else {}
+        seen = fields.get("ip") or ""
+        if seen:
+            break
+        time.sleep(1.0)
+    bucket = prefix64(seen) if ":" in seen else ""
+    stale = False
+    if not bucket and last:
+        bucket, stale = last, True
     bl = (jload(OVERLAY_STATE, {}) or {}).get("blacklist") or []
-    print(f"bucket   {bucket or 'none'}")
+    print(f"bucket   {bucket or 'unknown'}"
+          + ("  (last measured — egress not reachable right now)" if stale else ""))
     print(f"v6       {seen or 'none'}")
     print(f"device   {registration_id() or 'none'}")
     print(f"state    {st.get('prefix') or 'none'}")
