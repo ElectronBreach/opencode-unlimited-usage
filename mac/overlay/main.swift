@@ -165,6 +165,16 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             }
         }
 
+        // unplugging an external display, plugging one in, or changing
+        // resolution moves every visibleFrame out from under the panel. the
+        // window kept its stale frame and could end up half off-screen until
+        // the next manual toggle; re-home it and reclamp instead.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                self?.reclampForScreen()
+            }
+
         poll = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
             // nobody is looking at a hidden panel. the session watcher still runs
             // every tick; the status probe drops to every fourth (8s), which is
@@ -457,6 +467,26 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         return screens.first
     }
 
+    // after a display change: if the panel no longer overlaps any screen it
+    // would be stranded, so park it at the top-right of the active screen
+    // before the normal clamp runs.
+    func reclampForScreen() {
+        guard window != nil else { return }
+        let f = window.frame
+        let onScreen = NSScreen.screens.contains {
+            !$0.visibleFrame.intersection(f).isNull
+        }
+        if !onScreen, let s = NSScreen.main ?? NSScreen.screens.first {
+            let vf = s.visibleFrame
+            let size = collapsed ? COLLAPSED : EXPANDED
+            let x = vf.maxX - size.width - 8
+            let y = vf.maxY - size.height - 8
+            window.setFrameOrigin(NSPoint(x: x, y: max(vf.minY, y)))
+        }
+        applyShape(animate: false)
+        if !hidden { window.orderFrontRegardless() }
+    }
+
     func applyShape(animate: Bool) {
         guard let screen = currentScreen() else { return }
         let vf = screen.visibleFrame
@@ -532,11 +562,16 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             where: { ($0.bundleIdentifier ?? "").contains("cloudflare.1dot1dot1") })
         // no GUI at all: the tunnel lives in the root daemon, so this is only
         // the window being gone. open it, and never more than once every 10min.
+        // The GUI is decoration. The tunnel lives in the root daemon and
+        // warp-cli talks to that daemon directly, so relaunching the app to
+        // "restore" a window never restored anything — it booted the app into
+        // a half-finished setup flow that threw
+        //   "Something went wrong. Please try again later."
+        // over the panel. Detect, log once an hour, never launch it.
         guard let app = app else {
-            guard now - warpFixAt > 600 else { return }
+            guard now - warpFixAt > 3600 else { return }
             warpFixAt = now
-            crashLog("warp GUI not running — opening it")
-            openWarp()
+            crashLog("warp GUI absent (tunnel unaffected) — not relaunching it")
             return
         }
         let pid = app.processIdentifier
@@ -554,19 +589,15 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         if usable { warpMiss = 0; return }
         warpMiss += 1
         guard warpMiss >= 2 else { return }
-        guard now - warpFixAt > 600 else { return }
+        // Killing and relaunching the GUI also killed the menu-bar item that
+        // owns the WARP daemon's tray state, and the fresh process came back
+        // showing the setup error. A windowless GUI is not a fault: the tunnel
+        // is up (that is what warpChecks already proved). Say nothing, do
+        // nothing, and let the user reopen the app themselves if they want it.
         warpMiss = 0
+        guard now - warpFixAt > 3600 else { return }
         warpFixAt = now
-        crashLog("warp GUI has no window — relaunching it (tunnel untouched)")
-        push("log", ["line": "warp UI had no window — restarted the app"])
-        let kill = Process()
-        kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        kill.arguments = ["-f", "Cloudflare WARP.app/Contents/MacOS/"]
-        try? kill.run()
-        kill.waitUntilExit()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            self?.openWarp()
-        }
+        crashLog("warp GUI has no window — leaving it alone (tunnel unaffected)")
     }
 
     // two independent answers to "is opencode running", because either one
@@ -905,6 +936,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "proxyRotate":
             if let slot = body["slot"] as? String, !slot.isEmpty { proxyCmd(["rotate", slot]) }
             else { proxyCmd(["rotate"]) }
+        case "proxyCli": proxyCmd(["cli"])
         case "proxyOn": proxyCmd(["on"])
         case "proxyOff": proxyCmd(["off"])
         case "proxyTest": proxyCmd(["test"])
@@ -921,6 +953,14 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         case "modelBurn": modelCmd(["burn-current"])
         case "modelReset": modelCmd(["reset"])
         case "modelRefresh": modelCmd(["refresh"])
+        // ---- providers already in opencode.json. the free pool is one
+        // provider; when it is walled this is the working answer.
+        case "providerList":
+            toolCmd("model-levers.sh", ["providers", "json"], json: true, tag: "provider")
+        case "providerSet":
+            if let ref = body["ref"] as? String, !ref.isEmpty {
+                toolCmd("model-levers.sh", ["set", ref], tag: "provider")
+            }
         default: break
         }
     }
@@ -1131,9 +1171,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
 
         // a hop or a doctor that never exits (dead tunnel, a sudo prompt with
         // nowhere to type) would hold `busy` forever and refuse every command
-        // after it. A hop is allowed to spend minutes: it waits out a peer
+        // after it. A hop is allowed to spend minutes now: it waits out a peer
         // rotation instead of failing, and a Cloudflare API park is a minute of
-        // that. 90s is the doctor's cap; the hop gets 4 minutes.
+        // that. 90s is the doctor's cap; the hop gets four minutes.
         let cap: Double = isHopScript ? 240 : 90
         let watchdog = DispatchWorkItem { [weak self] in
             guard p.isRunning else { return }
