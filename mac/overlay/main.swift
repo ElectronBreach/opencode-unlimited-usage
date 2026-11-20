@@ -1065,6 +1065,12 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 if out.hasPrefix("{") {
                     self.lastStatus = out
                     self.web.evaluateJavaScript("window.oucUpdate && window.oucUpdate(\(out));", completionHandler: nil)
+                    // the panel holds a dead-snapshot bar until a parseable
+                    // snapshot arrives. clear it once, here, not on every tick.
+                    if !self.statusOk {
+                        self.statusOk = true
+                        self.push("snapshot", ["ok": true])
+                    }
                 } else {
                     self.reportStatusFailure(err: err)
                 }
@@ -1081,8 +1087,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // on top, which reads like a broken lane instead of a broken script.
     // one toast per distinct error, everything appended to guard/status.err.
     private var statusFailSig = ""
+    private var statusOk = true
     private func reportStatusFailure(err: String) {
         let first = err.split(separator: "\n").first.map(String.init) ?? "no output"
+        statusOk = false
+        push("snapshot", ["ok": false, "text": first])
         if first != statusFailSig {
             statusFailSig = first
             let log = guardDir.appendingPathComponent("status.err")
@@ -1095,7 +1104,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             } else {
                 try? Data(line.utf8).write(to: log)
             }
-            push("toast", ["text": "status.sh: \(first)"])
+            push("toast", ["text": "snapshot failed"])
         }
     }
 

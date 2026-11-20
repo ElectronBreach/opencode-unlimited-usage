@@ -187,6 +187,22 @@ header:active{cursor:grabbing}
 .health{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;
   margin-top:var(--s2);flex:0 0 auto;position:relative;z-index:2}
 .health .chip{justify-content:center;min-width:0;overflow:hidden;white-space:nowrap}
+/* a dead snapshot is not a lane fault. the chips freeze on the last good paint
+   (freezing is honest; inventing red is not) and this bar names the reason, in
+   a place that cannot scroll away. cleared by the next good snapshot. */
+.stale{display:none;margin:4px 0 6px;padding:5px 8px;border-radius:7px;
+  font:600 var(--t7)/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em;
+  color:#fecdd3;border:1px solid rgba(251,113,133,.34);background:rgba(251,113,133,.09);
+  white-space:normal;word-break:break-word;flex:0 0 auto}
+.stale.on{display:block}
+/* a snapshot that never arrived is not a lane fault. the chips freeze on the
+   last good paint — inventing red is a lie — so the reason lives here, in a
+   bar that cannot scroll away and cannot be missed in a 1.6s toast. */
+.stale{display:none;margin:3px 0 1px;padding:5px 8px;border-radius:7px;
+  font:600 10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em;
+  color:#fecdd3;border:1px solid rgba(251,113,133,.34);background:rgba(251,113,133,.09);
+  white-space:normal;word-break:break-word}
+.stale.on{display:block}
 .chip{display:flex;align-items:center;gap:4px;padding:3px var(--s2);border-radius:20px;
   font-size:var(--t7);letter-spacing:.1em;color:var(--mut);font-weight:600;
   background:var(--l0);border:1px solid var(--hair);transition:border-color .15s,background .15s}
@@ -543,6 +559,7 @@ body.collapsed #bubble{display:grid}
   <div class="project"><i class="pdot"></i><span class="pname" id="project">idle — no session</span><span class="pmodel" id="pmodel" title="the model this session is pinned to"><i></i><b id="pmodelName">—</b></span></div>
 
   <section class="health" id="health"></section>
+  <div class="stale" id="staleNote"></div>
 
   <section class="hero">
     <div class="hero-head">
@@ -812,6 +829,33 @@ function paintBrain(p){
     : (a ? ("brain " + sc + " · " + a) : ("brain " + sc + " · no advisories"));
 }
 
+// the snapshot is the panel's only source of WARP/DNS/KEEPER/GUARD. when
+// status.sh dies the launcher holds the last paint and reports here: a bar with
+// the reason and a chip that stays lit until a parseable snapshot lands again.
+// silence was the original bug — a red panel over a live brain chip reads like
+// a broken lane when it is a broken script.
+function paintSnapshotState(ok, text){
+  const t = ok ? "" : (text || "status.sh returned no json");
+  window._snapFail = t;
+  const bar = $("staleNote");
+  if (bar) {
+    if (t) {
+      bar.textContent = "SNAPSHOT DEAD — " + t + " · chips are the last good paint";
+      bar.classList.add("on");
+    } else {
+      bar.textContent = "";
+      bar.classList.remove("on");
+    }
+  }
+  const chip = $("chipSNAP");
+  if (chip) {
+    chip.style.display = t ? "" : "none";
+    chip.className = t ? "chip bad" : "chip";
+    chip.title = t;
+  }
+  if (t) logLine("✗ snapshot: " + t);
+}
+
 function render(d){
   S = d;
   window.oucLastUpdate = d.ts || 0;
@@ -959,7 +1003,16 @@ function render(d){
                  : (d.leakguard === "off" || !d.leakguard) ? "idle" : "warn",
                (d.leakguard === "off" || !d.leakguard)
                  ? "off — fail-open by design, armed only while the tunnel carries traffic"
-                 : d.leakguard)
+                 : d.leakguard),
+    // a snapshot that will not parse is a fact, not a blank. this chip only
+    // exists while it is true: a 1.6s toast is easy to miss and a frozen panel
+    // reads like a dead lane. it clears itself on the first good snapshot.
+    (function(){
+      const t = window._snapFail || "";
+      if (!t) return `<span class="chip" id="chipSNAP" style="display:none"><i></i>SNAPSHOT</span>`;
+      const safe = t.replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
+      return `<span class="chip bad" id="chipSNAP" title="${safe}"><i></i>SNAPSHOT</span>`;
+    })()
   ];
   $("health").innerHTML = chips.join("");
   paintBrain(d.brain || {live: false});
@@ -1230,6 +1283,8 @@ window.ouc = function(ev){
   }
   else if (ev.type === "busy") setBusy(ev.payload.cmd, ev.payload.on);
   else if (ev.type === "toast") toast(ev.payload.text || "");
+  else if (ev.type === "snapshot") paintSnapshotState(!!ev.payload.ok, ev.payload.text || "");
+  else if (ev.type === "snapshot") paintSnapshotState(!!ev.payload.ok, ev.payload.text || "");
   else if (ev.type === "window") {
     document.body.classList.toggle("collapsed", !!ev.payload.collapsed);
   }
