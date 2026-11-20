@@ -1098,6 +1098,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             push("toast", ["text": "status.sh: \(first)"])
         }
     }
+
     // the key pool is deliberately driven by the same shell script a terminal
     // uses, so what the HUD shows and what `api-keys.sh` does can never drift.
     func keyCmd(_ args: [String]) {
