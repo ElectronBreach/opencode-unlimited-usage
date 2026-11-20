@@ -43,6 +43,32 @@ for d in "$HERE/.." "$HERE/../scripts"; do
 done
 [ "$LINT_FAIL" = 0 ] || exit 1
 
+# the panel is three thousand lines of one html with no build step, so a bad
+# edit compiles fine and only shows up as silence. two shapes have already
+# bitten: a duplicated event branch (an edit that landed twice) and a
+# duplicated function (the second silently wins). both are cheap to refuse.
+if ! err=$(python3 - "$HTML" <<'PY'
+import re, sys, collections
+src = open(sys.argv[1], encoding="utf-8").read()
+bad = []
+branches = re.findall(r'ev\.type === "([a-zA-Z]+)"', src)
+for name, n in collections.Counter(branches).items():
+    if n > 1:
+        bad.append(f'duplicate event branch: ev.type === "{name}" ({n}x)')
+fns = re.findall(r'^function\s+([A-Za-z_$][\w$]*)\s*\(', src, re.M)
+for name, n in collections.Counter(fns).items():
+    if n > 1:
+        bad.append(f'duplicate function: {name}() ({n}x)')
+if bad:
+    print("\n".join(bad))
+    sys.exit(1)
+PY
+); then
+  echo "overlay.html:" >&2
+  printf '%s\n' "$err" >&2
+  exit 1
+fi
+
 rm -rf "$OUT"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 
