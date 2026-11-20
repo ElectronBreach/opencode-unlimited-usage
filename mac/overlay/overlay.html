@@ -466,6 +466,7 @@ button.act.busy .dot{display:none}
 .sheet-status .pxfix{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;
   color:var(--warn)}
 .sheet-status .pxfix:hover{color:#fde68a}
+.sheet-status .pxbad{color:var(--bad);font-weight:600}
 .sbody{display:none;flex:1 1 auto;min-height:0;flex-direction:column;gap:var(--s2)}
 .sbody.on{display:flex}
 .px-list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;
@@ -956,7 +957,9 @@ function render(d){
           ? "proxy mux up, no exits configured — every request fails closed · click to manage"
           : "proxy mux up · " + (pxWarpOnly ? "one upstream: the tunnel"
               : pxHi + "/" + pxPool + " exits from " + (px.source || "?"))
-            + " · " + (px.current || "—") + " · click to manage"));
+            + " · " + (px.current || "—")
+            + ((px.failed || 0) > 0 ? " · " + px.failed + " refused" : "")
+            + " · click to manage"));
     if (sheet && sheet.classList.contains("on")) renderSheet();
   }
   // the identity tab carries a dot when the current bucket is one we have
@@ -1447,7 +1450,14 @@ function renderSheet(){
       ? (p.stale
           ? "mux process alive · its state is " + (p.age || "?") + "s old — not publishing"
           : "mux up · <b>" + (p.current || "—") + "</b> · relay " + pxRelay
-            + " · " + (p.rotations || 0) + " rotations · " + (p.served || 0) + " served")
+            + " · " + (p.rotations || 0) + " rotations · " + (p.served || 0) + " served"
+            // a mux that refused 9% of its traffic is not a clean lane. the
+            // count was always in the state file and never on screen, so a
+            // broken upstream read as a working one.
+            + (p.failed > 0
+                ? ' · <span class="' + ((p.failed / Math.max(1, p.served + p.failed)) > 0.05 ? "pxbad" : "") + '">'
+                  + p.failed + " failed</span>"
+                : ""))
       : "mux down · no exits in service")
     + " · system " + (p.system ? "<b>on</b>" : "off")
     // the mux rotating is not the same as the CLI using it: the service is

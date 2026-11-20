@@ -1107,8 +1107,24 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         let line = "\(stamp)  status.sh: \(first)\n"
         if let h = try? FileHandle(forWritingTo: log) {
             h.seekToEndOfFile()
+            let end = h.offsetInFile
             h.write(Data(line.utf8))
             try? h.close()
+            // this file only grows while something is wrong, and the thing that
+            // is wrong is often "it relaunched and failed the same way". each
+            // run resets the dedupe, so a launch loop writes a line every
+            // boot. keep the tail and drop the rest instead of growing forever.
+            if end > 256 * 1024 {
+                if let d = try? Data(contentsOf: log) {
+                    let keep = d.suffix(128 * 1024)
+                    try? Data("… trimmed …\n".utf8).write(to: log)
+                    if let h2 = try? FileHandle(forWritingTo: log) {
+                        h2.seekToEndOfFile()
+                        h2.write(keep)
+                        try? h2.close()
+                    }
+                }
+            }
         } else {
             try? Data(line.utf8).write(to: log)
         }
