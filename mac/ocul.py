@@ -128,6 +128,8 @@ MAX_CONNS = 512
 # WARP hands out a fresh one per registration, and the guard must take every
 # wall it can. A cap here is what made rotation "stop working" an hour in.
 HOP_COOLDOWN = 6
+# buckets reset roughly daily. keep the newest, drop the fossils.
+BLACKLIST_CAP = 64
 HOP_HOURLY_CAP = 10 ** 9  # effectively unbounded; kept for older callers
 WALL_BACKOFF_MAX = 90      # longest single wait between attempts inside a turn
 TICK = 6
@@ -1059,7 +1061,7 @@ def resume_gui(was_up):
                       every=300)
     if _gui_running():
         log_throttled(GUARD_LOG, "gui-already-up",
-                      "WARP window was still up after the burn — raising it", every=300)
+                      "WARP window was still up — raising it", every=300)
     for try_no in range(1, 4):
         rc, _, err = run(["open", "-a", WARP_APP], timeout=15)
         if rc == 0:
@@ -2251,6 +2253,11 @@ def overlay_rotate(burned_pfx, fresh_pfx, device=""):
         fresh_pfx = ""
     if burned_pfx and burned_pfx not in bl:
         bl.append(burned_pfx)
+    # a bucket resets roughly daily, so the oldest entries are the least likely
+    # to still be burnt. cap the list instead of letting it grow for weeks: an
+    # unbounded burn list makes the next real rotation reject healthy blocks.
+    if len(bl) > BLACKLIST_CAP:
+        bl = bl[-BLACKLIST_CAP:]
     ov["blacklist"] = bl
     ov["hops"] = int(ov.get("hops") or 0) + 1
     # their guard reads last_hop as "cooldown until" (it stamps now+900 on a
