@@ -1173,8 +1173,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         // nowhere to type) would hold `busy` forever and refuse every command
         // after it. A hop is allowed to spend minutes now: it waits out a peer
         // rotation instead of failing, and a Cloudflare API park is a minute of
-        // that. 90s is the doctor's cap; the hop gets four minutes.
-        let cap: Double = isHopScript ? 240 : 90
+        // that. The rotator's own turn budget is 300s, so a cap below that kills
+        // exactly the work it asked for — 300 plus the exit path.
+        let cap: Double = isHopScript ? 360 : 90
         let watchdog = DispatchWorkItem { [weak self] in
             guard p.isRunning else { return }
             DispatchQueue.main.async {
