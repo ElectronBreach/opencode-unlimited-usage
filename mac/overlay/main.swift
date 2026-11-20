@@ -1036,7 +1036,10 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             p.environment = env
             let pipe = Pipe()
             p.standardOutput = pipe
-            p.standardError = FileHandle.nullDevice
+            // stderr is evidence, not noise. discarding it is what turned a
+            // bash parse error into a panel of red chips with no explanation.
+            let epipe = Pipe()
+            p.standardError = epipe
             do { try p.run() } catch {
                 DispatchQueue.main.async { self.statusBusy = false }
                 return
@@ -1052,14 +1055,18 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + 12, execute: watchdog)
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let edata = epipe.fileHandleForReading.readDataToEndOfFile()
             p.waitUntilExit()
             watchdog.cancel()
             let out = String(data: data, encoding: .utf8) ?? "{}"
+            let err = String(data: edata, encoding: .utf8) ?? ""
             DispatchQueue.main.async {
                 self.statusBusy = false
                 if out.hasPrefix("{") {
                     self.lastStatus = out
                     self.web.evaluateJavaScript("window.oucUpdate && window.oucUpdate(\(out));", completionHandler: nil)
+                } else {
+                    self.reportStatusFailure(err: err)
                 }
                 if self.pendingRefresh {
                     self.pendingRefresh = false
@@ -1069,6 +1076,28 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         }
     }
 
+    // a snapshot that does not parse is a fact the panel must show: silence
+    // here painted a dead script as "every chip red" with a green brain chip
+    // on top, which reads like a broken lane instead of a broken script.
+    // one toast per distinct error, everything appended to guard/status.err.
+    private var statusFailSig = ""
+    private func reportStatusFailure(err: String) {
+        let first = err.split(separator: "\n").first.map(String.init) ?? "no output"
+        if first != statusFailSig {
+            statusFailSig = first
+            let log = guardDir.appendingPathComponent("status.err")
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            let line = "\(stamp)  status.sh: \(first)\n"
+            if let h = try? FileHandle(forWritingTo: log) {
+                h.seekToEndOfFile()
+                h.write(Data(line.utf8))
+                try? h.close()
+            } else {
+                try? Data(line.utf8).write(to: log)
+            }
+            push("toast", ["text": "status.sh: \(first)"])
+        }
+    }
     // the key pool is deliberately driven by the same shell script a terminal
     // uses, so what the HUD shows and what `api-keys.sh` does can never drift.
     func keyCmd(_ args: [String]) {

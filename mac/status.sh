@@ -45,24 +45,125 @@ wo(){ [ -n "$WARP" ] || return 1; sudo -n "$WARP" --accept-tos "$@" 2>/dev/null 
 
 now=$(date +%s)
 
+# ---- the brain ------------------------------------------------------------
+# The guard publishes everything that needs a subprocess or a network probe:
+# warp status and mode, guard/keeper liveness, the exit /64 and how old its
+# measurement is, proxy health, the in-flight rotation and a heartbeat.
+#
+# When that file is fresh this script stops calling `warp-cli` twice through
+# sudo, stops calling `launchctl print` four times, and stops curling — the
+# two-second refresh becomes a few local reads instead of a process tree. When
+# it is stale or missing, every old path below runs exactly as before, so the
+# HUD can never be left blank by a guard that is not there.
+BRAIN="$GUARD/brain.json"
+BRAIN_OK=0
+BRAIN_SEQ=0; BRAIN_SCORE=-1; BRAIN_STATE=""; BRAIN_ADVICE=0
+ROT_ACTIVE=0; ROT_PHASE=""; ROT_ATTEMPT=0; ROT_MAX=0
+if [ -f "$BRAIN" ]; then
+  eval "$(python3 - "$BRAIN" "$now" <<'PY' 2>/dev/null
+import json, sys
+try:
+    b = json.load(open(sys.argv[1]))
+except Exception:
+    b = {}
+if not isinstance(b, dict):
+    b = {}
+now = int(sys.argv[2])
+def q(v):
+    return "'" + str(v if v is not None else "").replace("'", "") + "'"
+def n(v):
+    try: return int(v)
+    except Exception: return 0
+try:
+    age = max(0, now - int(b.get("beat") or 0))
+except Exception:
+    age = 10 ** 6
+# a brain older than its freshness window is not a snapshot, it is a fossil.
+if age > 20 or n(b.get("v")) != 1:
+    print("BRAIN_OK=0")
+    raise SystemExit(0)
+eg = b.get("egress") or {}
+# a rotation in progress is a fact the panel must show: HOP looks clickable
+# while the rotator owns the tunnel, and clicking it answers "rotation already
+# in progress" — a button that lies about its own availability.
+r = b.get("rotation") or {}
+print("ROT_ACTIVE=%d" % (1 if r.get("active") else 0))
+print("ROT_PHASE=%s" % q(r.get("phase")))
+print("ROT_ATTEMPT=%d" % n(r.get("attempt")))
+print("ROT_MAX=%d" % n(r.get("max")))
+w = b.get("warp") or {}
+g = b.get("guard") or {}
+k = b.get("keeper") or {}
+sn = b.get("sensors") or {}
+h = b.get("health") or {}
+eage = max(0, min(10 ** 6, now - n(eg.get("at"))))
+print("BRAIN_OK=1")
+print("BRAIN_SEQ=%d" % n(b.get("seq")))
+print("BRAIN_SCORE=%d" % (n(h.get("score")) if h else -1))
+print("BRAIN_STATE=%s" % q(h.get("state")))
+print("BRAIN_ADVICE=%d" % len(b.get("advice") or []))
+print("c_ip=%s" % q(eg.get("ip")))
+print("c_ts=%d" % (now - eage))
+print("c_dns=%d" % (1 if sn.get("dns") else 0))
+print("c_dev=%s" % q((b.get("tunnel") or {}).get("device") or ""))
+print("c_fail=0")
+print("tunnel=%d" % (1 if w.get("connected") else 0))
+print("mode=%s" % q(w.get("mode")))
+print("keeper=%d" % (1 if k.get("running") else 0))
+print("guard=%d" % (1 if g.get("running") else 0))
+# the guard heartbeat. it is the only stamp that moves on every tick,
+# including the ticks where nothing else changed.
+# NOTE: keep this comment free of apostrophes. The HUD runs this file with
+# /bin/bash (3.2), whose parser mis-counts a lone quote inside a here-doc
+# that sits in $( ), bleeding to EOF and killing the whole snapshot.
+print("BRAIN_BEAT=%d" % n(b.get("beat")))
+PY
+)"
+fi
+
+
 # ---- cached network probes ------------------------------------------------
-c_ts=0; c_ip=""; c_dns=0; c_dev=""
-if [ -f "$CACHE" ]; then
+# A failed probe must back off. The old test re-probed on every call the moment
+# the egress field was empty, so an offline machine ran two curls plus a dig
+# every two seconds and the Swift 12s watchdog started killing status.sh
+# mid-flight — the HUD froze for reasons that had nothing to do with the lane.
+PROBE_RETRY="${OUC_PROBE_RETRY:-20}"   # seconds to wait after a failed probe
+# when the brain answered, these are already populated. defaulting them here
+# unconditionally is what blanked a fresh exit one line after reading it.
+if [ "$BRAIN_OK" != "1" ]; then
+  c_ts=0; c_ip=""; c_dns=0; c_dev=""; c_fail=0
+fi
+c_ts="${c_ts:-0}"; c_ip="${c_ip:-}"; c_dns="${c_dns:-0}"
+c_dev="${c_dev:-}"; c_fail="${c_fail:-0}"
+if [ -f "$CACHE" ] && [ "$BRAIN_OK" != "1" ]; then
   eval "$(python3 - "$CACHE" <<'PY' 2>/dev/null
 import json,sys
 try: d=json.load(open(sys.argv[1]))
 except Exception: d={}
+if not isinstance(d, dict): d={}
+def s(v): return ("'" + str(v or "").replace("'","") + "'")
 print("c_ts=%d" % int(d.get("ts") or 0))
-print("c_ip=%s" % ("'" + str(d.get("egress4") or "").replace("'","") + "'"))
+print("c_ip=%s" % s(d.get("egress4")))
 print("c_dns=%d" % (1 if d.get("dns") else 0))
-print("c_dev=%s" % ("'" + str(d.get("device") or "").replace("'","") + "'"))
+print("c_dev=%s" % s(d.get("device")))
+print("c_fail=%d" % int(d.get("fail") or 0))
 PY
 )"
 fi
 net_age=$(( now - c_ts ))
-if [ "$FORCE" = "1" ] || [ "$net_age" -gt "$TTL" ] || [ -z "$c_ip" ]; then
-  c_ip=$(curl -4 -s -m 3 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | awk -F= '/^ip=/{print $2; exit}')
-  [ -n "$c_ip" ] || c_ip=$(curl -4 -s -m 3 https://api64.ipify.org 2>/dev/null)
+# a clock step backwards (ntp correction, manual set) makes now-c_ts negative.
+# treating that as "fresh" would trust a stamp from the future forever.
+[ "$net_age" -lt 0 ] && net_age=999999
+probe=0
+[ "$FORCE" = "1" ] && probe=1
+[ "$net_age" -gt "$TTL" ] && probe=1
+# empty egress + fresh stamp = the last probe failed. retry on the backoff.
+[ -z "$c_ip" ] && [ "$net_age" -gt "$PROBE_RETRY" ] && probe=1
+probe_ok=0
+if [ "$probe" = "1" ] && [ "$BRAIN_OK" != "1" ]; then
+  p_ip=$(curl -4 -s -m 3 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | awk -F= '/^ip=/{print $2; exit}')
+  [ -n "$p_ip" ] || p_ip=$(curl -4 -s -m 2 https://api64.ipify.org 2>/dev/null)
+  if [ -n "$p_ip" ]; then c_ip="$p_ip"; probe_ok=1; c_fail=0; else c_fail=$((c_fail + 1)); fi
   if [ -n "$(dig +short +time=1 +tries=1 opencode.ai 2>/dev/null)" ]; then c_dns=1; else c_dns=0; fi
   c_ts=$now
   # the device id changes on every re-registration, and a rotation is exactly
@@ -70,25 +171,35 @@ if [ "$FORCE" = "1" ] || [ "$net_age" -gt "$TTL" ] || [ -z "$c_ip" ]; then
   # cached forever.
   c_dev=$("$WARP" --accept-tos registration show 2>/dev/null | awk -F': ' '/^Device ID:/{print $2; exit}')
   [ -n "$c_dev" ] || c_dev=$("$WARP" --accept-tos registration show 2>/dev/null | awk '/^ID:/{print $2; exit}')
-  printf '{"ts":%d,"egress4":"%s","dns":%d,"device":"%s"}\n' \
-    "$c_ts" "${c_ip:-}" "$c_dns" "${c_dev:-}" > "$CACHE.tmp" 2>/dev/null \
+  printf '{"ts":%d,"egress4":"%s","dns":%d,"device":"%s","ok":%d,"fail":%d}\n' \
+    "$c_ts" "${c_ip:-}" "$c_dns" "${c_dev:-}" "$probe_ok" "$c_fail" > "$CACHE.tmp" 2>/dev/null \
     && mv "$CACHE.tmp" "$CACHE" 2>/dev/null
-elif [ -z "$c_dev" ]; then
-  c_dev=$("$WARP" --accept-tos registration show 2>/dev/null | awk -F': ' '/^Device ID:/{print $2; exit}')
-  [ -n "$c_dev" ] || c_dev=$("$WARP" --accept-tos registration show 2>/dev/null | awk '/^ID:/{print $2; exit}')
+else
+  [ "$c_fail" -gt 0 ] && [ "$net_age" -gt "$TTL" ] && probe_ok=0 || probe_ok=$([ -n "$c_ip" ] && echo 1 || echo 0)
+  if [ -z "$c_dev" ] && [ "$BRAIN_OK" != "1" ]; then
+    c_dev=$("$WARP" --accept-tos registration show 2>/dev/null | awk -F': ' '/^Device ID:/{print $2; exit}')
+    [ -n "$c_dev" ] || c_dev=$("$WARP" --accept-tos registration show 2>/dev/null | awk '/^ID:/{print $2; exit}')
+  fi
 fi
+probe_age=$(( now - c_ts ))
+[ "$probe_age" -lt 0 ] && probe_age=999999
 
 # ---- local state ----------------------------------------------------------
-tunnel=0; mode=""
-if [ -n "$WARP" ]; then
-  wo status 2>/dev/null | head -1 | grep -q Connected && tunnel=1
-  mode=$(wo settings 2>/dev/null | awk -F'Mode: ' '/Mode:/{print $2; exit}')
+# only ask warp-cli and launchd when the brain could not answer. four forks and
+# two sudo calls per refresh is the whole cost this file used to pay for a
+# snapshot the guard had already written.
+if [ "$BRAIN_OK" != "1" ]; then
+  tunnel=0; mode=""
+  if [ -n "$WARP" ]; then
+    wo status 2>/dev/null | head -1 | grep -q Connected && tunnel=1
+    mode=$(wo settings 2>/dev/null | awk -F'Mode: ' '/Mode:/{print $2; exit}')
+  fi
+  keeper=0; launchctl print "gui/$(id -u)/com.ouc.keeper" >/dev/null 2>&1 && keeper=1
+  [ "$keeper" = "1" ] || { launchctl print system/com.opencode-unlimited.keeper >/dev/null 2>&1 && keeper=1; }
+  guard=0;  launchctl print "gui/$(id -u)/ai.ocul.guard" >/dev/null 2>&1 && guard=1
+  [ "$guard" = "1" ]  || { launchctl print "gui/$(id -u)/com.ouc.guard" >/dev/null 2>&1 && guard=1; }
+  [ "$guard" = "1" ]  || { launchctl print "gui/$(id -u)/com.opencode-unlimited.guard" >/dev/null 2>&1 && guard=1; }
 fi
-keeper=0; launchctl print "gui/$(id -u)/com.ouc.keeper" >/dev/null 2>&1 && keeper=1
-[ "$keeper" = "1" ] || { launchctl print system/com.opencode-unlimited.keeper >/dev/null 2>&1 && keeper=1; }
-guard=0;  launchctl print "gui/$(id -u)/ai.ocul.guard" >/dev/null 2>&1 && guard=1
-[ "$guard" = "1" ]  || { launchctl print "gui/$(id -u)/com.ouc.guard" >/dev/null 2>&1 && guard=1; }
-[ "$guard" = "1" ]  || { launchctl print "gui/$(id -u)/com.opencode-unlimited.guard" >/dev/null 2>&1 && guard=1; }
 # the credit stamp is opt-in (OUC_CREDIT=1). it is off by design, so the chip
 # must read idle rather than failed when the stamp file is simply absent.
 credit=0; [ "${OUC_CREDIT:-0}" = "1" ] && [ -f "$HOME/.opencode/AGENTS.md" ] && credit=1
@@ -111,12 +222,23 @@ PY
 )"
 fi
 
+# ocul mirrors a `guard_ts` heartbeat into the App Support state every tick, so
+# the age of that stamp is the only honest signal that separates an idle-but-
+# healthy rotator from a wedged one. A launchd "running" chip alone painted a
+# hung guard green.
+
 export OUC_NOW="$now" OUC_IP="${c_ip:-}" OUC_DNS="$c_dns" OUC_TUNNEL="$tunnel" \
        OUC_MODE="$mode" OUC_KEEPER="$keeper" OUC_GUARD="$guard" OUC_CREDIT="$credit" \
        OUC_LEAK="$leak" OUC_STATE="$STATE" OUC_LEDGER="$GUARD/identities.json" OUC_DB="$DB" OUC_CTX_DIR="$ctx_dir" \
        OUC_CTX_TS="$ctx_ts" OUC_BRAND="$BRAND" OUC_DEST="$DEST" \
        OUC_NEW_STATE="$OUC_STATE" OUC_NEW_BLACKLIST="$OUC_BLACKLIST" \
-       OUC_NEW_HISTORY="$OUC_HISTORY" OUC_NEW_HOPLOG="$OUC_HOP_LOG" OUC_DEVICE="${c_dev:-}"
+       OUC_NEW_HISTORY="$OUC_HISTORY" OUC_NEW_HOPLOG="$OUC_HOP_LOG" OUC_DEVICE="${c_dev:-}" \
+       OUC_PROBE_OK="$probe_ok" OUC_PROBE_AGE="$probe_age" OUC_LADDER="$GUARD/ladder.json" \
+       OUC_BRAIN_SEQ="$BRAIN_SEQ" OUC_BRAIN_SCORE="$BRAIN_SCORE" \
+       OUC_BRAIN_STATE="$BRAIN_STATE" OUC_BRAIN_ADVICE="$BRAIN_ADVICE" OUC_BRAIN_OK="$BRAIN_OK" \
+       OUC_BRAIN_BEAT="${BRAIN_BEAT:-0}" \
+       OUC_ROT_ACTIVE="$ROT_ACTIVE" OUC_ROT_PHASE="$ROT_PHASE" \
+       OUC_ROT_ATTEMPT="$ROT_ATTEMPT" OUC_ROT_MAX="$ROT_MAX"
 
 python3 - <<'PY'
 import json, os, sqlite3, time, datetime, hashlib
@@ -134,11 +256,32 @@ out = {
     "warp": {"connected": env("OUC_TUNNEL") == "1", "mode": env("OUC_MODE")},
     "keeper": env("OUC_KEEPER") == "1",
     "guard": env("OUC_GUARD") == "1",
+    # age of the rotator's own heartbeat (seconds). -1 = never seen. filled in
+    # below once the App Support state is loaded.
+    "guardAge": -1,
+    # was the last egress probe a success, and how old is it. lets the panel say
+    # "cached exit" instead of presenting a stale address as live.
+    "probe": {"ok": env("OUC_PROBE_OK") == "1", "age": num(env("OUC_PROBE_AGE"), -1)},
+    # which models actually answer right now, and which one the CLI is pinned
+    # to. a pin is not a fact — it is a guess with a timestamp.
+    "ladder": {"best": None, "live": 0, "age": -1, "wall": 0},
     "dns": env("OUC_DNS") == "1",
     "credit": env("OUC_CREDIT") == "1",
     "leakguard": env("OUC_LEAK"),
     "egress4": env("OUC_IP"),
     "context": {"dir": env("OUC_CTX_DIR"), "age": (now - num(env("OUC_CTX_TS"))) if env("OUC_CTX_TS") else -1},
+    # the guard's own document. additive, so every existing chip keeps working;
+    # a reader that wants one health number reads it here instead of deriving
+    # its own from five fields and disagreeing with the next reader.
+    "rotation": {"active": env("OUC_ROT_ACTIVE") == "1",
+                 "phase": env("OUC_ROT_PHASE"),
+                 "attempt": num(env("OUC_ROT_ATTEMPT")),
+                 "max": num(env("OUC_ROT_MAX"))},
+    "brain": {"live": env("OUC_BRAIN_OK") == "1",
+              "seq": num(env("OUC_BRAIN_SEQ")),
+              "score": num(env("OUC_BRAIN_SCORE"), -1),
+              "state": env("OUC_BRAIN_STATE"),
+              "advice": num(env("OUC_BRAIN_ADVICE"))},
 }
 
 # ---- guard state
@@ -148,6 +291,8 @@ try:
         st = json.load(f)
 except Exception:
     pass
+if not isinstance(st, dict):
+    st = {}
 
 # the macOS port writes its own state + a separate blacklist file. when that
 # state exists it is the truth; the legacy guard json is only a fallback for a
@@ -158,16 +303,52 @@ try:
         new = json.load(f)
 except Exception:
     pass
+if not isinstance(new, dict):
+    new = {}
+# ocul writes this stamp on every tick; its age is the rotator's heartbeat.
+try:
+    _gts = float(new.get("guard_ts") or 0)
+except Exception:
+    _gts = 0.0
+# a live brain beats any other guard stamp: `beat` moves every tick, while
+# guard_ts is written by the HUD publisher and can lag a rotation.
+_bbeat = 0
+try:
+    _bbeat = int(env("OUC_BRAIN_BEAT") or 0)
+except Exception:
+    _bbeat = 0
+if env("OUC_BRAIN_OK") == "1" and _bbeat > 0:
+    out["guardAge"] = max(0, int(now - _bbeat))
+elif _gts > 0:
+    out["guardAge"] = max(0, int(now - _gts))
 blocks = []
 try:
     with open(env("OUC_NEW_BLACKLIST")) as f:
-        blocks = [b for b in (json.load(f).get("blocks") or []) if b]
+        _bl = json.load(f)
+    if isinstance(_bl, dict):
+        blocks = [b for b in (_bl.get("blocks") or []) if b]
+    elif isinstance(_bl, list):
+        blocks = [b for b in _bl if b]
 except Exception:
     pass
 legacy_blocks = [x for x in (st.get("blacklist") or []) if x]
 known = blocks or legacy_blocks
 
-prefix = (new.get("current_64") or st.get("prefix") or "").strip()
+# ocul is the canonical rotator on this machine. its guard.json carries the
+# live egress /64 (the bucket the quota is keyed on) and the real hop count.
+# the App Support state.json is only written by the retired `ouc` engine, so
+# preferring it froze the HUD tile at whatever ouc last wrote — the rotation
+# happened, the panel kept showing the previous block.
+ocul = {}
+try:
+    with open(os.path.expanduser("~/.local/state/ocu-lane/guard.json")) as f:
+        ocul = json.load(f)
+except Exception:
+    pass
+if not isinstance(ocul, dict):
+    ocul = {}
+
+prefix = (ocul.get("egress_prefix") or new.get("current_64") or st.get("prefix") or "").strip()
 hist_total = 0
 try:
     with open(env("OUC_NEW_HISTORY")) as f:
@@ -176,14 +357,27 @@ try:
                 hist_total += 1
 except Exception:
     pass
-hops = hist_total or (num(new.get("hops")) if new else num(st.get("hops")))
-device = (env("OUC_DEVICE") or rot.get("new_device") or st.get("device") or "").strip()
-last_hop = 0.0
-try:
-    last_hop = float(new.get("last_hop") or 0)
-except Exception:
-    last_hop = 0.0
+if ocul.get("last_hop"):
+    hops = num(ocul.get("hops"))
+else:
+    hops = hist_total or (num(new.get("hops")) if new else num(st.get("hops")))
+# rot must exist before device reads it. it used to be defined a line below,
+# so an empty OUC_DEVICE (warp-cli registration show failing) evaluated
+# rot.get(...) on an undefined name and threw the whole status JSON away —
+# which the HUD renders as a silent freeze, not an error.
 rot = new.get("last_rotation") if isinstance(new.get("last_rotation"), dict) else {}
+device = (env("OUC_DEVICE") or rot.get("new_device") or st.get("device") or "").strip()
+# the live hop stamp: ocul is canonical, the retired App Support state is the
+# fallback. reading legacy alone froze "LAST" at whatever `ouc` last wrote.
+last_hop = 0.0
+for cand in (ocul.get("last_hop"), new.get("last_hop"), st.get("last_hop")):
+    try:
+        v = float(cand or 0)
+    except Exception:
+        v = 0.0
+    if v > 0:
+        last_hop = v
+        break
 
 out["identity"] = {
     # `current` is the label the HUD prints as "where we are". the /64 is the
@@ -191,7 +385,7 @@ out["identity"] = {
     # server actually sees.
     "current": prefix or st.get("current") or "",
     "prefix": prefix,
-    "seen6": new.get("current_64") or st.get("seen6") or "",
+    "seen6": ocul.get("egress") or new.get("egress") or new.get("current_64") or st.get("seen6") or "",
     "device": device[:8],
     "hops": hops,
     "blacklist": len(known),
@@ -201,6 +395,10 @@ out["identity"] = {
     "burnt": bool(prefix and prefix in known),
     "v4": (new.get("current_v4") or env("OUC_IP") or ""),
     "since": int(max(0, now - last_hop)) if last_hop else -1,
+    # a hop stamp in the future is a park, not a rotation. the panel shows the
+    # countdown instead of lying "0s ago" while rotation is deliberately held.
+    "parked": int(max(0, last_hop - now)) if last_hop and last_hop > now else 0,
+    "guardAge": out["guardAge"],
     "kind": rot.get("kind") or "",
     "v4Changed": bool(rot.get("v4_changed")),
     "failStreak": num(new.get("fail_streak")),
@@ -520,7 +718,38 @@ try:
                      and m.get("type") in ("chat", "decision"))
 except Exception:
     pass
+# the ladder's last measurement. `free` counts how many models exist; this
+# says how many actually answered — the number that decides the next prompt.
+try:
+    ladder = os.path.join(os.path.expanduser("~"), ".local/share/opencode-unlimited/guard/ladder.json")
+    with open(ladder) as f:
+        lad = json.load(f)
+    live = [r for r in (lad.get("rows") or []) if r.get("state") == "live"]
+    md["ladder"] = {
+        "best": lad.get("best"),
+        "live": len(live),
+        "probed": len(lad.get("rows") or []),
+        "age": int(time.time()) - int(lad.get("at") or 0),
+    }
+except Exception:
+    md["ladder"] = {"best": None, "live": 0, "probed": 0, "age": -1}
 out["model"] = md
+
+# the ladder is the only truthful answer to "will the next prompt work?".
+# rows are written by model-ladder.sh in one atomic replace, so a half read
+# cannot happen; a missing file means no scan has run, which is not an error.
+try:
+    with open(env("OUC_LADDER")) as f:
+        lad = json.load(f)
+    rows = lad.get("rows") or []
+    out["ladder"] = {
+        "best": lad.get("best"),
+        "live": sum(1 for r in rows if r.get("state") == "live"),
+        "wall": sum(1 for r in rows if r.get("state") == "wall"),
+        "age": max(0, now - num(str(lad.get("at")), 0)),
+    }
+except Exception:
+    pass
 
 print(json.dumps(out, separators=(",", ":")))
 PY

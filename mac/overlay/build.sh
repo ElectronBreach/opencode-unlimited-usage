@@ -18,6 +18,22 @@ command -v swiftc >/dev/null 2>&1 || {
   exit 1
 }
 
+# the launcher runs status.sh with /bin/bash, which is 3.2 on macOS. 3.2 has a
+# parser bug the 5.x in PATH does not: a lone apostrophe inside a here-doc that
+# sits in $( ) swallows the rest of the file, and the HUD then gets zero bytes
+# and paints every chip red while the native brain push still shows a score.
+# lint with the interpreter that actually runs it, before shipping a build.
+LINT_FAIL=0
+for f in "$HERE/../status.sh" "$HERE/../api-keys.sh" "$HERE/../overlay-ctl.sh"; do
+  [ -f "$f" ] || continue
+  if ! err=$(/bin/bash -n "$f" 2>&1); then
+    echo "syntax error (macOS /bin/bash 3.2): $f" >&2
+    printf '%s\n' "$err" >&2
+    LINT_FAIL=1
+  fi
+done
+[ "$LINT_FAIL" = 0 ] || exit 1
+
 rm -rf "$OUT"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 
