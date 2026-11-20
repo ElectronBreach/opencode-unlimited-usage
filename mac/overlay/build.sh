@@ -8,9 +8,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HOME/Library/Application Support/opencode-unlimited/OpencodeOverlay.app}"
 BIN_NAME="opencode-unlimited-overlay"
 SRC="$HERE/main.swift"
-# one source. a second copy next to this script is how a rebuild shipped an
-# html that predated the code it was drawing for.
-HTML="$HERE/../overlay.html"
+# one html, two layouts. live: scripts/overlay/build.sh + scripts/overlay.html.
+# repo: mac/overlay/build.sh + mac/overlay/overlay.html. pick whichever exists
+# instead of hard-coding a path that only works in one of them.
+if [ -f "$HERE/overlay.html" ]; then
+  HTML="$HERE/overlay.html"
+else
+  HTML="$HERE/../overlay.html"
+fi
 ICON_SRC="$HERE/icon.png"
 
 command -v swiftc >/dev/null 2>&1 || {
@@ -24,13 +29,17 @@ command -v swiftc >/dev/null 2>&1 || {
 # and paints every chip red while the native brain push still shows a score.
 # lint with the interpreter that actually runs it, before shipping a build.
 LINT_FAIL=0
-for f in "$HERE/../status.sh" "$HERE/../api-keys.sh" "$HERE/../overlay-ctl.sh"; do
-  [ -f "$f" ] || continue
-  if ! err=$(/bin/bash -n "$f" 2>&1); then
-    echo "syntax error (macOS /bin/bash 3.2): $f" >&2
-    printf '%s\n' "$err" >&2
-    LINT_FAIL=1
-  fi
+for d in "$HERE/.." "$HERE/../scripts"; do
+  [ -d "$d" ] || continue
+  for n in status.sh api-keys.sh overlay-ctl.sh; do
+    f="$d/$n"
+    [ -f "$f" ] || continue
+    if ! err=$(/bin/bash -n "$f" 2>&1); then
+      echo "syntax error (macOS /bin/bash 3.2): $f" >&2
+      printf '%s\n' "$err" >&2
+      LINT_FAIL=1
+    fi
+  done
 done
 [ "$LINT_FAIL" = 0 ] || exit 1
 
