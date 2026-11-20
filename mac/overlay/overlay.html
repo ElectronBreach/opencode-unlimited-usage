@@ -1,0 +1,1940 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>opencode unlimited</title>
+<style>
+/* ============================================================
+   opencode unlimited — HUD  (366 x 642, fixed)
+
+   layout is a strict top-to-bottom funnel:
+     header · project · hero(tokens) · health · actions · tabs · panes · console
+
+   one type scale, one spacing scale, one surface scale. every
+   number the HUD shows is a quota or a cost, so the eye should
+   land on tokens first, health second, the action third.
+   ============================================================ */
+:root{
+  /* surfaces, dark → light */
+  --bg:#04070c;
+  --bed:rgba(2,6,10,.72);
+  --l0:rgba(255,255,255,.022);
+  --l1:rgba(255,255,255,.038);
+  --l2:rgba(255,255,255,.062);
+  --hair:rgba(255,255,255,.07);
+  --edge:rgba(34,211,238,.15);
+
+  /* ink */
+  --txt:#dcebf7;
+  --sub:#a2bbcd;
+  --mut:#7b93a6;
+  --faint:#5a7083;
+
+  /* signal */
+  --cy:#22d3ee; --cy2:#67e8f9; --cy-dim:rgba(34,211,238,.30);
+  --vio:#a78bfa; --mag:#f472b6;
+  --ok:#34d399; --warn:#fbbf24; --bad:#fb7185;
+
+  /* scale */
+  --s1:4px; --s2:6px; --s3:8px; --s4:11px;
+  --r1:6px; --r2:9px; --r3:12px; --r4:18px;
+  --t7:7.5px; --t9:9px; --t10:10px; --t12:12px;
+
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+}
+
+*{box-sizing:border-box;margin:0;padding:0;-webkit-user-select:none;user-select:none}
+html,body{height:100%;background:transparent;overflow:hidden}
+body{font:var(--t12)/1.45 var(--mono);color:var(--txt);-webkit-font-smoothing:antialiased}
+
+/* ---------- shell ------------------------------------------------ */
+#app{
+  position:relative;height:100%;width:100%;
+  display:flex;flex-direction:column;
+  padding:var(--s4) var(--s4) 9px;
+  border-radius:var(--r4);
+  background:
+    radial-gradient(150px 190px at 100% 0%,rgba(244,114,182,.085),transparent 72%),
+    radial-gradient(190px 210px at 0% 100%,rgba(34,211,238,.09),transparent 72%),
+    linear-gradient(168deg,#070d15,#04070c 58%,#050a11);
+  box-shadow:0 0 0 1px rgba(34,211,238,.10),0 18px 50px rgba(0,0,0,.55);
+  opacity:1;transform:scale(1);
+  transition:opacity .16s ease,transform .16s ease;
+}
+#app::before{                     /* grid, fades out before it reaches the console */
+  content:"";position:absolute;inset:0;border-radius:var(--r4);pointer-events:none;
+  background-image:
+    linear-gradient(var(--edge) 1px,transparent 1px),
+    linear-gradient(90deg,var(--edge) 1px,transparent 1px);
+  background-size:28px 28px;
+  mask-image:radial-gradient(125% 80% at 50% 0%,#000 26%,transparent 84%);
+  opacity:.45;
+}
+#app::after{                      /* vignette + hairline top light */
+  content:"";position:absolute;inset:0;border-radius:var(--r4);pointer-events:none;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.055),
+             inset 0 0 46px rgba(0,0,0,.5),
+             inset 0 0 0 1px rgba(34,211,238,.045);
+}
+.corner{position:absolute;width:9px;height:9px;border:1px solid var(--cy);opacity:.42;pointer-events:none;z-index:3}
+.corner.tl{top:5px;left:5px;border-right:0;border-bottom:0;border-radius:4px 0 0 0}
+.corner.tr{top:5px;right:5px;border-left:0;border-bottom:0;border-radius:0 4px 0 0}
+.corner.bl{bottom:5px;left:5px;border-right:0;border-top:0;border-radius:0 0 0 4px}
+.corner.br{bottom:5px;right:5px;border-left:0;border-top:0;border-radius:0 0 4px 0}
+
+/* ---------- header ---------------------------------------------- */
+header{display:flex;align-items:center;gap:var(--s2);cursor:grab;
+  position:relative;z-index:2;flex:0 0 auto;height:20px}
+header:active{cursor:grabbing}
+.brand{display:flex;align-items:center;gap:var(--s2);font-weight:700;
+  font-size:var(--t10);letter-spacing:.16em;color:#eef8ff;white-space:nowrap}
+.brand .glyph{
+  width:16px;height:16px;display:grid;place-items:center;border-radius:5px;
+  background:linear-gradient(140deg,rgba(34,211,238,.26),rgba(167,139,250,.22));
+  border:1px solid rgba(34,211,238,.5);
+  box-shadow:0 0 10px rgba(34,211,238,.32);
+  font-size:9px;color:var(--cy);
+}
+.brand .dim{color:var(--faint);font-weight:400;letter-spacing:.06em}
+.hdr-spacer{flex:1 1 auto}
+.hbtn{
+  width:20px;height:20px;display:grid;place-items:center;border-radius:var(--r1);
+  background:var(--l0);border:1px solid var(--hair);color:var(--mut);
+  font:11px var(--mono);cursor:pointer;transition:color .14s,border-color .14s,background .14s;
+}
+.hbtn:hover{color:var(--cy);border-color:var(--cy-dim);background:rgba(34,211,238,.09)}
+.hbtn.close:hover{color:var(--bad);border-color:rgba(251,113,133,.5);background:rgba(251,113,133,.09)}
+
+/* ---------- project --------------------------------------------- */
+.project{display:flex;align-items:center;gap:var(--s2);margin-top:var(--s2);
+  flex:0 0 auto;font-size:var(--t9);letter-spacing:.04em;color:var(--mut);
+  position:relative;z-index:2;height:14px}
+.project .pdot{width:5px;height:5px;border-radius:50%;flex:none;
+  background:var(--cy);box-shadow:0 0 7px var(--cy)}
+.project .pname{color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  flex:0 1 auto;min-width:0}
+
+/* the pinned model rides the project line. "which project" and "which model"
+   are the same question asked twice — both answer "what is this panel for
+   right now" — and neither belongs behind a tab. */
+.pmodel{
+  margin-left:auto;flex:0 0 auto;max-width:58%;
+  display:flex;align-items:center;gap:4px;
+  padding:1px 6px;border-radius:20px;
+  font-size:var(--t7);letter-spacing:.02em;color:var(--mut);
+  background:var(--l0);border:1px solid var(--hair);
+  overflow:hidden;white-space:nowrap;
+}
+.pmodel i{width:5px;height:5px;border-radius:50%;background:var(--faint);flex:none}
+.pmodel b{font-weight:600;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pmodel.live{color:#a7f3d0;border-color:rgba(52,211,153,.26);background:rgba(52,211,153,.06)}
+.pmodel.live i{background:var(--ok);box-shadow:0 0 6px var(--ok);animation:pulse 2.6s infinite}
+.pmodel.live b{color:#a7f3d0}
+.pmodel.warn{color:#fde68a;border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.06)}
+.pmodel.warn i{background:var(--warn);box-shadow:0 0 6px var(--warn)}
+.pmodel.warn b{color:#fde68a}
+.pmodel.bad{color:#fecdd3;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.07)}
+.pmodel.bad i{background:var(--bad);box-shadow:0 0 6px var(--bad)}
+.pmodel.bad b{color:#fecdd3}
+
+/* ---------- hero: the money panel -------------------------------- */
+.hero{position:relative;z-index:2;flex:0 0 auto;margin-top:var(--s3);
+  padding:9px var(--s4) var(--s3);border-radius:var(--r3);
+  background:linear-gradient(158deg,rgba(34,211,238,.06),rgba(167,139,250,.028) 56%,transparent 88%);
+  border:1px solid rgba(34,211,238,.17);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035),0 0 26px rgba(34,211,238,.06);
+}
+.hero-head{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:2px}
+.caps{font-size:var(--t7);letter-spacing:.22em;color:var(--mut);font-weight:600}
+.hero-head .sess{margin-left:auto;font-size:var(--t7);letter-spacing:.1em;color:var(--faint)}
+.hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--s3)}
+.hero-main{min-width:0}
+.big{font-size:30px;line-height:1;font-weight:700;letter-spacing:-.02em;
+  color:#f4fcff;font-variant-numeric:tabular-nums;
+  text-shadow:0 0 20px rgba(34,211,238,.4)}
+.big .unit{font-size:var(--t12);font-weight:600;color:var(--cy);margin-left:2px;text-shadow:none}
+.hero-sub{display:flex;gap:9px;margin-top:var(--s1);font-size:var(--t9);
+  color:var(--faint);align-items:center;font-variant-numeric:tabular-nums}
+.hero-sub b{color:#b9d4e4;font-weight:500}
+.hero-sub .cost{color:var(--ok);font-weight:600}
+
+.ring{position:relative;width:52px;height:52px;flex:none}
+.ring svg{transform:rotate(-90deg)}
+.ring .track{stroke:rgba(255,255,255,.07)}
+.ring .fill{stroke:url(#rg);stroke-linecap:round;transition:stroke-dashoffset .5s ease}
+.ring span{position:absolute;inset:0;display:grid;place-items:center;
+  font-size:var(--t7);color:var(--cy);letter-spacing:.02em;font-variant-numeric:tabular-nums}
+
+.bars{display:flex;gap:3px;margin-top:var(--s3);height:4px}
+.bars .seg{flex:1;background:rgba(255,255,255,.055);border-radius:2px;overflow:hidden;position:relative}
+.bars .seg i{position:absolute;inset:0;width:0;border-radius:2px;
+  transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.bars .in i{background:linear-gradient(90deg,var(--cy),var(--cy2));box-shadow:0 0 8px rgba(34,211,238,.6)}
+.bars .out i{background:linear-gradient(90deg,var(--vio),var(--mag));box-shadow:0 0 8px rgba(244,114,182,.5)}
+.bars .hit i{background:linear-gradient(90deg,var(--ok),#6ee7b7);box-shadow:0 0 8px rgba(52,211,153,.45)}
+
+.stats{display:flex;gap:var(--s2);margin-top:var(--s2);padding:5px var(--s2);
+  border-radius:var(--r1);background:var(--l0);border:1px solid rgba(255,255,255,.05)}
+.stats div{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 0}
+.stats b{font-size:var(--t10);font-weight:600;color:#cfe4f0;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.stats span{font-size:var(--t7);letter-spacing:.11em;color:var(--faint);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.stats .hi b{color:var(--cy)}
+.stats .ok b{color:var(--ok)}
+
+/* ---------- health chips ---------------------------------------- */
+.health{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;
+  margin-top:var(--s2);flex:0 0 auto;position:relative;z-index:2}
+.health .chip{justify-content:center;min-width:0;overflow:hidden;white-space:nowrap}
+/* a dead snapshot is not a lane fault. the chips freeze on the last good paint
+   (freezing is honest; inventing red is not) and this bar names the reason, in
+   a place that cannot scroll away. cleared by the next good snapshot. */
+.stale{display:none;margin:4px 0 6px;padding:5px 8px;border-radius:7px;
+  font:600 var(--t7)/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em;
+  color:#fecdd3;border:1px solid rgba(251,113,133,.34);background:rgba(251,113,133,.09);
+  white-space:normal;word-break:break-word;flex:0 0 auto}
+.stale.on{display:block}
+/* a snapshot that never arrived is not a lane fault. the chips freeze on the
+   last good paint — inventing red is a lie — so the reason lives here, in a
+   bar that cannot scroll away and cannot be missed in a 1.6s toast. */
+.stale{display:none;margin:3px 0 1px;padding:5px 8px;border-radius:7px;
+  font:600 10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em;
+  color:#fecdd3;border:1px solid rgba(251,113,133,.34);background:rgba(251,113,133,.09);
+  white-space:normal;word-break:break-word}
+.stale.on{display:block}
+.chip{display:flex;align-items:center;gap:4px;padding:3px var(--s2);border-radius:20px;
+  font-size:var(--t7);letter-spacing:.1em;color:var(--mut);font-weight:600;
+  background:var(--l0);border:1px solid var(--hair);transition:border-color .15s,background .15s}
+.chip i{width:5px;height:5px;border-radius:50%;background:var(--faint);flex:none}
+.chip.pointer{cursor:pointer}
+.chip.pointer:hover{border-color:var(--cy-dim);background:rgba(34,211,238,.07)}
+.chip.ok{color:#a7f3d0;border-color:rgba(52,211,153,.26);background:rgba(52,211,153,.06)}
+.chip.ok i{background:var(--ok);box-shadow:0 0 7px var(--ok);animation:pulse 2.6s infinite}
+.chip.bad{color:#fecdd3;border-color:rgba(251,113,133,.3);background:rgba(251,113,133,.07)}
+.chip.bad i{background:var(--bad);box-shadow:0 0 7px var(--bad)}
+.chip.warn{color:#fde68a;border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.06)}
+.chip.warn i{background:var(--warn);box-shadow:0 0 7px var(--warn)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.32}}
+
+/* ---------- actions --------------------------------------------- */
+.actions{display:flex;gap:var(--s2);margin-top:var(--s3);flex:0 0 auto;
+  position:relative;z-index:2}
+button.act{
+  position:relative;flex:1 1 auto;height:32px;border:0;cursor:pointer;
+  font-family:var(--mono);font-size:var(--t10);font-weight:700;letter-spacing:.18em;
+  color:#031018;background:linear-gradient(135deg,var(--cy),var(--cy2));
+  clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px);
+  display:flex;align-items:center;justify-content:center;gap:var(--s2);
+  box-shadow:0 0 16px rgba(34,211,238,.28);
+  transition:filter .16s,transform .06s,box-shadow .16s;
+}
+button.act:hover{filter:brightness(1.12);box-shadow:0 0 26px rgba(34,211,238,.46)}
+button.act:active{transform:translateY(1px)}
+button.act:disabled{filter:grayscale(.7) brightness(.6);cursor:default;box-shadow:none}
+button.act .dot{width:6px;height:6px;border-radius:50%;background:#031018;opacity:.65}
+button.act.ghost{flex:0 0 92px;color:var(--cy);background:rgba(34,211,238,.07);
+  border:1px solid rgba(34,211,238,.33);box-shadow:none}
+button.act.ghost:hover{background:rgba(34,211,238,.15);box-shadow:0 0 16px rgba(34,211,238,.2)}
+button.act.ghost:disabled{color:var(--mut);border-color:var(--hair);background:transparent}
+.spin{width:11px;height:11px;border-radius:50%;display:none;
+  border:1.5px solid rgba(3,16,24,.28);border-top-color:#031018;
+  animation:sp .7s linear infinite}
+button.act.busy .spin{display:block}
+button.act.busy .dot{display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* small buttons, shared by keys / proxy sheet / model sheet */
+.act.mini{
+  height:22px;padding:0 9px;font-size:var(--t7);letter-spacing:.1em;border-radius:var(--r1);
+  flex:0 0 auto;clip-path:none;box-shadow:none;font-weight:700;white-space:nowrap;
+  border:1px solid var(--hair);background:var(--l1);color:var(--sub);
+}
+.act.mini:hover{box-shadow:none;filter:none;background:var(--l2)}
+.act.mini.key{background:rgba(167,139,250,.12);color:#c4b5fd;border-color:rgba(167,139,250,.38)}
+.act.mini.key:hover{background:rgba(167,139,250,.2)}
+.act.mini.ghost2{background:rgba(34,211,238,.06);color:#7dd3e8;border-color:rgba(34,211,238,.25)}
+.act.mini.ghost2:hover{background:rgba(34,211,238,.14)}
+.act.mini.ghost3{background:rgba(52,211,153,.07);color:#6ee7b7;border-color:rgba(52,211,153,.28)}
+.act.mini.ghost3:hover{background:rgba(52,211,153,.16)}
+.act.mini.del{background:rgba(248,113,113,.07);color:#fca5a5;border-color:rgba(248,113,113,.3)}
+.act.mini.del:hover{background:rgba(248,113,113,.16)}
+.act.mini.del.armed{background:rgba(248,113,113,.9);color:#1a0606;border-color:#fca5a5;
+  animation:armpulse .9s ease-in-out infinite alternate}
+@keyframes armpulse{from{opacity:.86}to{opacity:1}}
+.act.mini:disabled{opacity:.4;filter:none}
+
+/* ---------- tabs ------------------------------------------------- */
+.tabs{display:flex;gap:3px;margin-top:var(--s3);flex:0 0 auto;position:relative;z-index:2;
+  background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.055);
+  border-radius:var(--r2);padding:3px}
+.tab{flex:1;height:21px;border:0;border-radius:var(--r1);background:transparent;cursor:pointer;
+  font:700 var(--t7) var(--mono);letter-spacing:.16em;color:#6b8497;
+  display:flex;align-items:center;justify-content:center;gap:3px;
+  transition:color .15s,background .15s,box-shadow .15s}
+.tab:hover{color:#a9c6d8}
+.tab.on{background:rgba(34,211,238,.13);color:#bff3ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.28)}
+.tab b{font-weight:600;color:rgba(167,139,250,.9)}
+.tab i{width:4px;height:4px;border-radius:50%;background:var(--bad);display:none}
+.tab.alert i{display:inline-block;box-shadow:0 0 5px var(--bad)}
+
+/* ---------- panes ------------------------------------------------ */
+.panes{position:relative;z-index:2;margin-top:var(--s2);flex:0 0 auto;
+  height:196px;overflow:hidden}
+.pane{display:none;height:100%;overflow-y:auto;overflow-x:hidden;padding-right:2px}
+.pane.on{display:block}
+.pane::-webkit-scrollbar{width:3px}
+.pane::-webkit-scrollbar-thumb{background:rgba(34,211,238,.28);border-radius:2px}
+.pane .grid,.pane .keys,.pane .spark{margin-top:0}
+
+/* ---------- identity cards --------------------------------------- */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s2);position:relative;z-index:2}
+.card{
+  position:relative;padding:7px 9px 7px 11px;border-radius:var(--r2);overflow:hidden;
+  background:var(--l0);border:1px solid rgba(255,255,255,.055);
+  transition:border-color .18s,background .18s;
+}
+.card::before{                    /* accent rail: which fact belongs to which lever */
+  content:"";position:absolute;left:0;top:6px;bottom:6px;width:2px;border-radius:2px;
+  background:rgba(34,211,238,.35);
+}
+.card.cy::before{background:linear-gradient(180deg,var(--cy),rgba(34,211,238,.15))}
+.card.vi::before{background:linear-gradient(180deg,var(--vio),rgba(167,139,250,.15))}
+.card:hover{border-color:rgba(34,211,238,.26);background:rgba(34,211,238,.032)}
+.card b{display:block;font-size:11.5px;font-weight:600;color:#dff2ff;letter-spacing:.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-variant-numeric:tabular-nums}
+.card span{display:block;font-size:var(--t7);letter-spacing:.16em;color:var(--faint);margin-top:2px}
+.card.cy b{color:#a5f3fc}
+.card.vi b{color:#c4b5fd}
+.card.ok::before{background:linear-gradient(180deg,var(--ok),rgba(52,211,153,.15))}
+.card.ok b{color:#a7f3d0}
+
+/* ---------- model strip + key/value table -----------------------
+   the identity pane used to be six equal cards plus a one-line flex row that
+   squeezed five facts into 15px and clipped every one of them. two shapes
+   now: the model strip (the facts that decide whether a prompt lands) and a
+   key/value table (state, label beside value, on its own baseline). */
+.mstrip{display:grid;grid-template-columns:0.72fr 1.5fr 0.78fr;gap:var(--s2);
+  margin-top:var(--s2);position:relative;z-index:2}
+.ms{display:flex;flex-direction:column;gap:1px;padding:5px 8px;min-width:0;
+  border-radius:var(--r2);background:var(--l0);border:1px solid rgba(255,255,255,.055);
+  transition:border-color .18s,background .18s}
+.ms b{font-size:11px;font-weight:600;color:#dff2ff;line-height:1.2;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-variant-numeric:tabular-nums}
+.ms span{font-size:6.5px;letter-spacing:.13em;color:var(--faint);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ms span s{text-decoration:none;color:#7f9bb0;letter-spacing:.04em}
+.ms.ok b{color:#a7f3d0}
+.ms.bad b{color:#fecdd3}
+.ms:hover{border-color:rgba(34,211,238,.26);background:rgba(34,211,238,.032)}
+
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:0 var(--s4);
+  margin-top:var(--s2);position:relative;z-index:2}
+.kv .k{display:flex;align-items:baseline;justify-content:space-between;gap:var(--s2);
+  min-width:0;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.045)}
+.kv .k span{font-size:var(--t7);letter-spacing:.13em;color:var(--faint);white-space:nowrap;flex:none}
+.kv .k b{font-size:var(--t9);font-weight:600;color:#c8e6f5;letter-spacing:.02em;
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;min-width:0;text-align:right}
+#mBucket{color:#c8e6f5}
+#mBucket.ok{color:#a7f3d0}
+#mBucket.bad{color:#fecdd3}
+#pxChip{cursor:pointer;border-radius:4px;transition:background .14s}
+#pxChip:hover{background:rgba(34,211,238,.08)}
+#pxChip:hover b{color:var(--cy)}
+#pxChip b.up{color:var(--ok)}
+#pxChip b.on{color:var(--cy)}
+#pxChip b.warn{color:var(--warn)}
+
+/* ---------- key pool -------------------------------------------- */
+.keys{padding:7px 9px;border-radius:var(--r2);
+  border:1px solid rgba(167,139,250,.18);background:rgba(7,14,22,.55);position:relative;z-index:2}
+.keys .kh{display:flex;align-items:center;gap:var(--s2);font-size:var(--t7);
+  letter-spacing:.16em;color:var(--faint)}
+.keys .kh .kt{color:#8fa7b9;font-weight:600}
+.keys .kh b{color:#a5f3fc;font-size:var(--t10);letter-spacing:.06em}
+.keys .klive{margin-left:auto;display:flex;align-items:center;gap:4px;min-width:0;
+  color:#c4b5fd;font-size:var(--t9);letter-spacing:.02em;text-transform:none}
+.keys .klive i{width:5px;height:5px;border-radius:50%;flex:none;
+  background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.keys .klive i.bad{background:var(--bad);box-shadow:0 0 6px var(--bad)}
+.keys .klive i.warn{background:var(--warn);box-shadow:0 0 6px var(--warn)}
+.keys .klive span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.keys .kb{display:flex;gap:5px;margin-top:var(--s2)}
+.keys .kr{display:flex;gap:5px;margin-top:5px}
+.keys .kr .act{flex:1 1 0;min-width:0}
+.keys input{
+  flex:1;min-width:0;height:23px;background:rgba(0,0,0,.35);
+  border:1px solid var(--cy-dim);border-radius:var(--r1);color:var(--txt);
+  font:var(--t9) var(--mono);padding:0 7px;outline:none;
+  -webkit-user-select:text;user-select:text;
+}
+.keys input:focus{border-color:rgba(34,211,238,.5)}
+.keys input::placeholder{color:#3f5464}
+
+/* ---------- stats pane ------------------------------------------- */
+.spark{border-radius:var(--r2);border:1px solid rgba(255,255,255,.05);
+  background:var(--l0);padding:5px 7px 2px;position:relative;z-index:2}
+.spark-top{display:flex;justify-content:space-between;align-items:baseline;gap:var(--s3);
+  font-size:var(--t7);letter-spacing:.16em;color:var(--faint);margin-bottom:3px;white-space:nowrap}
+.spark-top b{font-weight:600;color:rgba(244,114,182,.85);letter-spacing:0}
+.spark canvas{display:block;width:100%;height:40px}
+.models{display:flex;flex-direction:column;gap:var(--s1);margin-top:var(--s2)}
+.models .m{display:flex;align-items:center;gap:var(--s2);font-size:var(--t9);color:#9db4c6}
+.models .m i{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.06);
+  overflow:hidden;position:relative}
+.models .m i s{position:absolute;inset:0;width:0;border-radius:2px;text-decoration:none;
+  background:linear-gradient(90deg,rgba(34,211,238,.9),rgba(167,139,250,.9))}
+.models .m span{flex:0 0 auto;max-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.models .m b{flex:0 0 42px;text-align:right;font-weight:600;color:#cfe4f0;
+  font-variant-numeric:tabular-nums}
+
+/* ---------- console ---------------------------------------------- */
+.log{margin-top:var(--s2);flex:1 1 auto;min-height:92px;max-height:230px;
+  display:flex;flex-direction:column;
+  border-radius:var(--r2);border:1px solid rgba(255,255,255,.06);
+  background:var(--bed);position:relative;z-index:2;overflow:hidden;
+  transition:border-color .2s}
+.log.live{border-color:rgba(34,211,238,.28);box-shadow:inset 0 0 26px rgba(34,211,238,.045)}
+.log.small{flex:0 0 auto;height:92px}
+.log-head{display:flex;align-items:center;gap:var(--s2);padding:4px var(--s3);
+  border-bottom:1px solid rgba(255,255,255,.05);
+  font-size:var(--t7);letter-spacing:.18em;color:var(--faint);flex:0 0 auto}
+.log-head>span{margin-right:auto}
+.log-head button{background:none;border:0;color:var(--faint);font:inherit;
+  letter-spacing:.1em;cursor:pointer;padding:1px 3px;border-radius:3px}
+.log-head button:hover{color:var(--cy);background:rgba(34,211,238,.1)}
+#logBody{flex:1 1 auto;overflow-y:auto;padding:5px var(--s3) 6px;
+  font-size:var(--t9);line-height:1.55;color:#9db4c6;
+  white-space:pre-wrap;word-break:break-word;
+  -webkit-user-select:text;user-select:text}
+#logBody::-webkit-scrollbar{width:4px}#logBody::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
+#logBody .ok{color:var(--ok)}
+#logBody .bad{color:var(--bad)}
+#logBody .warn{color:var(--warn)}
+#logBody .cy{color:var(--cy)}
+#logBody:empty::before{
+  content:"quiet — the lane has nothing to report";
+  color:var(--faint);letter-spacing:.06em;
+}
+.log-foot{display:flex;justify-content:space-between;gap:var(--s2);padding:3px var(--s3);
+  border-top:1px solid rgba(255,255,255,.04);flex:0 0 auto;
+  font-size:var(--t7);letter-spacing:.1em;color:var(--faint)}
+#lastSession{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px;cursor:pointer}
+#lastSession:hover{color:var(--cy)}
+/* the clock doubles as the heartbeat light. when status.sh stops landing
+   (a crashed probe, a wedged sqlite) the numbers freeze silently — an amber
+   clock is the one honest tell that the sheet is showing stale truth. */
+#clock{transition:color .3s ease,opacity .3s ease}
+#clock.stale{color:#f59e0b;opacity:.9}
+#clock.stale::after{content:" · stale";letter-spacing:.06em}
+
+/* ---------- toast ------------------------------------------------ */
+#toast{
+  position:absolute;left:50%;bottom:14px;transform:translate(-50%,10px);
+  padding:5px var(--s4);border-radius:20px;font-size:var(--t9);letter-spacing:.12em;
+  background:rgba(34,211,238,.14);border:1px solid rgba(34,211,238,.4);color:#c8f7ff;
+  opacity:0;pointer-events:none;transition:all .22s;z-index:60;white-space:nowrap;
+  box-shadow:0 0 18px rgba(34,211,238,.25);
+}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+
+/* ---------- proxy / model sheet ---------------------------------- */
+#sheet{position:absolute;inset:0;z-index:40;display:none;flex-direction:column;
+  padding:var(--s4) var(--s4) var(--s3);gap:var(--s2);border-radius:var(--r4);
+  background-color:#050a11;
+  background-image:linear-gradient(170deg,rgba(10,19,30,.95),rgba(4,7,12,.975));
+  box-shadow:inset 0 0 0 1px rgba(34,211,238,.22),0 0 44px rgba(0,0,0,.65)}
+#sheet.on{display:flex}
+.sheet-head{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+.stab{border:0;background:transparent;color:#5f778a;font:700 var(--t7) var(--mono);
+  letter-spacing:.16em;padding:3px 7px;border-radius:var(--r1);cursor:pointer}
+.stab:hover{color:#a9c6d8}
+.stab.on{background:rgba(34,211,238,.13);color:#bff3ff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.3)}
+.stab b{font-weight:600;color:rgba(167,139,250,.9);margin-left:3px}
+.sheet-head .sc{margin-left:auto;font:700 var(--t9) var(--mono);letter-spacing:.1em;color:var(--faint)}
+.sheet-head .sc.up{color:var(--ok)}
+.sx{background:none;border:0;color:var(--faint);font:inherit;cursor:pointer;
+  font-size:11px;padding:2px 4px;border-radius:3px}
+.sx:hover{color:var(--cy)}
+.sheet-status{font:var(--t9)/1.5 var(--mono);color:var(--mut);letter-spacing:.05em;
+  border-top:1px solid rgba(255,255,255,.055);border-bottom:1px solid rgba(255,255,255,.055);
+  padding:4px 0;flex:0 0 auto}
+.sheet-status b{color:#c8e6f5;font-weight:600}
+.sheet-status .pxfix{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;
+  color:var(--warn)}
+.sheet-status .pxfix:hover{color:#fde68a}
+.sheet-status .pxbad{color:var(--bad);font-weight:600}
+.sbody{display:none;flex:1 1 auto;min-height:0;flex-direction:column;gap:var(--s2)}
+.sbody.on{display:flex}
+.px-list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;
+  display:flex;flex-direction:column;gap:3px}
+.px-list::-webkit-scrollbar{width:3px}
+.px-list::-webkit-scrollbar-thumb{background:rgba(34,211,238,.3);border-radius:2px}
+.pxr{display:flex;align-items:center;gap:var(--s2);padding:4px 7px;border-radius:var(--r1);
+  cursor:pointer;font:var(--t9) var(--mono);
+  background:var(--l0);border:1px solid rgba(255,255,255,.045)}
+.pxr:hover{background:rgba(34,211,238,.09)}
+.pxr.cur{background:rgba(34,211,238,.13);border-color:rgba(34,211,238,.3)}
+.pxr .pxd{width:5px;height:5px;border-radius:50%;background:var(--faint);flex:0 0 auto}
+.pxr .pxd.live{background:var(--ok);box-shadow:0 0 6px rgba(52,211,153,.7)}
+.pxr .pxd.dead{background:var(--bad)}
+.pxr b{color:var(--vio);font-weight:600;min-width:14px}
+.pxr .pxa{flex:1 1 auto;color:#a9c6d8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pxr .pxm{color:var(--faint);flex:0 0 auto;font-variant-numeric:tabular-nums}
+.pxdel{background:none;border:0;color:rgba(251,113,133,.55);font:inherit;
+  cursor:pointer;padding:0 2px}
+.pxdel:hover{color:var(--bad)}
+.px-empty{color:var(--faint);font:var(--t9)/1.6 var(--mono);padding:10px 2px;text-align:center}
+.px-hint{margin-top:9px;padding:8px 10px;border-radius:var(--r1);
+  font:var(--t9)/1.6 var(--mono);color:#5d7f94;letter-spacing:.03em;
+  background:rgba(34,211,238,.035);box-shadow:inset 0 0 0 1px rgba(34,211,238,.09)}
+.px-add{display:flex;gap:5px;flex:0 0 auto}
+.px-add input{flex:1 1 auto;min-width:0;height:23px;background:rgba(0,0,0,.35);
+  border:1px solid rgba(34,211,238,.18);border-radius:var(--r1);color:var(--txt);
+  font:var(--t10) var(--mono);padding:0 7px;outline:none;
+  -webkit-user-select:text;user-select:text}
+.px-add input:focus{border-color:rgba(34,211,238,.5)}
+.px-row{display:flex;gap:5px;flex:0 0 auto}
+.px-row .act.mini{flex:1 1 0}
+.mx-head{display:flex;align-items:baseline;gap:var(--s2);flex:0 0 auto;
+  font:var(--t7) var(--mono);letter-spacing:.12em;color:var(--faint)}
+.mx-head .k{font-weight:600}
+.mx-head b{color:#c8e6f5;font-weight:600;font-size:var(--t9);letter-spacing:.02em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sheet-foot{font:var(--t7)/1.5 var(--mono);letter-spacing:.08em;
+  color:var(--faint);text-align:center;flex:0 0 auto}
+
+/* ---------- collapsed bubble ------------------------------------- */
+#bubble{
+  position:fixed;inset:0;border-radius:50%;cursor:pointer;
+  display:none;place-items:center;
+  background:radial-gradient(circle at 32% 26%,#0d1a26,#05090f 72%);
+  border:1px solid rgba(34,211,238,.45);
+  box-shadow:0 0 22px rgba(34,211,238,.35),inset 0 0 18px rgba(34,211,238,.10);
+  transition:transform .15s,box-shadow .2s,opacity .16s;
+}
+#bubble:hover{transform:scale(1.05);box-shadow:0 0 30px rgba(34,211,238,.55),inset 0 0 20px rgba(34,211,238,.16)}
+#bubble:active{transform:scale(.97)}
+#bubble .core{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:1px;pointer-events:none}
+#bubble .cnt{font-size:13px;font-weight:700;color:#eafcff;letter-spacing:-.02em;
+  text-shadow:0 0 12px rgba(34,211,238,.7)}
+#bubble .lbl{font-size:6.5px;letter-spacing:.2em;color:var(--faint)}
+#bubble .ringwrap{position:absolute;inset:0;pointer-events:none}
+#bubble svg{width:100%;height:100%;transform:rotate(-90deg)}
+#bubble .btrack{stroke:rgba(255,255,255,.07)}
+#bubble .bfill{stroke:var(--cy);stroke-width:2;stroke-linecap:round;
+  filter:drop-shadow(0 0 4px rgba(34,211,238,.8));transition:stroke-dashoffset .6s}
+#bubble .bdot{position:absolute;right:7px;top:8px;width:7px;height:7px;border-radius:50%;
+  background:var(--ok);box-shadow:0 0 8px var(--ok);border:1px solid #05090f}
+#bubble .bdot.bad{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+#bubble .bdot.warn{background:var(--warn);box-shadow:0 0 8px var(--warn)}
+#bubble .spin2{width:14px;height:14px;border-radius:50%;display:none;
+  border:2px solid rgba(34,211,238,.2);border-top-color:var(--cy);
+  animation:sp .8s linear infinite}
+#bubble.busy .spin2{display:block}
+#bubble.busy .cnt,#bubble.busy .lbl{display:none}
+
+body.collapsed{background:var(--bg);border-radius:50%}
+body.collapsed #app{opacity:0;transform:scale(.94);pointer-events:none}
+body.collapsed #bubble{display:grid}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="corner tl"></div><div class="corner tr"></div>
+  <div class="corner bl"></div><div class="corner br"></div>
+
+  <header id="drag">
+    <div class="brand"><span class="glyph">◈</span>OLLIE<span class="dim">/unltd</span></div>
+    <div class="hdr-spacer"></div>
+    <button class="hbtn" id="btnDock" title="dock to the other side">⇄</button>
+    <button class="hbtn" id="btnMin" title="collapse to a bubble">−</button>
+    <button class="hbtn close" id="btnClose" title="hide — reopen from the menu bar">✕</button>
+  </header>
+
+  <div class="project"><i class="pdot"></i><span class="pname" id="project">idle — no session</span><span class="pmodel" id="pmodel" title="the model this session is pinned to"><i></i><b id="pmodelName">—</b></span></div>
+
+  <section class="health" id="health"></section>
+  <div class="stale" id="staleNote"></div>
+
+  <section class="hero">
+    <div class="hero-head">
+      <span class="caps">TOKENS · IN + OUT</span>
+      <span class="sess" id="sessCount">0 sessions</span>
+    </div>
+    <div class="hero-top">
+      <div class="hero-main">
+        <div class="big"><span id="tokTotal">0</span><span class="unit" id="tokUnit"></span></div>
+        <div class="hero-sub">
+          <span title="input tokens">↑<b id="tokIn">0</b></span>
+          <span title="output tokens">↓<b id="tokOut">0</b></span>
+          <span title="prompt cache reads — real work, billed at a fraction">⚡<b id="tokCache">0</b></span>
+          <span class="cost" id="tokCost">$0</span>
+        </div>
+      </div>
+      <div class="ring">
+        <svg width="52" height="52" viewBox="0 0 52 52">
+          <defs><linearGradient id="rg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a78bfa"/>
+          </linearGradient></defs>
+          <circle class="track" cx="26" cy="26" r="22" fill="none" stroke-width="3"/>
+          <circle class="fill" id="ringFill" cx="26" cy="26" r="22" fill="none" stroke-width="3"
+                  stroke-dasharray="138.2" stroke-dashoffset="138.2"/>
+        </svg>
+        <span id="ringPct">0%</span>
+      </div>
+    </div>
+    <div class="bars">
+      <div class="seg in" title="input"><i id="barIn"></i></div>
+      <div class="seg out" title="output"><i id="barOut"></i></div>
+      <div class="seg hit" title="cache hit"><i id="barHit"></i></div>
+    </div>
+    <div class="stats">
+      <div class="hi"><b id="sToday">0</b><span>TOUCHED</span></div>
+      <div><b id="sRate">—</b><span>RATE/MIN</span></div>
+      <div class="ok"><b id="sHit">0%</b><span>CACHE HIT</span></div>
+      <div><b id="sActive">0h</b><span>HISTORY</span></div>
+    </div>
+  </section>
+
+  <section class="actions">
+    <button class="act" id="btnHop"><span class="dot"></span><span class="spin"></span>HOP</button>
+    <button class="act ghost" id="btnDoctor">DOCTOR</button>
+  </section>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab on" data-tab="id">IDENTITY<i></i></button>
+    <button class="tab" data-tab="keys">KEYS<b id="tabKeys"></b></button>
+    <button class="tab" data-tab="stats">STATS</button>
+  </nav>
+
+  <div class="panes">
+
+    <div class="pane on" data-pane="id">
+      <section class="grid">
+        <div class="card cy"><b id="egress">—</b><span id="egressFam">EGRESS</span></div>
+        <div class="card vi"><b id="prefix">—</b><span>QUOTA /64</span></div>
+        <div class="card"><b id="hops">0</b><span>ROTATIONS</span></div>
+        <div class="card"><b id="device">—</b><span>DEVICE</span></div>
+      </section>
+
+      <!-- the second lever: how many models answer right now and how old the
+           measurement is. this predicts whether the next prompt lands better
+           than any tunnel fact does, so it sits on its own row. -->
+      <section class="mstrip">
+        <div class="ms" id="cardLive"><b id="mLive">—</b><span>MODELS LIVE</span></div>
+        <div class="ms" id="cardBest"><b id="mBest">—</b><span>BEST · <s id="mLadder">—</s></span></div>
+        <div class="ms"><b id="mBucket">—</b><span>BUCKET</span></div>
+      </section>
+
+      <section class="kv">
+        <div class="k"><span>LAST HOP</span><b id="mSince">—</b></div>
+        <div class="k"><span>WALLS</span><b id="mWalls">0</b></div>
+        <div class="k"><span>BURNED</span><b id="mBurned">0</b></div>
+        <div class="k" id="pxChip" title="proxy pool — add, test, rotate, system proxy"><span>PROXY</span><b id="mProxy">—</b></div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="keys">
+      <section class="keys">
+        <div class="kh">
+          <span class="kt">API KEYS</span>
+          <b id="keyCount">0/50</b>
+          <span class="klive"><i id="keyDot"></i><span id="keyActive" title="">no key</span></span>
+        </div>
+        <div class="kb">
+          <input id="keyInput" placeholder="paste oc_sk_… key" autocomplete="off" spellcheck="false">
+          <button class="act mini" id="btnKeyAdd">ADD</button>
+        </div>
+        <div class="kr">
+          <button class="act mini key" id="btnKeyPrev" title="previous key">&#9664; PREV</button>
+          <button class="act mini key" id="btnKeyNext" title="next key">NEXT &#9654;</button>
+        </div>
+        <div class="kr">
+          <button class="act mini ghost2" id="btnKeyList" title="probe every key">CHECK</button>
+          <button class="act mini ghost3" id="btnKeyPrune" title="drop duplicates and dead keys">CLEAN</button>
+          <button class="act mini del" id="btnKeyDel" title="delete the active key">DEL</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="stats">
+      <section class="spark">
+        <div class="spark-top"><span>SESSION BURN · <b id="sparkN">—</b></span><span id="lastAge">—</span></div>
+        <canvas id="spark" width="680" height="68"></canvas>
+      </section>
+      <div class="models" id="models"></div>
+    </div>
+
+  </div>
+
+  <section class="log" id="logPanel">
+    <div class="log-head">
+      <span>CONSOLE</span>
+      <button id="btnClear">CLEAR</button>
+      <button id="btnLogSize" title="shrink the console">▾</button>
+    </div>
+    <pre id="logBody"></pre>
+    <div class="log-foot"><span id="lastSession">no session yet</span><span id="clock">--:--:--</span></div>
+  </section>
+
+<!-- ============ sheet ===================================================
+     the proxy and model layers never grow the panel. every control lives
+     here, on a sheet that covers the panel while open and leaves the tabs,
+     the console and the tokens exactly where they were.
+     ==================================================================== -->
+<div id="sheet" aria-hidden="true">
+  <div class="sheet-head">
+    <button class="stab on" data-sheet="proxy">PROXY</button>
+    <button class="stab" data-sheet="models">MODELS<b id="mxCount"></b></button>
+    <button class="stab" data-sheet="prov">PROV</button>
+    <span class="sc" id="pxHead">off</span>
+    <button class="sx" id="btnPxClose" title="close (esc)">✕</button>
+  </div>
+  <div class="sheet-status" id="pxStat">mux down · no upstreams</div>
+
+  <div class="sbody on" data-body="proxy">
+    <div class="px-list" id="pxList"><div class="px-empty">reading the pool…</div></div>
+    <div class="px-add">
+      <input id="pxInput" placeholder="host:port:user:pass" autocomplete="off" spellcheck="false">
+      <button class="act mini" id="btnPxAdd">ADD</button>
+    </div>
+    <div class="px-row">
+      <button class="act mini key" id="btnPxOn" title="start the local mux">ON</button>
+      <button class="act mini del" id="btnPxOff" title="stop the mux and restore the system proxy">OFF</button>
+      <button class="act mini key" id="btnPxRot" title="switch upstream now — no restart">ROTATE ⇄</button>
+    </div>
+    <div class="px-row">
+      <button class="act mini ghost2" id="btnPxTest" title="probe every upstream through cdn-cgi/trace">TEST</button>
+      <button class="act mini ghost3" id="btnPxSys" title="route the whole machine through the mux">SYS</button>
+      <button class="act mini ghost3" id="btnPxPol" title="conn: new ip per connection · window: hold one ip">CONN</button>
+    </div>
+  </div>
+
+  <div class="sbody" data-body="models">
+    <div class="mx-head">
+      <span class="k">FREE MODEL</span>
+      <b id="mxCur">—</b>
+    </div>
+    <div class="px-list" id="mxList"><div class="px-empty">loading the catalog…</div></div>
+    <div class="px-row">
+      <button class="act mini key" id="btnMxNext" title="switch to the next free model this run has not burned">NEXT ⇄</button>
+      <button class="act mini del" id="btnMxBurn" title="mark the current model as walled">BURN</button>
+      <button class="act mini ghost3" id="btnMxReset" title="forget the burned list">RESET</button>
+    </div>
+    <div class="px-row">
+      <button class="act mini ghost2" id="btnMxRefresh" title="re-fetch the model catalog">REFRESH</button>
+      <button class="act mini ghost2" id="btnMxHop" title="also move the egress /64 — the expensive lever">HOP /64</button>
+    </div>
+  </div>
+
+  <div class="sbody" data-body="prov">
+    <div class="mx-head">
+      <span class="k">PROVIDER MODEL</span>
+      <b id="pvCur">—</b>
+    </div>
+    <div class="px-list" id="pvList"><div class="px-empty">reading ~/.config/opencode/opencode.json…</div></div>
+    <div class="px-row">
+      <button class="act mini ghost2" id="btnPvRefresh" title="re-read the provider models from the config">REFRESH</button>
+    </div>
+  </div>
+
+  <div class="sheet-foot" id="pxFoot">client → the mux listen address · rotation behind a fixed address</div>
+</div>
+
+</div>
+
+<div id="bubble" title="opencode unlimited — click to expand">
+  <div class="ringwrap">
+    <svg viewBox="0 0 78 78">
+      <circle class="btrack" cx="39" cy="39" r="35" fill="none" stroke-width="2"/>
+      <circle class="bfill" id="bubbleRing" cx="39" cy="39" r="35" fill="none" stroke-width="2"
+              stroke-dasharray="219.9" stroke-dashoffset="219.9"/>
+    </svg>
+  </div>
+  <div class="core"><div class="spin2"></div><div class="cnt" id="bubbleTok">0</div><div class="lbl">TOK</div></div>
+  <i class="bdot" id="bubbleDot"></i>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const bridge = (cmd, extra) => {
+  try { window.webkit.messageHandlers.ouc.postMessage(Object.assign({cmd}, extra || {})); } catch (e) {}
+};
+
+/* ---------- formatting ---------- */
+function compact(n){
+  n = Number(n) || 0;
+  if (n >= 1e9) return [ (n/1e9).toFixed(n/1e9 >= 10 ? 0 : 1), "B" ];
+  if (n >= 1e6) return [ (n/1e6).toFixed(n/1e6 >= 10 ? 1 : 2), "M" ];
+  if (n >= 1e3) return [ (n/1e3).toFixed(n/1e3 >= 10 ? 0 : 1), "K" ];
+  return [ String(Math.round(n)), "" ];
+}
+const fmt = (n) => { const [v,u] = compact(n); return v + u; };
+const money = (c) => "$" + (Number(c)||0).toFixed(2);
+const hrs = (s) => {
+  s = Number(s) || 0;
+  if (!s) return "0h";
+  const h = s / 3600;
+  if (h >= 10) return Math.round(h) + "h";
+  if (h >= 1) return h.toFixed(1) + "h";
+  return Math.max(1, Math.round(s / 60)) + "m";
+};
+const age = (s) => {
+  if (s < 0) return "—";
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s/60) + "m ago";
+  if (s < 86400) return Math.floor(s/3600) + "h ago";
+  return Math.floor(s/86400) + "d ago";
+};
+
+/* ---------- state ---------- */
+let S = {};
+
+function healthChip(label, state, hint, act){
+  // "idle" is neither good nor broken — the leak guard being off is the design,
+  // not a fault, and painting it yellow made healthy systems look sick.
+  const cls = state === true ? "ok" : state === "warn" ? "warn"
+            : state === "idle" ? "" : "bad";
+  const attr = act ? ` data-act="${act}"` : "";
+  const cur = act ? " pointer" : "";
+  return `<span class="chip ${cls}${cur}" id="chip${label}"${attr} title="${hint||""}"><i></i>${label}</span>`;
+}
+
+// the guard's own verdict, painted from one document instead of five fields.
+// `p` may come from status.sh (the whole snapshot) or from the native brain
+// push (health only), so both shapes land here and nowhere else.
+function paintBrain(p){
+  const el = document.getElementById("chipBRAIN");
+  if (!el) return;
+  const live = p.live !== false;
+  const sc = (typeof p.score === "number") ? p.score : -1;
+  const st = p.state || "";
+  const cls = !live ? "warn"
+            : (st === "ok" || sc >= 90) ? "ok"
+            : (st === "warn" || sc >= 60) ? "warn" : "bad";
+  const num = (live && sc >= 0) ? " " + sc : "";
+  const cls2 = "chip " + cls;
+  if (el.className !== cls2) el.className = cls2;
+  const html = "<i></i>BRAIN" + num;
+  if (el.dataset.sig !== html) {
+    el.dataset.sig = html;
+    el.innerHTML = html;
+  }
+  const a = p.advice || "";
+  el.title = !live
+    ? "the rotator has not published a heartbeat — these chips are being probed live"
+    : (a ? ("brain " + sc + " · " + a) : ("brain " + sc + " · no advisories"));
+}
+
+// the snapshot is the panel's only source of WARP/DNS/KEEPER/GUARD. when
+// status.sh dies the launcher holds the last paint and reports here: a bar with
+// the reason and a chip that stays lit until a parseable snapshot lands again.
+// silence was the original bug — a red panel over a live brain chip reads like
+// a broken lane when it is a broken script.
+function paintSnapshotState(ok, text, since){
+  const t = ok ? "" : (text || "status.sh returned no json");
+  window._snapFail = t;
+  window._snapSince = ok ? 0 : (since || Date.now() / 1000);
+  const bar = $("staleNote");
+  if (bar) {
+    if (t) {
+      bar.textContent = snapBarText();
+      bar.classList.add("on");
+    } else {
+      bar.textContent = "";
+      bar.classList.remove("on");
+    }
+  }
+  const chip = $("chipSNAP");
+  if (chip) {
+    chip.style.display = t ? "" : "none";
+    chip.className = t ? "chip bad" : "chip";
+    chip.title = t;
+  }
+  if (t) logLine("✗ snapshot: " + t);
+}
+
+// how long the snapshot has been dead. a bar that says "dead" is a fact; one
+// that says "dead 4m" is a decision — the panel has been lying for four minutes.
+function snapBarText(){
+  const t = window._snapFail || "";
+  if (!t) return "";
+  const since = window._snapSince || 0;
+  const age = since > 0 ? Math.max(0, Date.now() / 1000 - since) : 0;
+  const secs = Math.round(age);
+  const span = secs >= 90
+    ? Math.floor(secs / 60) + "m " + String(secs % 60).padStart(2, "0") + "s"
+    : secs + "s";
+  return "SNAPSHOT DEAD " + span + " — " + t + " · chips are the last good paint";
+}
+
+function render(d){
+  S = d;
+  window.oucLastUpdate = d.ts || 0;
+  const t = d.tokens || {};
+  const id = d.identity || {};
+  const w = d.warp || {};
+
+  const [tv, tu] = compact((t.input || 0) + (t.output || 0));
+  $("tokTotal").textContent = tv;
+  $("tokUnit").textContent = tu;
+  $("tokIn").textContent = fmt(t.input);
+  $("tokOut").textContent = fmt(t.output);
+  $("tokCache").textContent = fmt(t.cacheRead);
+  $("tokCost").textContent = money(t.cost);
+  $("sessCount").textContent = (t.sessions || 0) + " sessions"
+    + (t.subagents ? " +" + t.subagents : "");
+
+  const cache = t.cacheRead || 0, inTok = t.input || 0;
+  const hit = cache + inTok > 0 ? cache / (cache + inTok) : 0;
+  const pct = Math.round(hit * 100);
+  const circ = 2 * Math.PI * 22;
+  $("ringFill").style.strokeDashoffset = String(circ * (1 - hit));
+  $("ringPct").textContent = pct + "%";
+
+  // the four numbers that answer "what did this actually cost me to run".
+  // rate is a real delta between two snapshots, not a guess: no new tokens, no
+  // number, and it decays as the gap grows.
+  const io = (t.input || 0) + (t.output || 0);
+  const nowTs = Date.now() / 1000;
+  if (window._ratePrev) {
+    const dt = nowTs - window._ratePrev.t;
+    const dv = io - window._ratePrev.v;
+    if (dt >= 3 && dv >= 0) {
+      const inst = (dv / dt) * 60;
+      window._rate = window._rate ? window._rate * 0.55 + inst * 0.45 : inst;
+    }
+  }
+  window._ratePrev = { t: nowTs, v: io };
+  $("sToday").textContent = fmt((t.today || {}).total || 0);
+  // three labels that used to name a narrower thing than the number under them.
+  // TODAY was never today: the figure is the lifetime tokens of every session
+  // that did work since midnight. SESSION was never one session: it is every
+  // session's create-to-last-activity summed. CACHE was never a cache: it is a
+  // hit ratio. the value is right in all three cases, the caption was not.
+  $("sToday").title = (t.today || {}).sessions
+    ? ((t.today.sessions) + " session" + (t.today.sessions === 1 ? "" : "s")
+       + " touched since local midnight · this is their lifetime token count, not today spend")
+    : "no session has done work since local midnight";
+  $("sRate").textContent = window._rate > 0.5 ? fmt(window._rate) + "/m" : "—";
+  $("sRate").title = "input+output tokens per minute, smoothed between snapshots — blank means none arrived";
+  $("sHit").textContent = pct + "%";
+  $("sHit").title = "cacheRead / (cacheRead + input) over every session in the DB — a hit ratio, not a cache size";
+  $("sActive").textContent = hrs(t.activeSec);
+  $("sActive").title = "every session create-to-last-activity, summed over "
+    + ((t.allSessions || t.sessions || 0)) + " rows — calendar span, not one session and not a busy clock";
+
+  const totalAll = (t.input||0) + (t.output||0) + cache;
+  const wIn = totalAll ? (inTok / totalAll) * 100 : 0;
+  const wOut = totalAll ? ((t.output||0) / totalAll) * 100 : 0;
+  const wHit = totalAll ? (cache / totalAll) * 100 : 0;
+  $("barIn").style.width = Math.max(1.5, wIn) + "%";
+  $("barOut").style.width = Math.max(1.5, wOut) + "%";
+  $("barHit").style.width = Math.max(1.5, wHit) + "%";
+
+  $("egress").textContent = d.egress4 || "—";
+  // the tile was labelled "v4" while it carried the v6 egress: measure_egress
+  // only ever accepts an address with a colon, so the field is v6 by
+  // construction. name the family the value actually is instead of the one the
+  // label wished for.
+  const eg = d.egress4 || "";
+  $("egressFam").textContent = eg.indexOf(":") >= 0 ? "EGRESS · v6"
+    : eg.indexOf(".") >= 0 ? "EGRESS · v4" : "EGRESS";
+  // the v4 tile is a cached probe, not a live socket. if the last probe failed
+  // say so in the tooltip instead of letting a stale address pass as current.
+  const pr = d.probe || {};
+  const v4 = (id.v4 || "");
+  const bE = (d.brain && d.brain.egress) || {};
+  const fresh = (typeof pr.age === "number" && pr.age >= 0);
+  // freshness belongs to the address. `probe.age` is the age of the egress
+  // stamp on both paths (brain: now - egress.at), so the clock is right — but
+  // "last probe failed" fired on any empty reading while the value was "—",
+  // which claimed to be showing a last known exit that was not on screen.
+  $("egress").title = !eg
+    ? "nothing was measured — an empty reading is a fact, not a licence to show the tunnel address"
+    : (fresh
+        ? ("measured " + age(pr.age) + (pr.ok
+            ? " · fresh"
+            : " · stale — this is the last known exit, not a live one"))
+        : "age unknown — no measurement has completed")
+    + (bE.colo ? " · colo " + bE.colo : "")
+    + (bE.unstable ? " · sources disagree" : "")
+    // the two families are different questions. the /64 tile beside this one is
+    // the quota bucket, and it equals this address on purpose — the v6 exit
+    // lives inside it. the v4 is a separate reading, and unmeasured is a fact.
+    + (eg.indexOf(":") >= 0
+        ? (" · this is the v6 exit; its /64 is the quota bucket beside it"
+           + (v4 ? " · last known v4 " + v4 : " · v4 not measured"))
+        : "");
+  $("prefix").textContent = id.prefix || "—";
+  $("prefix").title = id.prefix
+    ? ("the quota bucket — one /64 per WARP exit, and every address in that /64 draws on it"
+       + (id.burnt ? " · this one is on the blacklist" : " · this one is fresh"))
+    : "no /64 recorded yet";
+  $("hops").textContent = id.hops || 0;
+  $("hops").title = (id.hops || 0) + " rotations since the record began"
+    + " · " + (id.bucketHops || 0) + " on this /64";
+
+  // the proxy chip is the whole reason the sheet is reachable in one tap: if
+  // the second egress lever is live you should see it without opening anything.
+  const px = d.proxy || {};
+  window._px = Object.assign(window._px || {}, px);
+  const chip = $("mProxy");
+  if (chip) {
+    // three states, not two: the mux can be listening with an empty pool, and
+    // that fails closed — calling it "off" hid that its requests never land.
+    // a one-exit mux owned by ocul is the tunnel itself, so "1/1" is true but
+    // mute; the pool file being absent is not the same fact as an empty pool.
+    const pxPool = px.pool || 0, pxHi = px.healthy || 0;
+    const pxWarpOnly = px.up && pxPool === 1 && px.source !== "static";    chip.textContent = !px.up ? "off"
+      : (px.stale ? "stale"
+      : (pxPool === 0 ? "empty" : (pxWarpOnly ? "warp" : pxHi + "/" + pxPool)));
+    chip.className = !px.up ? "" : (pxHi > 0 && !px.stale ? "up" : "warn");
+    $("pxChip").title = !px.up
+      ? "proxy mux down · click to manage"
+      : (px.stale
+          ? "proxy mux process alive but its state is " + (px.age || "?") + "s old — not publishing · click to manage"
+      : (pxPool === 0
+          ? "proxy mux up, no exits configured — every request fails closed · click to manage"
+          : "proxy mux up · " + (pxWarpOnly ? "one upstream: the tunnel"
+              : pxHi + "/" + pxPool + " exits from " + (px.source || "?"))
+            + " · " + (px.current || "—")
+            + ((px.failed || 0) > 0
+                ? " · " + px.failed + " refused lifetime"
+                  + (pxRecent(px)
+                      ? " · " + Math.round(pxRecent(px).ratio * 100) + "% of "
+                        + pxRecent(px).n
+                        + (pxRecent(px).span >= 5
+                            ? " in the last " + Math.round(pxRecent(px).span) + "s"
+                            : " just measured")
+                      : "")
+                : "")
+            + " · click to manage"));
+    if (sheet && sheet.classList.contains("on")) renderSheet();
+  }
+  // the identity tab carries a dot when the current bucket is one we have
+  // already been walled on — that is the one thing you need to see without
+  // opening the tab.
+  const idTab = document.querySelector('.tab[data-tab="id"]');
+  if (idTab) idTab.classList.toggle("alert", !!id.burnt);
+  if (idTab) idTab.title = id.burnt
+    ? "this /64 is on the blacklist — hop"
+    : "bucket " + (id.bucket || id.prefix || "?") + " · fresh";
+  $("device").textContent = id.device ? id.device + "…" : "—";
+  $("device").title = id.device
+    ? "device id prefix — the full id changes on every WARP re-registration, so only the stem is stable enough to read"
+    : "WARP has not reported a device id";
+
+  // the quota key, stated plainly: which bucket we are on, whether it is one
+  // we have already been walled on, and how many have burned in total.
+  const mb = $("mBucket");
+  if (mb) {
+    mb.textContent = id.burnt ? "burnt — hop" : "fresh";
+    mb.className = id.burnt ? "bad" : "ok";
+    mb.title = id.burnt
+      ? "this /64 is on the blacklist — a wall was recorded against it"
+      : "this /64 has no wall recorded against it";
+  }
+  if ($("mWalls")) $("mWalls").textContent = String(id.bucketWalls || 0);
+  if ($("mWalls")) $("mWalls").title = "walls recorded on this /64";
+  if ($("mBurned")) $("mBurned").textContent = String(id.blacklist || 0);
+  // two counts sat side by side with no words: walls on this bucket, and how
+  // many buckets have burned in total. a reader had no way to tell them apart.
+  if ($("mBurned")) $("mBurned").title = "how many /64s are on the blacklist in total · this one "
+    + (id.burnt ? "is on it" : "is not");
+  if ($("mSince")) {
+    const parked = (typeof id.parked === "number" && id.parked > 0);
+    const fresh = (typeof id.since === "number" && id.since >= 0);
+    // a parked rotator stamps last_hop in the future. showing "0s ago" there
+    // claimed a rotation that had not happened — read the hold instead.
+    $("mSince").textContent = parked ? "held " + age(id.parked) : (fresh ? age(id.since) : "—");
+    $("mSince").title = parked
+      ? ("rotation is held for " + age(id.parked) +
+         " — the wall is account-side, not the /64")
+      : fresh
+        ? ((id.kind === "v4"
+            ? "last hop changed the v4 exit"
+            : "last hop changed the /64" + (id.v4Changed ? " and the v4 exit" : "")))
+        : "no rotation recorded yet";
+  }
+
+  const chips = [
+    (function(){
+      // first, because it is the only chip that has already weighed the rest.
+      const b = d.brain || {};
+      const sc = (typeof b.score === "number") ? b.score : -1;
+      const live = !!b.live;
+      const cls = !live ? "warn"
+                : (b.state === "ok" || sc >= 90) ? "ok"
+                : (b.state === "warn" || sc >= 60) ? "warn" : "bad";
+      return `<span class="chip ${cls}" id="chipBRAIN"><i></i>BRAIN`
+           + ((live && sc >= 0) ? " " + sc : "") + `</span>`;
+    })(),
+    healthChip("WARP", w.connected ? true : false,
+               (w.mode || "") + " — click to open Cloudflare WARP", "warp"),
+    healthChip("DNS", !!d.dns, "opencode.ai resolution"),
+    healthChip("KEEPER", !!d.keeper, "user launch agent — com.ouc.keeper"),
+    (function(){
+      // the launchd chip answers "is it loaded"; the heartbeat answers "is it
+      // actually ticking". a guard that hangs keeps its launchd row green, so
+      // the chip has to read the heartbeat, not the job.
+      const ga = (typeof d.guardAge === "number") ? d.guardAge : -1;
+      if (!d.guard) return healthChip("GUARD", false, "user launch agent — ai.ocul.guard (not loaded)");
+      if (ga < 0) return healthChip("GUARD", "warn", "loaded but has not heartbeat yet — rotator starting");
+      if (ga > 90) return healthChip("GUARD", "warn", "loaded but heartbeat is " + ga + "s old — the rotator may be wedged");
+      return healthChip("GUARD", true, "rotator alive · heartbeat " + ga + "s ago");
+    })(),
+    healthChip("CREDIT", d.credit ? true : "idle",
+               d.credit
+                 ? "credit stamp on — sign-off line appended to replies"
+                 : "off — no stamp injected (OUC_CREDIT=1 enables)"),
+    healthChip("LEAK",
+               /armed/.test(d.leakguard || "") ? true
+                 : (d.leakguard === "off" || !d.leakguard) ? "idle" : "warn",
+               (d.leakguard === "off" || !d.leakguard)
+                 ? "off — fail-open by design, armed only while the tunnel carries traffic"
+                 : d.leakguard),
+    // a snapshot that will not parse is a fact, not a blank. this chip only
+    // exists while it is true: a 1.6s toast is easy to miss and a frozen panel
+    // reads like a dead lane. it clears itself on the first good snapshot.
+    (function(){
+      const t = window._snapFail || "";
+      if (!t) return `<span class="chip" id="chipSNAP" style="display:none"><i></i>SNAPSHOT</span>`;
+      const safe = t.replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
+      return `<span class="chip bad" id="chipSNAP" title="${safe}"><i></i>SNAPSHOT</span>`;
+    })()
+  ];
+  // rebuilding eight chips every four seconds threw away their hover state and
+  // forced a layout pass on a string that had not changed. the markup is now
+  // only written when it actually differs, which is rare.
+  const chipHtml = chips.join("");
+  if (chipHtml !== window._chipSig) {
+    window._chipSig = chipHtml;
+    $("health").innerHTML = chipHtml;
+  }
+  paintBrain(d.brain || {live: false});
+
+  // the HOP button must not offer a rotation that is already running. the
+  // guard owns the lock and a second caller just gets "rotation already in
+  // progress" — so show the attempt instead of inviting the click.
+  (function(){
+    const rot = d.rotation || {};
+    const hop = $("btnHop");
+    if (!hop) return;
+    if (rot.active && !hop.classList.contains("busy")) {
+      window._brainRot = true;
+      hop.disabled = true;
+      hop.classList.add("busy");
+      hop.innerHTML = '<span class="spin" style="display:block"></span>ROTATING';
+      hop.title = "rotation " + (rot.phase || "starting")
+                + (rot.max ? " · attempt " + (rot.attempt || 0) + "/" + rot.max : "")
+                + " — the guard owns the lock";
+    } else if (window._brainRot && !rot.active) {
+      window._brainRot = false;
+      hop.disabled = false;
+      hop.classList.remove("busy");
+      hop.innerHTML = '<span class="dot"></span>HOP';
+      hop.title = "";
+    }
+  })();
+
+  // project
+  const p = d.context || {};
+  if (p.dir) {
+    const name = p.dir.replace(/\/+$/, "").split("/").pop() || p.dir;
+    $("project").textContent = name + (p.age >= 0 ? " · " + age(p.age) : "");
+    $("project").title = p.dir;
+  }
+
+  // ---- the pinned model, and the ladder behind it --------------------
+  // "will the next prompt work" is not answered by the tunnel, the /64 or the
+  // key pool — it is answered by whether the model this session is pinned to
+  // still answers. the ladder measures that; this row states it. the pin is a
+  // guess with a timestamp, so the chip carries both the pin and its verdict.
+  const md = d.model || {};
+  const ld = d.ladder || {};
+  const pin = md.current || "";
+  const bestFull = (ld.best || (md.ladder || {}).best || "");
+  const liveN = (typeof ld.live === "number") ? ld.live : (md.ladder || {}).live;
+  const scanAge = (typeof ld.age === "number") ? ld.age : (md.ladder || {}).age;
+  const wallsN = (typeof ld.wall === "number") ? ld.wall : 0;
+  const pinEl = $("pmodel"), pinName = $("pmodelName");
+  if (pinEl && pinName) {
+    pinName.textContent = pin || "no pin";
+    // the ladder reports `provider/model`; the config may carry either shape.
+    // a suffix match is the honest test — "9router/oc/x" and "oc/x" are one pin.
+    const samePin = !!pin && !!bestFull &&
+      (bestFull === pin || bestFull.endsWith("/" + pin));
+    let st = "", why = "";
+    if (!pin) { st = "bad"; why = "no model pinned in opencode.json"; }
+    else if (samePin) { st = "live"; why = "pinned model answers — measured " + age(scanAge); }
+    else if (!bestFull) { st = "warn"; why = "no ladder scan yet — pin unverified"; }
+    else { st = "warn"; why = "pin is not the measured best (" + bestFull + ")"; }
+    pinEl.className = "pmodel" + (st ? " " + st : "");
+    pinEl.title = why + (liveN != null ? " · " + liveN + " live" : "");
+  }
+  if ($("mLive")) {
+    // a count, not a ratio: "7 / 41" reads as a budget and it is not one. the
+    // wall count has its own cell below; the probe total belongs in the tip.
+    $("mLive").textContent = (liveN == null) ? "—" : String(liveN);
+    const cl = $("cardLive");
+    if (cl) {
+      cl.className = "ms" + (liveN > 0 ? " ok" : (liveN === 0 ? " bad" : ""));
+      const tot = (typeof ld.probed === "number") ? ld.probed
+        : ((md.ladder || {}).probed || 0);
+      cl.title = (liveN == null) ? "no ladder measurement yet"
+        : (liveN + " of " + (tot || "?") + " models answered · " + wallsN + " walled");
+    }
+  }
+  if ($("mLadder")) {
+    $("mLadder").textContent = (scanAge == null || scanAge < 0)
+      ? "—" : age(scanAge).replace(" ago", "");
+  }
+  if ($("mBest")) {
+    // the measured best is the answer to "what should I switch to", so it is
+    // stated as a name, not implied by the age of a scan. provider prefix is
+    // noise at 11px; the tooltip carries the full id.
+    $("mBest").textContent = bestFull ? bestFull.split("/").pop() : "—";
+    const cb = $("cardBest");
+    if (cb) {
+      const isPin = !!pin && !!bestFull && (bestFull === pin || bestFull.endsWith("/" + pin));
+      cb.className = "ms" + (liveN === 0 ? " bad" : (isPin ? " ok" : ""));
+      cb.title = bestFull
+        ? ("measured best: " + bestFull + " · " + (scanAge >= 0 ? "probed " + age(scanAge) : "age unknown")
+           + (isPin ? " · pinned" : " · not the pinned model"))
+        : "no ladder measurement yet — run: model-ladder scan";
+    }
+  }
+
+  // sparkline
+  // recent arrives newest-first; the chart reads left to right in time order.
+  // 24 rows now, which is what this label has always claimed.
+  const burn = (t.recent || []).slice().reverse()
+    .filter(r => (r.tokens || 0) > 0).slice(-24);
+  drawSpark(burn);
+  window._burn = burn;
+
+  // top models, biggest first — the four rows the snapshot already carries.
+  const mx = (t.models || []).slice(0, 3);
+  const top = mx.reduce((m, x) => Math.max(m, x.tokens || 0), 1);
+  const modelsEl = $("models");
+  if (modelsEl) {
+    modelsEl.innerHTML = mx.length ? mx.map(x => {
+      const name = (x.name || "?").split("/").pop();
+      const pct = Math.max(3, Math.round(100 * (x.tokens || 0) / top));
+      return `<div class="m" title="${(x.name || "")} · ${fmt(x.tokens)} tokens · ${x.sessions} sessions">`
+        + `<span>${name}</span><i><s style="width:${pct}%"></s></i><b>${fmt(x.tokens)}</b></div>`;
+    }).join("") : `<div class="m"><span>no sessions yet</span></div>`;
+  }
+  $("sparkN").textContent = burn.length ? burn.length + " sessions" : "no burn yet";
+
+  // last session
+  const last = t.last;
+  if (last) {
+    const cachePct = last.cacheRead
+      ? " · " + Math.round(100 * last.cacheRead / (last.cacheRead + last.input + 1)) + "% cached"
+      : "";
+    $("lastSession").textContent = last.title + " · " + fmt(last.tokens) + " tok" + cachePct;
+    $("lastSession").title = [last.title, last.model, last.dir,
+      "in " + fmt(last.input), "out " + fmt(last.output),
+      "cache " + fmt(last.cacheRead), money(last.cost)].filter(Boolean).join(" · ");
+    $("lastAge").textContent = age(last.age);
+  }
+
+  // api key pool
+  const kk = d.apiKeys;
+  if (kk) {
+    // the pool size is not capacity — nine revoked keys are nine dead rows and
+    // nine unprobed keys are nine question marks. say which it is.
+    const liveN = (kk.live || 0), deadN = (kk.dead || 0), unkN = (kk.unknown || 0);
+    const known = liveN + deadN;
+    $("keyCount").textContent = (kk.count || 0) + "/" + (kk.cap || 50)
+      + (known ? " · " + liveN + " live" : "");
+    $("keyCount").title = deadN
+      ? deadN + " key" + (deadN === 1 ? "" : "s") + " rejected by the console"
+      : (known ? "pool size · keys the console answers" : "run CHECK to probe the pool");
+  const tk = $("tabKeys");
+  if (tk) tk.textContent = kk.count ? String(kk.count) : "";
+    const act = $("keyActive");
+    const dot = $("keyDot");
+    const st = kk.activeState || (kk.activeLive ? "live" : "unknown");
+    act.textContent = kk.active || "no key";
+    act.title = kk.active ? kk.active + "  " + (kk.activeMasked || "")
+      + (st === "dead" ? "  — rejected by the console"
+        : st === "unknown" ? "  — not probed yet" : "") : "no active key";
+    dot.className = st === "dead" ? "bad" : (st === "unknown" ? "warn" : "");
+    act.style.color = st === "dead" ? "var(--bad)" : (st === "live" ? "#c4b5fd" : "var(--mut)");
+  }
+
+  // bubble
+  const bcirc = 2 * Math.PI * 35;
+  $("bubbleRing").style.strokeDashoffset = String(bcirc * (1 - hit));
+  $("bubbleTok").textContent = fmt((t.input || 0) + (t.output || 0));
+}
+
+function drawSpark(rows){
+  const c = $("spark");
+  const ctx = c.getContext("2d");
+  const W = c.width, H = c.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!rows.length) {
+    ctx.strokeStyle = "rgba(255,255,255,.07)";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, H - 1.5); ctx.lineTo(W, H - 1.5); ctx.stroke();
+    return;
+  }
+  // scale bars on real tokens only. folding the cache maximum into the peak
+  // squashed every bar to a stub, because cache reads run ~30x the token count.
+  const peak = rows.reduce((m, r) => Math.max(m, r.tokens || 0), 1);
+  const max = Math.sqrt(peak);
+  const peakCache = rows.reduce((m, r) => Math.max(m, r.cacheRead || 0), 1);
+  const n = rows.length;
+  const bw = W / n;
+  rows.forEach((r, i) => {
+    // a quiet session still gets a visible stub; without a floor the chart
+    // reads as a row of ticks and the shape is lost.
+    const rel = Math.sqrt(r.tokens || 0) / max;
+    const h = Math.max(4, (0.14 + 0.86 * rel) * (H - 10));
+    const x = i * bw;
+    const g = ctx.createLinearGradient(0, H - h, 0, H);
+    g.addColorStop(0, "rgba(34,211,238,.95)");
+    g.addColorStop(1, "rgba(34,211,238,.10)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    const w = Math.max(3, bw * 0.62);
+    const cx = x + (bw - w) / 2;
+    ctx.roundRect(cx, H - h, w, h, 1.5);
+    ctx.fill();
+    // a tick above the bar is the cache share of that session. without it a
+    // session that was 99% cache reads looks identical to one that was not.
+    const cache = r.cacheRead || 0;
+    if (cache > 0 && peakCache > 0) {
+      // its own scale, capped, so the tick says "this one was cached heavily"
+      // without competing with the token bars for height.
+      const ch = 2 + 9 * Math.sqrt(cache / peakCache);
+      ctx.fillStyle = "rgba(52,211,153,.40)";
+      ctx.beginPath();
+      ctx.roundRect(cx, H - h - ch - 2, w, ch, 1);
+      ctx.fill();
+    }
+    if (i === n - 1) {
+      ctx.fillStyle = "#f472b6";
+      ctx.beginPath();
+      ctx.arc(cx + w / 2, H - h - 2, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+}
+
+/* ---------- logs ---------- */
+function logLine(line){
+  const el = $("logBody");
+  const s = document.createElement("span");
+  let cls = "";
+  if (/^\s*(✓|==|.*FRESH IDENTITY)/.test(line) || /connected|rotated|ok\b/i.test(line)) cls = "ok";
+  else if (/^\s*(✗|error|failed|not found)/i.test(line)) cls = "bad";
+  else if (/^\s*(!|warn)/i.test(line) || /retry|unchanged/i.test(line)) cls = "warn";
+  else if (/old egress|new egress|wall detected/i.test(line)) cls = "cy";
+  if (cls) s.className = cls;
+  s.textContent = line + "\n";
+  el.appendChild(s);
+  el.scrollTop = el.scrollHeight;
+  while (el.childNodes.length > 300) el.removeChild(el.firstChild);
+}
+
+function toast(msg){
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("on");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("on"), 1600);
+}
+
+function setBusy(cmd, on){
+  const hop = $("btnHop"), doc = $("btnDoctor");
+  hop.disabled = on && cmd !== "hop" ? true : on;
+  doc.disabled = on;
+  if (cmd === "hop") hop.classList.toggle("busy", on);
+  if (cmd === "doctor") { doc.classList.toggle("busy", on); }
+  $("logPanel").classList.toggle("live", on);
+  $("bubble").classList.toggle("busy", on);
+  if (on) { $("btnHop").textContent = ""; }
+  // keep label markup intact
+  hop.innerHTML = on && cmd === "hop"
+    ? '<span class="spin" style="display:block"></span>ROTATING'
+    : '<span class="dot"></span>HOP';
+  doc.innerHTML = on && cmd === "doctor"
+    ? '<span class="spin" style="display:block"></span>SCANNING'
+    : 'DOCTOR';
+}
+
+/* ---------- native events ---------- */
+window.ouc = function(ev){
+  if (!ev || !ev.type) return;
+  if (ev.type === "log") logLine(ev.payload.line || "");
+  else if (ev.type === "brain") {
+    // the guard writes every 6s and the push fires only when `seq` moved, so
+    // this lands a rotation start in ~0.3s instead of waiting for status.sh.
+    paintBrain(ev.payload || {});
+    if (S && S.brain) S.brain = Object.assign(S.brain, ev.payload || {});
+  }
+  else if (ev.type === "busy") setBusy(ev.payload.cmd, ev.payload.on);
+  else if (ev.type === "toast") toast(ev.payload.text || "");
+  else if (ev.type === "snapshot") paintSnapshotState(!!ev.payload.ok, ev.payload.text || "", ev.payload.since || 0);
+  else if (ev.type === "window") {
+    document.body.classList.toggle("collapsed", !!ev.payload.collapsed);
+  }
+  else if (ev.type === "keysOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "key pool updated" : "key command failed");
+  }
+  else if (ev.type === "keysBusy") {
+    const on = !!ev.payload.on;
+    ["btnKeyAdd", "btnKeyPrev", "btnKeyNext", "btnKeyList", "btnKeyDel"].forEach(id => { $(id).disabled = on; });
+    if (on && typeof disarmDel === "function") disarmDel();
+    clearTimeout(window.oucKeyUnlock);
+    // a dead native side must never leave the pool controls greyed out
+    if (on) window.oucKeyUnlock = setTimeout(() => {
+      ["btnKeyAdd", "btnKeyPrev", "btnKeyNext", "btnKeyList", "btnKeyDel"].forEach(id => { $(id).disabled = false; });
+    }, 30000);
+  }
+  else if (ev.type === "proxyState") {
+    try {
+      const d = JSON.parse(ev.payload.json || "{}");
+      pxRows = d.upstreams || [];
+      pxSeen = true;
+      window._px = Object.assign(window._px || {}, d);
+    } catch (e) {}
+    renderSheet();
+  }
+  else if (ev.type === "proxyOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "proxy updated" : "proxy command failed");
+    bridge("proxyList");
+  }
+  else if (ev.type === "proxyBusy") {
+    const on = !!ev.payload.on;
+    ["btnPxAdd", "btnPxOn", "btnPxOff", "btnPxRot", "btnPxTest", "btnPxSys", "btnPxPol"].forEach(id => { $(id).disabled = on; });
+    clearTimeout(window.oucPxUnlock);
+    // TEST probes every upstream with its own timeout; a big pool can run
+    // long, and a wedged native process must not grey the sheet out forever.
+    if (on) window.oucPxUnlock = setTimeout(() => {
+      ["btnPxAdd", "btnPxOn", "btnPxOff", "btnPxRot", "btnPxTest", "btnPxSys", "btnPxPol"].forEach(id => { $(id).disabled = false; });
+    }, 60000);
+  }
+  else if (ev.type === "modelState") {
+    try {
+      const d = JSON.parse(ev.payload.json || "{}");
+      mxModels = d.models || [];
+      mxSeen = true;
+      window._mx = d;
+    } catch (e) {}
+    renderModels();
+    renderModelStat();
+  }
+  else if (ev.type === "modelOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "model lever updated" : "model command failed");
+    bridge("modelList");
+  }
+  else if (ev.type === "providerState") {
+    try { window._pv = JSON.parse(ev.payload.json || "{}"); } catch (e) { window._pv = {}; }
+    renderProviders(); renderProvStat();
+  }
+  else if (ev.type === "providerOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "model pinned" : "pin failed");
+    bridge("providerList");
+  }
+  else if (ev.type === "modelBusy") {
+    const on = !!ev.payload.on;
+    ["btnMxNext", "btnMxBurn", "btnMxReset", "btnMxRefresh"].forEach(id => { $(id).disabled = on; });
+  }
+};
+window.oucUpdate = function(d){ try { render(d); } catch (e) { console.log(e); } };
+
+/* ---------- controls ---------- */
+// a plain click hops; a long press asks where we are and rotates nothing.
+// the read-only answer is the one you want when a hop would be expensive.
+let hopTimer = null, hopLong = false;
+const hopBtn = $("btnHop");
+hopBtn.addEventListener("pointerdown", () => {
+  hopLong = false;
+  hopTimer = setTimeout(() => { hopLong = true; toast("where am i…"); bridge("where"); }, 550);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach(ev =>
+  hopBtn.addEventListener(ev, () => { if (hopTimer) { clearTimeout(hopTimer); hopTimer = null; } }));
+hopBtn.addEventListener("click", () => {
+  if (hopLong) { hopLong = false; return; }
+  bridge("hop");
+});
+hopBtn.title = "click: rotate · press and hold: where am i (no rotation)";
+
+// the bucket line is the same question, one tap away
+const metaRow = document.querySelector(".meta");
+if (metaRow) {
+  metaRow.style.cursor = "pointer";
+  metaRow.title = "tap for full identity — bucket, both egress families, device, blacklist";
+  metaRow.addEventListener("click", () => { toast("where am i…"); bridge("where"); });
+}
+
+/* ---------- proxy sheet ----------
+   the second egress lever, entirely on a sheet: the panel keeps its exact
+   height, the console keeps its leftover height, and every control here runs
+   scripts/proxy-pool.sh for real. nothing decorative. */
+let pxRows = [], pxSeen = false;
+const sheet = $("sheet");
+function openSheet(on){
+  sheet.classList.toggle("on", on);
+  sheet.setAttribute("aria-hidden", on ? "false" : "true");
+  if (on) { renderSheet(); bridge("proxyList"); }
+}
+$("pxChip").addEventListener("click", (e) => {
+  e.stopPropagation();          // the meta row underneath asks "where"; this asks "proxy"
+  openSheet(true);
+});
+$("btnPxClose").addEventListener("click", () => openSheet(false));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") openSheet(false); });
+
+function sheetTab(){
+  const b = document.querySelector(".stab.on");
+  return (b && b.dataset.sheet) || "proxy";
+}
+// a lifetime refusal ratio says nothing about now: 203 refusals spread over
+// 2.2k connections keeps a lane that has been clean for an hour painted red.
+// status.sh keeps a windowed delta and this reads it, so the colour follows
+// measured recent behaviour and clears itself when the upstream recovers.
+function pxRecent(p){
+  if (!p || typeof p.rate !== "number" || (p.rateN || 0) < 8) return null;
+  return {ratio: p.rate, n: p.rateN, span: p.rateSpan || 0};
+}
+
+function renderSheet(){
+  const p = window._px || {};
+  $("pxHead").textContent = p.up ? "up" : "down";
+  $("pxHead").classList.toggle("up", !!p.up);
+  // a mux with no pool file relays through the tunnel. that is a working
+  // lane, not an empty one — "0 upstreams in the pool" on a live mux served
+  // the same lie as a blank panel.
+  const pxRelay = p.up
+    ? ((p.static || 0) > 0 ? (p.static + " static") : "tunnel")
+    : "—";
+  if (sheetTab() === "proxy") {
+    const statHtml = (p.up
+      ? (p.stale
+          ? "mux process alive · its state is " + (p.age || "?") + "s old — not publishing"
+          : "mux up · <b>" + (p.current || "—") + "</b> · relay " + pxRelay
+            + " · " + (p.rotations || 0) + " rotations · " + (p.served || 0) + " served"
+            // a mux that refused 9% of its traffic is not a clean lane, but a
+            // lifetime count is not a reading of now. the number on the left
+            // stays cumulative and neutral; the colour comes from the windowed
+            // rate status.sh measures.
+            + (p.failed > 0
+                ? ' · <span class="' + (pxRecent(p) && pxRecent(p).ratio > 0.05 ? "pxbad" : "")
+                  + '" title="lifetime: ' + p.failed + " refused of " + (p.served || 0)
+                  + " served"
+                  + (pxRecent(p)
+                      ? " · " + (pxRecent(p).span >= 5
+                          ? "last " + Math.round(pxRecent(p).span) + "s: "
+                          : "just measured: ")
+                        + Math.round(pxRecent(p).ratio * 100) + "% of " + pxRecent(p).n
+                      : " · no recent window yet")
+                  + '">'
+                  + p.failed + " refused</span>"
+                : ""))
+      : "mux down · no exits in service")
+    + " · system " + (p.system ? "<b>on</b>" : "off")
+    // the mux rotating is not the same as the CLI using it: the service is
+    // long-lived and inherits env at spawn, so say it out loud.
+    + (p.up && p.cli === 2 ? ' · <b class="pxfix" title="this opencode was started before the proxy — exit it and run opencode again; the lane and the shim keep every new session proxied">restart opencode</b>' : "");
+    // same rule as the chips: this line is rewritten on every snapshot while
+    // the sheet is open, and rewriting identical markup kills text selection
+    // and reflows the panel for nothing.
+    if (statHtml !== window._pxStatSig) {
+      window._pxStatSig = statHtml;
+      $("pxStat").innerHTML = statHtml;
+    }
+  }
+  $("pxStat").onclick = (e) => {
+    if (!e.target.classList.contains("pxfix")) return;
+    toast("restarting the service — if the hint stays, exit and run opencode again");
+    bridge("proxyCli", {});
+  };
+  $("btnPxSys").textContent = p.system ? "SYS ON" : "SYS";
+  $("btnPxPol").textContent = p.policy === "window" ? "WINDOW" : "CONN";
+  $("btnPxPol").title = p.policy === "window"
+    ? "one ip held for the window length — click for a new ip per connection"
+    : "new ip per connection — click to hold one ip for a while";
+  if (!pxSeen) return;
+  const list = $("pxList");
+  if (!pxRows.length) {
+    // "pool is empty" read as "something broke". nothing is missing: the mux
+    // forwards through the tunnel by itself, and pasting an upstream adds a
+    // second egress rather than repairing the first.
+    const box = document.createElement("div");
+    box.className = "px-empty";
+    box.textContent = p.up
+      ? "no upstreams configured — the mux is on the tunnel itself"
+      : "mux is down and no upstreams configured — paste a proxy below";
+    list.innerHTML = "";
+    list.appendChild(box);
+    if (p.up && p.current) {
+      const cur = document.createElement("div");
+      cur.className = "px-hint";
+      cur.textContent = "current exit " + p.current + " · " + (p.served || 0)
+        + " served · " + (p.rotations || 0) + " rotations"
+        + " · paste an upstream below to add a second egress";
+      list.appendChild(cur);
+    }
+    return;
+  }
+  list.innerHTML = "";
+  pxRows.forEach(r => {
+    const row = document.createElement("div");
+    row.className = "pxr" + (p.up && p.index === r.slot - 1 ? " cur" : "");
+    row.title = "click: rotate to this upstream" + (r.ip ? " · " + r.ip : "");
+    const dot = document.createElement("i");
+    dot.className = "pxd " + (r.state === "dead" ? "dead" : r.state === "live" ? "live" : "");
+    const n = document.createElement("b"); n.textContent = "#" + r.slot;
+    const a = document.createElement("span"); a.className = "pxa"; a.textContent = r.masked;
+    const m = document.createElement("span"); m.className = "pxm";
+    m.textContent = r.state === "live" ? (r.ms ? r.ms + "ms" : "live")
+                  : (r.state === "dead" ? "dead" : "—");
+    const del = document.createElement("button");
+    del.className = "pxdel"; del.textContent = "✕"; del.title = "remove #" + r.slot;
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toast("removing #" + r.slot + "…");
+      bridge("proxyRemove", { slot: String(r.slot) });
+    });
+    row.append(dot, n, a, m, del);
+    row.addEventListener("click", () => {
+      toast("rotating to #" + r.slot + "…");
+      bridge("proxyRotate", { slot: String(r.slot) });
+    });
+    list.appendChild(row);
+  });
+  // with a thin pool the list leaves a lot of dead glass. say the useful thing
+  // there instead of nothing: what the policy does and what fixes a thin pool.
+  if (pxRows.length < 3) {
+    const hint = document.createElement("div");
+    hint.className = "px-hint";
+    hint.innerHTML = p.policy === "window"
+      ? "one upstream held for a window — add more before it is exhausted"
+      : "a new upstream per connection — two or three is where rotation starts paying";
+    list.appendChild(hint);
+  }
+}
+
+$("btnPxAdd").addEventListener("click", () => {
+  const v = $("pxInput").value.trim();
+  if (!v) { toast("paste a proxy spec first"); return; }
+  toast("adding upstream…");
+  bridge("proxyAdd", { spec: v });
+  $("pxInput").value = "";
+});
+$("pxInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btnPxAdd").click(); });
+$("btnPxOn").addEventListener("click", () => { toast("starting the mux…"); bridge("proxyOn"); });
+$("btnPxOff").addEventListener("click", () => { toast("stopping the mux…"); bridge("proxyOff"); });
+$("btnPxRot").addEventListener("click", () => { toast("rotating…"); bridge("proxyRotate"); });
+$("btnPxTest").addEventListener("click", () => { toast("probing every upstream…"); bridge("proxyTest"); });
+$("btnPxSys").addEventListener("click", () => {
+  const on = !!(window._px && window._px.system);
+  toast(on ? "restoring the system proxy…" : "routing the machine through the mux…");
+  bridge("proxySys", { on: on ? "off" : "on" });
+});
+$("btnPxPol").addEventListener("click", () => {
+  const next = (window._px && window._px.policy) === "window" ? "conn" : "window";
+  toast("policy → " + next);
+  bridge("proxyPolicy", { value: next });
+});
+
+/* ---------- sheet tabs + model levers ----------
+   same sheet, second page. the free tier is per model — the client's own wall
+   text says "or switch models" — so this is the cheapest lever on the machine:
+   no tunnel, no dns window, no registration. 51 of them. */
+[...document.querySelectorAll(".stab")].forEach(b => b.addEventListener("click", () => {
+  const want = b.dataset.sheet;
+  document.querySelectorAll(".stab").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll(".sbody").forEach(x => x.classList.toggle("on", x.dataset.body === want));
+  $("pxFoot").textContent = want === "models"
+    ? "new sessions pick up the switch"
+    : want === "prov"
+      ? "models already in opencode.json — one tap, no free-tier wall"
+      // the mux listens somewhere, and it is not always 8899: ocul picks the
+      // port and writes it in the state file. a footer with a stale literal
+      // sends you to a socket nothing is on.
+      : "client → " + ((window._px || {}).listen || "the mux") + " · rotation behind a fixed address";
+  if (want === "models") { renderModelStat(); bridge("modelList"); }
+  else if (want === "prov") { renderProvStat(); bridge("providerList"); }
+  else renderSheet();
+}));
+
+/* ---------- provider page ----------
+   the free pool is one provider. when it is walled, the working answer is a
+   model the config already carries a key for — this lists them and pins one
+   with a tap, instead of a shell command. */
+function renderProvStat(){
+  if (sheetTab() !== "prov") return;
+  const d = window._pv || {};
+  const n = (d.providers || []).reduce((a, p) => a + (p.models || []).length, 0);
+  $("pxStat").innerHTML = n
+    ? "<b>" + n + "</b> provider models in config · current <b>" + ((d.current || "—").split("/").pop()) + "</b>"
+    : "no provider models in opencode.json";
+}
+function renderProviders(){
+  if (sheetTab() !== "prov") return;
+  const d = window._pv || {};
+  const list = $("pvList");
+  list.innerHTML = "";
+  const provs = d.providers || [];
+  const cur = $("pvCur"); if (cur) cur.textContent = (d.current || "—").split("/").pop();
+  if (!provs.length) {
+    list.innerHTML = '<div class="px-empty">no provider block in ~/.config/opencode/opencode.json</div>';
+    return;
+  }
+  provs.forEach(p => {
+    const head = document.createElement("div");
+    head.className = "mx-head";
+    head.style.margin = "6px 0 2px";
+    head.innerHTML = '<span class="k">' + (p.label || p.id) + '</span>';
+    list.appendChild(head);
+    (p.models || []).forEach(m => {
+      const row = document.createElement("div");
+      row.className = "pxr" + (d.current === p.id + "/" + m.id ? " cur" : "");
+      const n = document.createElement("b"); n.textContent = "★";
+      const a = document.createElement("span"); a.className = "pxa"; a.textContent = m.id;
+      const t = document.createElement("span"); t.className = "pxm"; t.textContent = m.ctx ? Math.round(m.ctx / 1000) + "k" : "";
+      row.title = "pin " + p.id + "/" + m.id;
+      row.append(n, a, t);
+      row.addEventListener("click", () => { toast("pinning " + m.id + "…"); bridge("providerSet", { ref: p.id + "/" + m.id }); });
+      list.appendChild(row);
+    });
+  });
+}
+$("btnPvRefresh").addEventListener("click", () => { toast("re-reading the config…"); bridge("providerList"); });
+
+// the models status line reads the same small blocks the list does, so it is
+// right before the catalog finishes loading and stays right after.
+function renderModelStat(){
+  if (sheetTab() !== "models") return;
+  const d = window._mx || {};
+  $("pxStat").innerHTML = d.free
+    ? "free tier is per model · <b>" + (d.free - (d.burned || 0)) + "</b> of " + d.free + " unburned"
+    : "free tier is per model · catalog not loaded";
+}
+
+let mxModels = [], mxSeen = false;
+function renderModels(){
+  const d = window._mx || {};
+  $("mxCur").textContent = d.current ? "opencode/" + d.current : "not pinned";
+  const mc = $("mxCount");
+  if (mc) mc.textContent = d.free ? (d.free - (d.burned || 0)) + "/" + d.free : "";
+  if (!mxSeen) return;
+  const list = $("mxList");
+  if (!mxModels.length) { list.innerHTML = '<div class="px-empty">no catalog — hit REFRESH</div>'; return; }
+  list.innerHTML = "";
+  mxModels.forEach((m, i) => {
+    const row = document.createElement("div");
+    row.className = "pxr" + (m.current ? " cur" : "");
+    row.title = m.id + (m.ctx ? " · " + Math.round(m.ctx / 1000) + "k context" : "");
+    const dot = document.createElement("i");
+    // m.dead is what the last probe said: "429" is the free wall, "400" means
+    // the console is not serving that model at all. both are worth seeing
+    // before a tap, not after.
+    dot.className = "pxd " + (m.current ? "live" : (m.dead || m.burned) ? "dead" : "");
+    const n = document.createElement("b"); n.textContent = i + 1;
+    const a = document.createElement("span"); a.className = "pxa"; a.textContent = m.id;
+    if (m.dead || m.burned) { a.style.opacity = ".55"; }
+    const c = document.createElement("span"); c.className = "pxm";
+    c.textContent = m.dead === "429" ? "wall"
+                  : m.dead === "400" ? "gone"
+                  : m.burned ? "burnt"
+                  : (m.ctx ? Math.round(m.ctx / 1000) + "k" : "");
+    row.append(dot, n, a, c);
+    row.addEventListener("click", () => {
+      toast("model → " + m.id);
+      bridge("modelSet", { id: m.id });
+    });
+    list.appendChild(row);
+  });
+}
+$("btnMxNext").addEventListener("click", () => { toast("next free model…"); bridge("modelNext"); });
+$("btnMxBurn").addEventListener("click", () => { toast("marking the model burned…"); bridge("modelBurn"); });
+$("btnMxReset").addEventListener("click", () => { toast("clearing the burn list…"); bridge("modelReset"); });
+$("btnMxRefresh").addEventListener("click", () => { toast("re-fetching the catalog…"); bridge("modelRefresh"); });
+$("btnMxHop").addEventListener("click", () => { toast("hopping the /64…"); bridge("hop"); });
+
+// api keys: add what is in the box, or rotate to the next live key. the native
+// side runs scripts/api-keys.sh, so the HUD never touches the db itself.
+$("btnKeyAdd").addEventListener("click", () => {
+  const v = $("keyInput").value.trim();
+  if (!v) { toast("paste a key first"); $("keyInput").focus(); return; }
+  $("keyInput").value = "";
+  toast("checking key…");
+  bridge("keyAdd", { key: v });
+});
+function keyRotate(dir){
+  toast(dir ? ("rotating " + dir + "…") : "rotating…");
+  bridge("keyRotate", { dir: dir || "next" });
+}
+$("btnKeyPrev").addEventListener("click", () => keyRotate("prev"));
+$("btnKeyNext").addEventListener("click", () => keyRotate("next"));
+$("btnKeyList").addEventListener("click", () => { toast("probing keys…"); bridge("keyList"); });
+$("btnKeyPrune").addEventListener("click", () => { toast("cleaning the pool…"); bridge("keyPrune"); });
+
+// deleting is the one irreversible verb in this card, so it arms first and
+// only fires on the second tap inside four seconds.
+let delTimer = null;
+function disarmDel(){
+  const b = $("btnKeyDel");
+  b.classList.remove("armed");
+  b.textContent = "DEL";
+  clearTimeout(delTimer);
+  delTimer = null;
+}
+$("btnKeyDel").addEventListener("click", () => {
+  const b = $("btnKeyDel");
+  if (!S.apiKeys || !S.apiKeys.activeId) { toast("no active key to delete"); return; }
+  if (!b.classList.contains("armed")) {
+    b.classList.add("armed");
+    b.textContent = "CONFIRM";
+    toast("tap again to delete " + (S.apiKeys.active || "the active key"));
+    delTimer = setTimeout(disarmDel, 4000);
+    return;
+  }
+  disarmDel();
+  toast("deleting " + (S.apiKeys.active || "key") + "…");
+  bridge("keyRemove", { slot: S.apiKeys.activeId });
+});
+$("keyInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("btnKeyAdd").click();
+  e.stopPropagation();
+});
+$("btnDoctor").addEventListener("click", () => bridge("doctor"));
+$("btnClear").addEventListener("click", () => { $("logBody").innerHTML = ""; });
+$("btnDock").addEventListener("click", () => bridge("dock"));
+$("btnMin").addEventListener("click", () => bridge("collapse"));
+// X puts the panel away. it is not a quit: the process stays resident, the
+// menu bar item brings it back, and the lane raises it on the next opencode
+// launch. the − button is the softer version (bubble, still on screen).
+$("btnClose").addEventListener("click", () => bridge("hide"));
+$("bubble").addEventListener("click", () => {
+  // a drag that ends on the circle is not a click — don't swallow it in expand
+  if (dragMoved) { dragMoved = false; return; }
+  bridge("expand");
+});
+$("bubble").addEventListener("dblclick", () => bridge("hop"));
+$("lastSession").addEventListener("click", () => bridge("copy"));
+// a chip is a shortcut, not decoration: WARP opens the Cloudflare WARP window
+$("health").addEventListener("click", (e) => {
+  const c = e.target.closest(".chip[data-act]");
+  if (!c) return;
+  bridge(c.dataset.act);
+});
+
+/* drag: native timer owns the motion, js only says start/stop */
+let dragging = false, dragMoved = false, dragOrigin = { x: 0, y: 0 };
+function startDrag(e){
+  if (e.button !== 0) return;
+  dragging = true;
+  dragMoved = false;
+  dragOrigin = { x: e.clientX, y: e.clientY };
+  bridge("dragStart");
+}
+document.addEventListener("pointermove", (e) => {
+  if (!dragging) return;
+  if (Math.abs(e.clientX - dragOrigin.x) > 3 || Math.abs(e.clientY - dragOrigin.y) > 3) dragMoved = true;
+});
+function stopDrag(){
+  if (!dragging) return;
+  dragging = false;
+  bridge("dragEnd");
+}
+["drag"].forEach(id => {
+  const el = $(id);
+  el.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button")) return;
+    startDrag(e);
+  });
+});
+document.addEventListener("pointerup", stopDrag);
+document.addEventListener("pointercancel", stopDrag);
+$("bubble").addEventListener("pointerdown", (e) => { startDrag(e); });
+
+/* clock */
+setInterval(() => {
+  const d = new Date();
+  $("clock").textContent = [d.getHours(), d.getMinutes(), d.getSeconds()]
+    .map(x => String(x).padStart(2, "0")).join(":");
+  // heartbeat check: if no fresh status has landed in 12s the panel is showing
+  // frozen numbers. the poller covers a dead status.sh by keeping lastStatus,
+  // so without this the sheet looked live while it was quietly stale.
+  const last = window.oucLastUpdate || 0;
+  // a hidden panel refreshes every 8s (1/4 the spawns), and a network probe
+  // can add a couple of seconds on top — 12s flipped the marker yellow while
+  // the data was still current. 20s is stale, not busy.
+  const stale = last > 0 && (Date.now() / 1000 - last) > 20;
+  const c = $("clock");
+  if (c) c.classList.toggle("stale", stale);
+  // the dead-snapshot bar counts up in place: the age is the part that turns a
+  // blip into a decision, and a repaint every second costs nothing.
+  if (window._snapFail) {
+    const bar = $("staleNote");
+    if (bar && bar.classList.contains("on")) bar.textContent = snapBarText();
+  }
+}, 1000);
+
+/* tabs — one pane at a time. the console lives outside them on purpose:
+   whatever you are looking at, the log is still there. */
+(function(){
+  const tabs = [...document.querySelectorAll(".tab")];
+  const panes = [...document.querySelectorAll(".pane")];
+  function showTab(name){
+    tabs.forEach(t => t.classList.toggle("on", t.dataset.tab === name));
+    panes.forEach(p => p.classList.toggle("on", p.dataset.pane === name));
+    // a canvas inside a display:none pane has no layout box, so it draws at
+    // zero size and stays blank until the next data tick. redraw on reveal.
+    if (name === "stats") { try { drawSpark(window._burn || []); } catch (e) {} }
+  }
+  tabs.forEach(t => t.addEventListener("click", () => showTab(t.dataset.tab)));
+  window.oucShowTab = showTab;
+})();
+
+/* expand on load */
+document.body.classList.remove("collapsed");
+bridge("refresh");
+</script>
+
+<script>
+/* console height — the panel is 642px and the panes are fixed, so the console
+   is the only section with slack. default is tall; the chevron gives the
+   panes their space back without hiding the log entirely. */
+(function(){
+  var panel = document.getElementById('logPanel');
+  var btn = document.getElementById('btnLogSize');
+  if (!panel || !btn) return;
+  btn.addEventListener('click', function(e){
+    e.stopPropagation();
+    var small = panel.classList.toggle('small');
+    btn.textContent = small ? '▴' : '▾';
+    btn.title = small ? 'expand the console' : 'shrink the console';
+  });
+})();
+</script>
+</body>
+</html>

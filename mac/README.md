@@ -1,0 +1,287 @@
+# opencode-unlimited — macOS
+
+The root of this repository is Linux + systemd. macOS has no systemd and no
+`unshare -rm`, so those scripts cannot run here as-is. This directory is the
+macOS implementation: **launchd**, one rotator, one shared lock, and rotation
+that never stops.
+
+```bash
+git clone https://github.com/ElectronBreach/opencode-unlimited-usage
+cd opencode-unlimited-usage
+make mac          # or: bash mac/install-mac.sh
+```
+
+Requirements: **Cloudflare WARP.app**, `warp-cli`, `python3`, and Xcode command
+line tools (`xcode-select --install`) for the HUD.
+
+Uninstall: `make mac-uninstall`.
+
+---
+
+## What gets installed
+
+| Part | Where | Job |
+|---|---|---|
+| `ai.ocul.guard` | `~/Library/LaunchAgents` | the rotator (`ocul.py guard`) |
+| `com.opencode-unlimited.keeper` | `/Library/LaunchDaemons` | keeps the tunnel up (`warp-keeper.sh`, root) |
+| `com.opencode-unlimited.overlay` | `~/Library/LaunchAgents` | the HUD (`OpencodeOverlay.app`) |
+| `ocul.py` | `~/.local/share/ocu-lane/` | rotation engine |
+| `ouctl` | `~/.local/bin/` | control CLI |
+| scripts | `~/.local/share/opencode-unlimited/scripts/` | `zen-hop`, `status`, `doctor`, keeper, mux |
+
+The HUD is **built from source** at install time (`overlay/main.swift` +
+`overlay/overlay.html`, via `swiftc`) — there is no prebuilt binary in the repo.
+
+---
+
+## What "unlimited rotation" means
+
+opencode's free tier is keyed on what the server sees: the **egress /64** that
+Cloudflare WARP NATs your traffic to (a `2a09:bac…` block), not your public v4
+and not the local `utun` address (`2606:4700:110:…`). A new WARP registration
+gets a new egress /64. So unlimited rotation = rotate the registration on every
+wall, forever.
+
+Three things used to stop that:
+
+| Old behaviour | Why it broke | Now |
+|---|---|---|
+| 8 rotations/hour cap | a long session hit the cap and rotation "stopped working" | **no cap** — only a 6 s de-dupe |
+| 45 s cooldown refusal | back-to-back walls were dropped | **6 s** debounce, never a quota |
+| give-up on a saturated burn list | every block comes back burned, guard wedges | oldest entries recycled; retries continue |
+
+Measured on this Mac after the fix: **8 consecutive rotations, 8 unique /64s,
+0 failures, 236 s.** No throttling, no refusal.
+
+---
+
+## The macOS-specific bugs this fixes
+
+### 1. Two or three launchd agents driving `warp-cli` at once
+
+The classic broken install has `ai.ocul.guard`, `com.ouc.guard`,
+`com.ouc.keeper` and a root `warp-keeper.sh` all on independent timers. They
+delete the same registration under each other, one lands the tunnel down
+mid-surgery, and the WARP API starts answering
+`Failed to communicate with the WARP API`. Symptom: rotation works sometimes,
+then not for hours, and your real IP leaks in the gap.
+
+`ouctl consolidate` (run by the installer) leaves exactly one rotator, one
+keeper, one HUD. `ouctl doctor` reports any duplicate that reappears.
+
+All rotators now also take **one shared flock**:
+`~/Library/Application Support/opencode-unlimited/rotate.global.lock`
+plus ocul's own lock and the mkdir lock the shell stack uses.
+
+### 2. The Zero Trust enrollment page
+
+The WARP window is a separate front-end from the root daemon. If it is open
+while the registration is deleted it paints *"Something went wrong. Please try
+again later."* / *"Enroll your device"*, and keeps it after the tunnel is
+healthy. The rotator now **quits the GUI before the surgery and relaunches it
+after**.
+
+### 3. The dead daemon
+
+`Unable to connect to the CloudflareWARP daemon: No such file or directory
+(os error 2)` — the socket vanishes while WARP.app updates. The rotator proves
+the daemon is alive (`warp-cli status`) and relaunches the app until the socket
+returns, **before** it touches anything. Both engines do this (`ocul.py` and the
+`ouc` fallback).
+
+### 4. A refusal disguised as a check
+
+`proxy-on` used to print
+`warp tunnel is down — refusing to open a lane that cannot route` when a launch
+raced a rotation. It now repairs the tunnel first and only fails if repair
+fails.
+
+### 5. The guard fighting the rotator
+
+The tunnel is *supposed* to be down for a few seconds mid-rotation. The guard
+used to see that gap and "repair" it, logging `tunnel down — reconnect` every
+hop. It now probes the shared lock first: while any rotator holds it,
+`heal_tunnel()` stands down. No more fake outages in `guard.log`.
+
+### 6. The stale lane kill switch
+
+`ocul proxy-off` writes `~/.local/state/ocu-lane/proxy.off`; while that file
+exists the guard will not spawn the lane — one `proxy-off` silently disables
+self-healing forever. The installer removes a stale marker.
+
+### 7. The HUD's hop button running the wrong engine
+
+The overlay's rotate button runs `zen-hop.sh`. That script used to `exec ouc hop`
+**first**, so every click ran the engine with no daemon revival and failed with
+`Unable to connect to the CloudflareWARP daemon` — the error you saw in the
+overlay console. Order is now:
+
+1. `ocul hop` — canonical (daemon revival, GUI parking, shared lock, unlimited)
+2. `ouc hop` — fallback, also hardened
+3. the local shell implementation
+
+`status.sh` and `doctor.sh` accept `ai.ocul.guard` and the root keeper daemon as
+healthy, so the HUD chips stop reporting the canonical stack as down.
+
+### 8. Disabled labels after an uninstall
+
+`launchctl disable` survives a reinstall, and `bootstrap` against a disabled
+label fails with `Input/output error`. The installer re-enables before loading.
+
+---
+
+## When is a rotation accepted?
+
+Only when all three hold:
+
+- the WARP daemon is alive,
+- the new **egress** /64 differs from the block we left,
+- it is not on the burned blacklist.
+
+Same or burned → rotate again (up to 14 tries per wall, 10 min budget,
+escalating backoff on API errors). If the whole pool comes back burned, the
+oldest blacklist entries are recycled — buckets reset roughly daily.
+
+---
+
+## What a hop does now (and what it never does)
+
+A hop is two passes, cheapest first.
+
+1. **rotate-keys.** `warp-cli tunnel rotate-keys` mints a new key pair on the
+   *same* registration. The edge hands back a different egress /64, the tunnel
+   never drops, and no registration is burned — and registration creation is the
+   one call Cloudflare throttles. This pass clears most walls and takes ~10 s.
+2. **burn.** Only when rotate-keys hands the same block back twice. One
+   `registration delete` + `new` per attempt, 14 per turn, 300 s budget, parked
+   and retried when the API throttles.
+
+Three rules the earlier engine got wrong:
+
+- **the window is a viewer, not part of the tunnel.** A rotate-keys hop never
+  closes it, so there is nothing to reopen and nothing to click afterwards. Only
+  a burn closes it — the registration is about to vanish, which is the one
+  moment it would paint *Awaiting external log in* — and it is reopened only
+  onto a `connected && registered` tunnel, with a retry and an `activate`.
+- **the utun leg is not an egress.** the address the WARP client holds
+  (`2606:4700:110:…`) is a state address, not an exit anyone sees. it is never
+  reported as a bucket, never burned, never credited — a measurement that fails
+  says *"last measured"*, and a rotation whose trace fails is **not** counted as
+  a move. both of those used to happen, and a burn could land on a block the
+  recycler had handed us because the utun leg had been burned into the list.
+- **a duplicate block is remembered.** `tried` holds every /64 seen this turn,
+  so a pinned bucket stops re-burning the device.
+- **every measurement is corroborated and budgeted.** the exit is asked for
+  twice over: Cloudflare's `cdn-cgi/trace` (the only source that also says
+  `warp=on`) and, when that is silent or says the traffic bypassed the tunnel, a
+  plain IPv6 echo from a different operator. readings are cached for 8s and
+  single-flighted, so a guard tick, a HUD `where` and a rotation share one probe;
+  the whole measurement has a 10s budget so a dead network costs a tick, not a
+  minute. two answers that disagree are `unstable` — retaken, never recorded.
+- **drift takes two samples.** a guard tick that reads a different /64 only
+  *arms* a confirmation; the next tick records it. nothing is measured while a
+  rotator holds the shared lock, because mid-hop the tunnel is between exits on
+  purpose and that reading is a coin flip. three confirmed moves in ten minutes
+  is a flapping tunnel, not a re-pin, and it gets healed.
+- **unmeasured is not a block.** If the traceroute cannot name an exit, the
+  answer is "not measured" — never the `2606:4700:110:…` utun leg, which is a
+  state address. That fallback once wrote the tunnel into the burn list and made
+  `ocul hop --where` report a bucket that was never an egress. `where` now says
+  `last measured` and the bookkeeping refuses any non-`2a09`/`2a06` block.
+- **a throttle is a deferral, not a failure.** `park_api()` stamps
+  `api_busy_until`; every rotator reads it. `ocul hop` exits 3 with the tunnel
+  untouched. A wall that lands while parked is stored as `pending_wall` and
+  retried when the park lifts.
+
+After a rotation lands, the chats the wall cut off get their message back:
+`opencode run --session <id> --auto continue`, one per chat, a few seconds after
+the new /64 is live, never more than once a minute per chat. Four fresh
+addresses in fifteen minutes with the wall still there means the quota is on the
+account, not the exit — rotation stops and logs it instead of spending the API.
+
+## One brain, three workers
+
+The guard used to be the only writer and everyone else re-derived the same
+facts: the HUD shelled `warp-cli` twice through `sudo`, called `launchctl print`
+four times and `curl`ed, per refresh; a `where` re-probed the exit; a second
+`hop` guessed at liveness. Five readers, five slightly different answers — which
+is how a hung guard once painted green.
+
+Now the guard publishes one document, `guard/brain.json`, and every other
+surface reads it.
+
+- `v`/`seq`/`beat` — schema, a counter that moves only when content changed,
+  and a heartbeat that moves on every write. `beat` is how a reader tells
+  "idle" from "wedged" by looking at one number instead of waiting for a stamp
+  to age. `seq` is how the HUD knows to repaint at all.
+- **the writer never blocks on the network.** wall detection is the job that
+  must not slip, so the probes live in a `sensor` thread inside the guard
+  (egress, DNS, edge latency, every 20s) and never run during a rotation. A
+  dead network costs the sensor nine seconds and costs the wall detector
+  nothing.
+- **the rotator is not a writer.** `ocul hop` runs in its own process and owns
+  the lock; it publishes `rotate.owner.json`, and the brain *reads* that. One
+  writer means no merged half-documents and no lock between processes.
+- **`advise()` is derived once.** The guard turns the document into a health
+  score and a list of advisories (`stale`, `tunnel-down`, `rotating`, `parked`,
+  `egress-unstable`, `proxy-down`, `dns`, `wall-pending`). The HUD's BRAIN chip
+  and `ocul brain` show the same verdict because they read the same field
+  instead of each deciding for itself.
+- **the fast path is a fallback, not a replacement.** `status.sh` reads the
+  brain when it is fresh and skips every subprocess; when it is missing or
+  older than 20s it runs the old probe path unchanged, so a stopped guard can
+  never leave the panel blank.
+
+```
+ocul brain            # health, advice, phase, exit — one read
+ocul brain --json     # the whole document
+```
+
+`brain.seq` also drives the panel: the HUD watches the file, and a rotation
+starting reaches it in about a third of a second instead of waiting for the
+two-second timer. With a live brain the shell probe runs at half rate, because
+it is insurance rather than the source.
+
+```
+ocul hop              # rotate now (cheap pass first)
+ocul hop --no-cheap   # skip straight to the burn
+ocul hop --where      # read-only: bucket, exit, device, blacklist. touches nothing
+ocul brain            # one read: health, advice, rotation phase, exit
+ocul hop --wait 8     # how long to wait for a peer rotation before deferring
+ocul resume           # push "continue" into the latest chat, by hand
+ocul resume ses_…     # …or into one specific chat
+```
+
+---
+
+## Commands
+
+```
+ouctl doctor        health check, shows duplicate rotators
+ouctl hop           rotate the /64 now (unlimited)
+ouctl fix           consolidate + revive daemon + heal tunnel
+ouctl consolidate   boot out duplicate agents, keep one rotator
+ouctl status        quick state
+ocul doctor         raw rotator diagnostics
+```
+
+---
+
+## Layout
+
+```
+mac/
+├── install-mac.sh      installer (clone → working stack)
+├── uninstall-mac.sh
+├── ocul.py             rotation engine + guard + lane
+├── ouctl               control CLI
+├── scripts/            zen-hop, status, doctor, keeper, mux, lane
+├── overlay/            HUD source — built with swiftc at install
+│   ├── main.swift
+│   ├── overlay.html
+│   └── build.sh
+└── plists/             launchd templates (__HOME__ substituted)
+```
+
+Templates, not fixed plists: nothing is hardcoded to one username, so the
+installer works on any Mac.

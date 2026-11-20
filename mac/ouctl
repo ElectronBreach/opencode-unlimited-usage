@@ -1,0 +1,173 @@
+#!/bin/bash
+# ouctl — one rotator, one keeper, one lock for the opencode-unlimited stack.
+#
+# The failure this exists to kill: two or three launchd agents (the ocul guard,
+# the python ouc guard, the ouc keeper) all driving warp-cli on their own
+# timers. They delete the same registration under each other, one lands the
+# tunnel down, the WARP API starts returning "Failed to communicate", and the
+# WARP window paints the Zero Trust enrollment page. Rotation then "does not
+# work" for hours and the home IP leaks in the gap.
+#
+# Canonical stack (the only one that may touch warp-cli):
+#   ai.ocul.guard                    — the rotator (ocul.py guard)
+#   com.opencode-unlimited.keeper    — warp-keeper.sh, root LaunchDaemon
+#   com.opencode-unlimited.overlay   — HUD, never touches warp-cli
+#
+# Everything else that rotates is a duplicate and gets booted out.
+set -u
+
+UID_N="$(id -u)"
+AG="$HOME/Library/LaunchAgents"
+DIS="$AG/disabled"
+OCUL="$HOME/.local/bin/ocul"
+OCUL_PY="$HOME/.local/share/ocu-lane/ocul.py"
+CANON_GUARD="ai.ocul.guard"
+ROOT_KEEPER_LABEL="com.opencode-unlimited.keeper"
+ROOT_KEEPER_PLIST="/Library/LaunchDaemons/com.opencode-unlimited.keeper.plist"
+
+# known duplicate labels and the process signatures they leave behind
+DUPES=("com.ouc.guard" "com.ouc.keeper" "com.opencode-unlimited.guard")
+DUPE_PROCS=(
+  "opencode-unlimited-mac/bin/ouc guard"
+  "opencode-unlimited-mac/bin/ouc keeper"
+)
+
+say(){ printf '%s\n' "$*"; }
+ok(){ printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn(){ printf '  \033[33m!\033[0m %s\n' "$*"; }
+bad(){ printf '  \033[31m✗\033[0m %s\n' "$*"; }
+
+is_loaded(){
+  launchctl print "gui/$UID_N/$1" >/dev/null 2>&1
+}
+
+bootout_label(){
+  local label="$1"
+  launchctl bootout "gui/$UID_N/$label" >/dev/null 2>&1 || true
+  launchctl disable "gui/$UID_N/$label" >/dev/null 2>&1 || true
+}
+
+retire_plist(){
+  local label="$1" f="$AG/$1.plist"
+  [ -f "$f" ] || return 0
+  mkdir -p "$DIS"
+  mv "$f" "$DIS/$label.plist.disabled" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------- consolidate
+cmd_consolidate(){
+  say "ouctl consolidate — leave exactly one rotator and one keeper"
+  mkdir -p "$AG"
+
+  # 1. boot out every known duplicate and park its plist
+  for label in "${DUPES[@]}"; do
+    if is_loaded "$label"; then
+      bootout_label "$label"
+      ok "booted out $label"
+    fi
+    retire_plist "$label"
+  done
+
+  # 2. any dupe plist still sitting in LaunchAgents (unloaded) gets parked too
+  for label in "${DUPES[@]}"; do
+    retire_plist "$label"
+  done
+
+  # 3. kill leftover duplicate processes launchd already orphaned
+  local pat
+  for pat in "${DUPE_PROCS[@]}"; do
+    if pkill -f "$pat" >/dev/null 2>&1; then
+      ok "killed stray process: $pat"
+    fi
+  done
+
+  # 4. make sure the canonical rotator is installed and loaded
+  if [ -f "$AG/$CANON_GUARD.plist" ]; then
+    if is_loaded "$CANON_GUARD"; then
+      # restart so the patched ocul.py is what is actually running
+      launchctl kickstart -k "gui/$UID_N/$CANON_GUARD" >/dev/null 2>&1 \
+        && ok "restarted $CANON_GUARD (loaded the hardened rotator)" \
+        || warn "could not restart $CANON_GUARD"
+    else
+      launchctl enable "gui/$UID_N/$CANON_GUARD" >/dev/null 2>&1 || true
+      launchctl bootstrap "gui/$UID_N" "$AG/$CANON_GUARD.plist" >/dev/null 2>&1 \
+        && ok "loaded $CANON_GUARD" \
+        || bad "could not load $CANON_GUARD — run: launchctl bootstrap gui/$UID_N $AG/$CANON_GUARD.plist"
+    fi
+  else
+    warn "no $CANON_GUARD.plist — run: ocul install"
+  fi
+
+  # 5. root keeper daemon: report, do not silently sudo
+  if launchctl print "system/$ROOT_KEEPER_LABEL" >/dev/null 2>&1; then
+    ok "keeper running: system/$ROOT_KEEPER_LABEL"
+  elif [ -f "$ROOT_KEEPER_PLIST" ]; then
+    warn "keeper daemon not loaded — one-time: sudo launchctl bootstrap system $ROOT_KEEPER_PLIST"
+  else
+    warn "keeper daemon plist missing — run the installer"
+  fi
+
+  # 6. overlay is allowed; never touch warp-cli
+  if is_loaded "com.opencode-unlimited.overlay"; then
+    ok "overlay HUD running"
+  fi
+
+  say ""
+  cmd_doctor
+}
+
+# ---------------------------------------------------------------- fix
+cmd_fix(){
+  say "ouctl fix — consolidate, revive the daemon, heal the tunnel"
+  cmd_consolidate >/dev/null 2>&1 || true
+  # revive a dead WARP daemon (the 'No such file or directory' outage)
+  "$OCUL" doctor >/dev/null 2>&1
+  # heal_tunnel is invoked by proxy-on, but run it directly through a hop guard
+  "$OCUL" status >/dev/null 2>&1 || true
+  say ""
+  say "state now:"
+  cmd_doctor
+}
+
+# ---------------------------------------------------------------- passthroughs
+cmd_doctor(){ exec "$OCUL" doctor "$@"; }
+cmd_hop(){ exec "$OCUL" hop "$@"; }
+cmd_status(){ exec "$OCUL" status "$@"; }
+
+# ---------------------------------------------------------------- uninstall
+cmd_uninstall(){
+  say "ouctl uninstall — remove the rotator, keep WARP itself"
+  bootout_label "$CANON_GUARD"
+  retire_plist "$CANON_GUARD"
+  rm -f "$HOME/.local/bin/ocul" 2>/dev/null || true
+  ok "ocul guard removed (ocul.py left in place at $OCUL_PY)"
+}
+
+usage(){
+  cat <<EOF
+ouctl — opencode-unlimited mac control
+
+  ouctl consolidate   leave exactly one rotator + one keeper (fixes the race)
+  ouctl fix           consolidate + revive the WARP daemon + heal the tunnel
+  ouctl doctor        full health check (shows duplicate rotators)
+  ouctl hop           rotate the WARP /64 now
+  ouctl status        quick state
+  ouctl uninstall     remove the rotator
+
+canonical agents:
+  ai.ocul.guard                    rotator
+  system/$ROOT_KEEPER_LABEL        keeper (root)
+  com.opencode-unlimited.overlay   HUD
+EOF
+}
+
+case "${1:-}" in
+  consolidate) shift; cmd_consolidate "$@" ;;
+  fix)         shift; cmd_fix "$@" ;;
+  doctor)      shift; cmd_doctor "$@" ;;
+  hop|rotate)  shift; cmd_hop "$@" ;;
+  status)      shift; cmd_status "$@" ;;
+  uninstall)   shift; cmd_uninstall "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) bad "unknown command: $1"; usage; exit 2 ;;
+esac
