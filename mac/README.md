@@ -171,6 +171,11 @@ Three rules the earlier engine got wrong:
   recycler had handed us because the utun leg had been burned into the list.
 - **a duplicate block is remembered.** `tried` holds every /64 seen this turn,
   so a pinned bucket stops re-burning the device.
+- **unmeasured is not a block.** If the traceroute cannot name an exit, the
+  answer is "not measured" — never the `2606:4700:110:…` utun leg, which is a
+  state address. That fallback once wrote the tunnel into the burn list and made
+  `ocul hop --where` report a bucket that was never an egress. `where` now says
+  `last measured` and the bookkeeping refuses any non-`2a09`/`2a06` block.
 - **a throttle is a deferral, not a failure.** `park_api()` stamps
   `api_busy_until`; every rotator reads it. `ocul hop` exits 3 with the tunnel
   untouched. A wall that lands while parked is stored as `pending_wall` and
