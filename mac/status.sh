@@ -393,7 +393,11 @@ out["identity"] = {
     # already been walled on this one", which is what the HUD has to show.
     "bucket": prefix,
     "burnt": bool(prefix and prefix in known),
-    "v4": (new.get("current_v4") or env("OUC_IP") or ""),
+    # a v4 only goes in this field if it is actually a v4. `OUC_IP` is the
+    # egress the brain measured, and measure_egress only ever accepts an
+    # address with a colon — so falling back to it put a v6 under a v4 label.
+    "v4": (lambda v: v if ("." in v and ":" not in v) else "")(
+        new.get("current_v4") or ""),
     "since": int(max(0, now - last_hop)) if last_hop else -1,
     # a hop stamp in the future is a park, not a rotation. the panel shows the
     # countdown instead of lying "0s ago" while rotation is deliberately held.

@@ -617,7 +617,7 @@ body.collapsed #bubble{display:grid}
 
     <div class="pane on" data-pane="id">
       <section class="grid">
-        <div class="card cy"><b id="egress">—</b><span>EGRESS · v4</span></div>
+        <div class="card cy"><b id="egress">—</b><span id="egressFam">EGRESS</span></div>
         <div class="card vi"><b id="prefix">—</b><span>QUOTA /64</span></div>
         <div class="card"><b id="hops">0</b><span>ROTATIONS</span></div>
         <div class="card"><b id="device">—</b><span>DEVICE</span></div>
@@ -924,12 +924,27 @@ function render(d){
   $("barHit").style.width = Math.max(1.5, wHit) + "%";
 
   $("egress").textContent = d.egress4 || "—";
+  // the tile was labelled "v4" while it carried the v6 egress: measure_egress
+  // only ever accepts an address with a colon, so the field is v6 by
+  // construction. name the family the value actually is instead of the one the
+  // label wished for.
+  const eg = d.egress4 || "";
+  $("egressFam").textContent = eg.indexOf(":") >= 0 ? "EGRESS · v6"
+    : eg.indexOf(".") >= 0 ? "EGRESS · v4" : "EGRESS";
   // the v4 tile is a cached probe, not a live socket. if the last probe failed
   // say so in the tooltip instead of letting a stale address pass as current.
   const pr = d.probe || {};
-  $("egress").title = (typeof pr.age === "number" && pr.age >= 0)
+  const v4 = (id.v4 || "");
+  $("egress").title = ((typeof pr.age === "number" && pr.age >= 0)
     ? ("measured " + age(pr.age) + (pr.ok ? " · probe ok" : " · last probe failed — showing the last known exit"))
-    : "no probe has completed yet";
+    : "no probe has completed yet")
+    // the two families are different questions. the /64 tile beside this one is
+    // the quota bucket, and it equals this address on purpose — the v6 exit
+    // lives inside it. the v4 is a separate reading, and unmeasured is a fact.
+    + (eg.indexOf(":") >= 0
+        ? (" · this is the v6 exit; its /64 is the quota bucket beside it"
+           + (v4 ? " · last known v4 " + v4 : " · v4 not measured"))
+        : "");
   $("prefix").textContent = id.prefix || "—";
   $("hops").textContent = id.hops || 0;
 
