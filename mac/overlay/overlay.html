@@ -698,7 +698,7 @@ body.collapsed #bubble{display:grid}
   <div class="sheet-status" id="pxStat">mux down · no upstreams</div>
 
   <div class="sbody on" data-body="proxy">
-    <div class="px-list" id="pxList"><div class="px-empty">pool is empty — paste a proxy below</div></div>
+    <div class="px-list" id="pxList"><div class="px-empty">reading the pool…</div></div>
     <div class="px-add">
       <input id="pxInput" placeholder="host:port:user:pass" autocomplete="off" spellcheck="false">
       <button class="act mini" id="btnPxAdd">ADD</button>
@@ -743,7 +743,7 @@ body.collapsed #bubble{display:grid}
     </div>
   </div>
 
-  <div class="sheet-foot" id="pxFoot">client → 127.0.0.1:8899 · rotation behind a fixed address</div>
+  <div class="sheet-foot" id="pxFoot">client → the mux listen address · rotation behind a fixed address</div>
 </div>
 
 </div>
@@ -940,12 +940,23 @@ function render(d){
   if (chip) {
     // three states, not two: the mux can be listening with an empty pool, and
     // that fails closed — calling it "off" hid that its requests never land.
+    // a one-exit mux owned by ocul is the tunnel itself, so "1/1" is true but
+    // mute; the pool file being absent is not the same fact as an empty pool.
     const pxPool = px.pool || 0, pxHi = px.healthy || 0;
-    chip.textContent = !px.up ? "off" : (pxPool === 0 ? "empty" : pxHi + "/" + pxPool);
-    chip.className = !px.up ? "" : (pxHi > 0 ? "up" : "warn");
-    $("pxChip").title = (px.up && pxPool > 0)
-      ? "proxy mux up · " + (px.current || "—") + " · click to manage"
-      : "proxy pool " + (px.pool || 0) + " · click to manage";
+    const pxWarpOnly = px.up && pxPool === 1 && px.source !== "static";
+    chip.textContent = !px.up ? "off"
+      : (px.stale ? "stale"
+      : (pxPool === 0 ? "empty" : (pxWarpOnly ? "warp" : pxHi + "/" + pxPool)));
+    chip.className = !px.up ? "" : (pxHi > 0 && !px.stale ? "up" : "warn");
+    $("pxChip").title = !px.up
+      ? "proxy mux down · click to manage"
+      : (px.stale
+          ? "proxy mux process alive but its state is " + (px.age || "?") + "s old — not publishing · click to manage"
+      : (pxPool === 0
+          ? "proxy mux up, no exits configured — every request fails closed · click to manage"
+          : "proxy mux up · " + (pxWarpOnly ? "one upstream: the tunnel"
+              : pxHi + "/" + pxPool + " exits from " + (px.source || "?"))
+            + " · " + (px.current || "—") + " · click to manage"));
     if (sheet && sheet.classList.contains("on")) renderSheet();
   }
   // the identity tab carries a dot when the current bucket is one we have
@@ -1426,16 +1437,21 @@ function renderSheet(){
   const p = window._px || {};
   $("pxHead").textContent = p.up ? "up" : "down";
   $("pxHead").classList.toggle("up", !!p.up);
-  // the status line belongs to the visible page — a proxy poll landing while
-  // the models page is open must not repaint it with proxy text.
+  // a mux with no pool file relays through the tunnel. that is a working
+  // lane, not an empty one — "0 upstreams in the pool" on a live mux served
+  // the same lie as a blank panel.
+  const pxRelay = p.up
+    ? ((p.static || 0) > 0 ? (p.static + " static") : "tunnel")
+    : "—";
   if (sheetTab() === "proxy") $("pxStat").innerHTML = (p.up
-      ? "mux up · <b>" + (p.current || "—") + "</b> · " + (p.rotations || 0) + " rotations · " + (p.served || 0) + " served"
-      : "mux down · " + (p.pool || 0) + " upstreams in the pool")
+      ? (p.stale
+          ? "mux process alive · its state is " + (p.age || "?") + "s old — not publishing"
+          : "mux up · <b>" + (p.current || "—") + "</b> · relay " + pxRelay
+            + " · " + (p.rotations || 0) + " rotations · " + (p.served || 0) + " served")
+      : "mux down · no exits in service")
     + " · system " + (p.system ? "<b>on</b>" : "off")
     // the mux rotating is not the same as the CLI using it: the service is
     // long-lived and inherits env at spawn, so say it out loud.
-    // the service inherits env from the CLI process. killing the service only
-    // helps if the CLI itself carries the proxy env, so say the true thing.
     + (p.up && p.cli === 2 ? ' · <b class="pxfix" title="this opencode was started before the proxy — exit it and run opencode again; the lane and the shim keep every new session proxied">restart opencode</b>' : "");
   $("pxStat").onclick = (e) => {
     if (!e.target.classList.contains("pxfix")) return;
@@ -1450,7 +1466,24 @@ function renderSheet(){
   if (!pxSeen) return;
   const list = $("pxList");
   if (!pxRows.length) {
-    list.innerHTML = '<div class="px-empty">pool is empty — paste a proxy below</div>';
+    // "pool is empty" read as "something broke". nothing is missing: the mux
+    // forwards through the tunnel by itself, and pasting an upstream adds a
+    // second egress rather than repairing the first.
+    const box = document.createElement("div");
+    box.className = "px-empty";
+    box.textContent = p.up
+      ? "no upstreams configured — the mux is on the tunnel itself"
+      : "mux is down and no upstreams configured — paste a proxy below";
+    list.innerHTML = "";
+    list.appendChild(box);
+    if (p.up && p.current) {
+      const cur = document.createElement("div");
+      cur.className = "px-hint";
+      cur.textContent = "current exit " + p.current + " · " + (p.served || 0)
+        + " served · " + (p.rotations || 0) + " rotations"
+        + " · paste an upstream below to add a second egress";
+      list.appendChild(cur);
+    }
     return;
   }
   list.innerHTML = "";
@@ -1526,7 +1559,10 @@ $("btnPxPol").addEventListener("click", () => {
     ? "new sessions pick up the switch"
     : want === "prov"
       ? "models already in opencode.json — one tap, no free-tier wall"
-      : "client → 127.0.0.1:8899 · rotation behind a fixed address";
+      // the mux listens somewhere, and it is not always 8899: ocul picks the
+      // port and writes it in the state file. a footer with a stale literal
+      // sends you to a socket nothing is on.
+      : "client → " + ((window._px || {}).listen || "the mux") + " · rotation behind a fixed address";
   if (want === "models") { renderModelStat(); bridge("modelList"); }
   else if (want === "prov") { renderProvStat(); bridge("providerList"); }
   else renderSheet();
