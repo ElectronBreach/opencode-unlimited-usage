@@ -729,19 +729,22 @@ def _gui_running():
     return rc == 0
 
 
-def pause_gui():
-    """Close the WARP window once, gracefully, before the surgery.
+def pause_gui(need_outage=False):
+    """Close the WARP window only when the registration is about to be deleted.
 
-    Leaving it open was the other half of the stuck dialog: the window survives
-    the registration delete, its IPC drops to missingRegistration(), and it
-    paints "Awaiting external log in" with a browser hand-off that the surgery
-    already invalidated. It never recovers on its own.
+    A rotate-keys rotation never drops the tunnel: the daemon mints a new key
+    pair on the same registration and the edge hands back a different /64. The
+    window stays open, stays connected, and there is nothing to reopen and
+    nothing to click — which is the fix for "after a rotation I have to open
+    WARP by hand".
 
-    A single graceful quit is not the pkill watchdog that caused the earlier
-    regression — nothing holds it down, nothing resurrects it, and the window
-    is only a viewer for a daemon that keeps the tunnel. Returns whether it was
-    up, so the caller can report honestly (and deliberately not reopen it).
+    A device burn is the other case: the registration is deleted, so the window
+    would sit on a browser hand-off that no longer exists and paint
+    "Awaiting external log in". There it is closed once, gracefully, and put
+    back by resume_gui() after the tunnel is healthy again.
     """
+    if not need_outage:
+        return False
     was_up = _gui_running()
     if was_up:
         quit_warp_gui()
@@ -811,31 +814,53 @@ def heal_login(force=False):
 
 
 def resume_gui(was_up):
-    """Put the window back, but only onto a tunnel that already works.
+    """Put the window back on a tunnel that already works, and prove it opened.
 
-    Order matters and that is the whole fix. Launching WARP.app while the
-    registration is missing paints "Awaiting external log in"; launching it
-    after the tunnel is up simply shows a connected client. So: reopen when
-    warp-cli says connected AND a registration exists, once, no watchdog, no
-    loop — after every rotation, not just when it happened to be open before.
-    If either check fails the window stays closed: the tunnel does not need it,
-    and a closed window beats a dead dialog.
+    Order is the whole fix. Launching WARP.app while the registration is
+    missing paints "Awaiting external log in"; launching it after the tunnel is
+    up simply shows a connected client. Two things the first version got wrong,
+    and both of them ended with the user clicking the dock icon by hand:
+
+    - `open -a` is not a guarantee. If the previous front-end is still
+      terminating, LaunchServices hands the request to the dying instance and
+      no window appears; if the app is alive with its window closed, only a
+      reopen event brings the window back. So it retries, and it checks that a
+      process exists afterwards instead of trusting the exit code.
+    - a window behind other apps is the same as a window that is not there for
+      anyone who is not looking for it. `activate` brings it forward.
+
+    Runs only when the window was actually closed by pause_gui(); a rotate-keys
+    rotation never closes it, which is why most rotations need no click at all.
     """
-    if _gui_running():
+    if not was_up:
         return False
-    for _ in range(10):
-        if warp_connected() and registered():
+    # the tunnel first: a window on a dead registration is worse than none
+    for _ in range(12):
+        if warp_connected() and iface_v6(force=True):
             break
-        time.sleep(1.5)
+        time.sleep(2.5)
     else:
-        return False
-    rc, _, err = run(["open", "-a", WARP_APP], timeout=15)
-    if rc == 0:
-        log_throttled(GUARD_LOG, "gui-reopen",
-                      "WARP window reopened on a healthy tunnel", every=120)
-        return True
+        log_throttled(GUARD_LOG, "gui-reopen-late",
+                      "WARP window: tunnel not up yet — reopening anyway, once",
+                      every=300)
+    if _gui_running():
+        log_throttled(GUARD_LOG, "gui-already-up",
+                      "WARP window was still up after the burn — raising it", every=300)
+    for try_no in range(1, 4):
+        rc, _, err = run(["open", "-a", WARP_APP], timeout=15)
+        if rc == 0:
+            for _ in range(16):
+                if _gui_running():
+                    run(["osascript", "-e",
+                         'tell application "Cloudflare WARP" to activate'], timeout=10)
+                    log_throttled(GUARD_LOG, "gui-reopen",
+                                  f"WARP window reopened (try {try_no})", every=60)
+                    return True
+                time.sleep(0.5)
+        time.sleep(1.5 + try_no)
     log_throttled(GUARD_LOG, "gui-reopen-fail",
-                  f"WARP window would not reopen: {err[:80]}", every=600)
+                  f"WARP window would not reopen: {(err or 'no process')[:80]}",
+                  every=600)
     return False
 
 
@@ -944,7 +969,9 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
         GUI_HOLD.unlink()
     except OSError:
         pass
-    gui_was_up = pause_gui()
+    # the window is only in danger once the registration is deleted, so the
+    # cheap pass never touches it. gui_was_up is decided at burn time.
+    gui_was_up = False
     gui_hold = hold_gui_down()
     try:
         if not ensure_daemon():
@@ -1081,6 +1108,12 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True):
             if time.time() - started > 300:
                 last_err = last_err or "rotation ran past its time budget"
                 break
+            if not gui_was_up:
+                # first burn of this turn: the registration is about to vanish,
+                # which is the one moment that leaves the page stuck on the
+                # login dialog. one graceful quit, reopened only onto a tunnel
+                # that already works.
+                gui_was_up = pause_gui(need_outage=True)
             say(f"-- rotation attempt {attempt}/{attempts} --")
 
             ok, msg = drop_registration()
@@ -2107,6 +2140,8 @@ def on_wall(session_ids=None):
     notify("opencode wall", "rotating WARP /64…")
     try:
         moved, before, after = rotate(verbose=False)
+        st.pop("pending_wall", None)
+        jsave(GUARD_STATE, st)
         log(GUARD_LOG, f"wall rotated {before} -> {after} moved={moved}")
         # the rotation was never the point on its own: the turn is dead and the
         # user had to retype. put the message back into every chat it cut off.
@@ -2119,8 +2154,21 @@ def on_wall(session_ids=None):
         log_throttled(GUARD_LOG, "busy", "wall: rotation already in progress", every=60)
     except Exception as exc:
         if "throttling" in str(exc):
-            log_throttled(GUARD_LOG, "wall-throttle",
-                          f"wall: {exc}", every=120)
+            # The wall is real and the chats it cut off are still dead. Parking
+            # the API does not cancel the wall, so remember it and come back the
+            # moment the park lifts — otherwise one throttled minute becomes a
+            # dead chat until the user notices.
+            st2 = jload(GUARD_STATE, {})
+            prev = st2.get("pending_wall") or {}
+            st2["pending_wall"] = {
+                "ts": int(prev.get("ts") or t),
+                "sessions": sorted(set((prev.get("sessions") or []) +
+                                       [x for x in (session_ids or []) if x])),
+                "tries": int(prev.get("tries") or 0) + 1,
+                "next_try": int(t) + 15,
+            }
+            jsave(GUARD_STATE, st2)
+            log_throttled(GUARD_LOG, "wall-throttle", f"wall: {exc}", every=120)
             return
         log(GUARD_LOG, f"wall rotation failed: {exc}")
         notify("ocul", "rotation failed — see ocul logs")
@@ -2325,6 +2373,15 @@ def cmd_guard(args):
                 # one write per change, not one write per tick: 14k small writes a
                 # day on the same values is how guard.json ends up half-flushed
                 save_if_changed(GUARD_STATE, st)
+
+                pend = jload(GUARD_STATE, {}).get("pending_wall") or {}
+                if pend and api_park_left() <= 0 \
+                        and now() >= int(pend.get("next_try") or 0) \
+                        and now() - int(pend.get("ts") or 0) < 1800:
+                    log(GUARD_LOG,
+                        f"pending wall retry ({now() - int(pend.get('ts') or 0)}s old, "
+                        f"{pend.get('tries') or 0} parked tries)")
+                    on_wall(pend.get("sessions") or [])
 
                 if ticks % 5 == 0:
                     heal_tunnel()
