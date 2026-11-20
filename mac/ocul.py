@@ -2130,6 +2130,16 @@ def on_wall(session_ids=None):
     if t - st.get("last_hop", 0) < HOP_COOLDOWN:
         log_throttled(GUARD_LOG, "cooldown", "wall inside cooldown — not rotating", every=HOP_COOLDOWN)
         return
+    wall_sids = [x for x in (session_ids or []) if x]
+    if wall_sids and all(_resume_burst(x) >= 4 for x in wall_sids):
+        # this chat already got four new addresses in a quarter hour and the
+        # wall is still there: the quota is on the account, not the exit. A
+        # rotation now buys nothing and costs API headroom for the walls that
+        # are address-shaped. Self-clearing, so "infinite" is never turned off.
+        log_throttled(GUARD_LOG, "account-wall",
+                      "wall survived 4 fresh /64s — account-side limit, not rotating",
+                      every=600)
+        return
     # No hourly cap. A wall is the whole reason this process exists; refusing to
     # rotate because "too many hops this hour" is the bug that made the stack
     # feel broken after a long session. The burn list and the egress check keep
@@ -2219,6 +2229,29 @@ def _resume_recent(sid):
     return time.time() - float(st.get(sid, 0) or 0) < 60
 
 
+RESUME_COUNT = STATE / "resume.count.json"
+
+
+def _resume_burst(sid, window=900):
+    """How many times this chat has been resumed in the last `window` seconds."""
+    st = jload(RESUME_COUNT, {}) or {}
+    cutoff = time.time() - window
+    return len([t for t in (st.get(sid) or []) if t > cutoff])
+
+
+def _resume_bump(sid):
+    st = jload(RESUME_COUNT, {}) or {}
+    cutoff = time.time() - 86400
+    for k in list(st):
+        st[k] = [t for t in st[k] if t > cutoff]
+        if not st[k]:
+            st.pop(k, None)
+    st.setdefault(sid, []).append(int(time.time()))
+    if len(st) > 200:
+        st = dict(sorted(st.items(), key=lambda kv: kv[1][-1])[-100:])
+    jsave(RESUME_COUNT, st)
+
+
 def _resume_stamp(sid):
     st = jload(RESUME_STATE, {}) or {}
     st[sid] = int(time.time())
@@ -2273,6 +2306,14 @@ def dispatch_resume(session_ids):
     for sid in list(dict.fromkeys(s for s in (session_ids or []) if s)) or [""]:
         if sid and _resume_recent(sid):
             continue
+        if sid and _resume_burst(sid) >= 4:
+            # four fresh addresses in fifteen minutes and the chat still hit the
+            # wall. That limit is following the account, not the exit, so more
+            # rotation only spends the WARP API for nothing. It clears itself.
+            log_throttled(GUARD_LOG, "resume-cap",
+                          f"{sid[:14]}… hit the wall on 4 fresh /64s in 15m — "
+                          f"holding resumes for this chat", every=900)
+            continue
         argv = [oc, "run"]
         argv += ["--session", sid] if sid else ["--continue"]
         if os.environ.get("OCUL_RESUME_AUTO", "1") == "1":
@@ -2284,6 +2325,8 @@ def dispatch_resume(session_ids):
         try:
             ensure_dirs()
             _resume_stamp(sid or "-")
+            if sid:
+                _resume_bump(sid)
             delay = float(os.environ.get("OCUL_RESUME_DELAY", "4") or 0)
             _spawn_resume(argv, delay)
             sent += 1
