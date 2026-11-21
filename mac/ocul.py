@@ -965,6 +965,25 @@ def activate_gui():
         timeout=10)
 
 
+def reopen_gui():
+    """Ask the running agent for a window. The move that actually paints one.
+
+    Measured on this box, on an agent that is alive with zero windows:
+
+        open -a          → window at t+2s, gone by t+6s   (sometimes nothing)
+        activate         → no window at all
+        set frontmost    → no window at all
+        tell … to reopen → window at t+4s, and it holds while the app has focus
+
+    The panel hides again when WARP loses focus. That is the app's own
+    behaviour, not something a rotator can talk it out of — but `reopen` is the
+    event that reliably puts a window back on screen, so it is the one used.
+    """
+    rc, _, _ = run(["osascript", "-e", 'tell application "Cloudflare WARP" to reopen'],
+                   timeout=10)
+    return rc == 0
+
+
 def pause_gui(need_outage=False):
     """Close the WARP window only when the registration is about to be deleted.
 
@@ -1102,8 +1121,11 @@ def ensure_gui_window(hold=0):
 
     n = 0
     for attempt in range(1, 3):
+        # reopen first: it is the event that paints a window on a live agent.
+        # activate is a raise, and on this app it is not enough on its own.
+        reopen_gui()
         activate_gui()
-        deadline = time.time() + 4
+        deadline = time.time() + 5
         while time.time() < deadline:
             time.sleep(0.5)
             n = gui_windows()
@@ -1201,8 +1223,11 @@ def resume_gui(want):
         try:
             subprocess.Popen(
                 ["/bin/sh", "-c",
-                 'for i in 1 2 3 4; do sleep 4; '
-                 'open -a "/Applications/Cloudflare WARP.app" >/dev/null 2>&1; done'],
+                 'for i in 1 2 3 4 5 6 7 8 9 10; do sleep 5; '
+                 'n=$(osascript -e \'tell application "System Events" to count '
+                 'windows of process "Cloudflare WARP"\' 2>/dev/null || echo 1); '
+                 '[ "$n" = "0" ] && osascript -e \'tell application '
+                 '"Cloudflare WARP" to reopen\' >/dev/null 2>&1; done'],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError:
