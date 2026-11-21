@@ -1419,6 +1419,16 @@ function paintHop(){
   if (!hop) return;
   const rot = (S && S.rotation) || {};
   const locked = !!rot.active;
+  // A latch that outlives the work is worse than no latch: the button says
+  // ROTATING while the engine is idle, and the only way out is a reload. The
+  // engine publishes `rotation.active` every tick, so if that has been false
+  // for 25s while this panel still thinks a hop is in flight, the answer never
+  // arrived — release it and say so in the log instead of holding the user.
+  if (window._hopping && !locked && window._hopStart && Date.now() - window._hopStart > 25000) {
+    window._hopping = false;
+    window._hopStart = 0;
+    try { push("log", { line: "… hop answer never arrived — button released" }); } catch (e) {}
+  }
   const mine = !!window._hopping;
   const busy = mine || locked;
   // nothing about this is decoration: a disabled HOP that looks enabled is
@@ -1444,6 +1454,7 @@ function setBusy(cmd, on, code){
   $("bubble").classList.toggle("busy", on);
   if (cmd === "hop") {
     window._hopping = !!on;
+    if (!on) window._hopStart = 0;
     if (on) { clearTimeout(window._hopAck); }
     // a failed hop must not look like a finished one. the log panel carries the
     // reason; this makes sure the user knows to look at it.
@@ -1601,6 +1612,7 @@ hopBtn.addEventListener("click", () => {
   // "busy — hop is running" toast and nothing else. one click, one hop.
   if (hopBtn.disabled || window._hopping) { toast("a rotation is already running"); return; }
   window._hopping = true;
+  window._hopStart = Date.now();
   paintHop();
   bridge("hop");
   // the native side always answers a hop with a busy event — except when it

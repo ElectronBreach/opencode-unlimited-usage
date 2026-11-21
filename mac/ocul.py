@@ -3043,15 +3043,29 @@ def sensor_tick(force=False):
     return data
 
 
+_SENSOR_BEAT = [0.0, 0]     # [monotonic of last completed sweep, count]
+_SENSOR_LIVE = [None]       # the thread object, so a dead one can be replaced
+_SENSOR_RESTARTED = [0.0]   # last time the watchdog replaced it
+
+
 def sensor_loop():
     """The slow loop. Owns every network probe so the guard tick never blocks."""
     time.sleep(3)
     while True:
         try:
             sensor_tick()
+            _SENSOR_BEAT[0] = time.monotonic()
+            _SENSOR_BEAT[1] += 1
         except Exception as exc:
             log_throttled(GUARD_LOG, "sensor", f"sensor error: {exc!r}", every=300)
         time.sleep(SENSOR_EVERY)
+
+
+def start_sensor():
+    t = threading.Thread(target=sensor_loop, name="sensor", daemon=True)
+    _SENSOR_LIVE[0] = t
+    t.start()
+    return t
 
 
 def cmd_brain(args=None):
@@ -3509,6 +3523,47 @@ def matched_walls(chunk):
     return out
 
 
+_LAST_TICK = [0.0]          # monotonic of the guard's last completed tick
+
+
+def _watchdog(tick_timeout, sensor_timeout):
+    """The guard's own supervisor, in-process.
+
+    launchd restarts a *dead* process. It cannot see a live one that stopped
+    working: a warp-cli call that never returns, an osascript dialog waiting on
+    a click, a probe stuck on a socket. Before this, that state looked exactly
+    like health — pid alive, nothing in any log, brain stale, HUD painting the
+    last thing it saw. The watchdog turns a hang into a restart, which is the
+    only state the rest of the stack already knows how to heal.
+    """
+    time.sleep(30)
+    while True:
+        try:
+            idle = time.monotonic() - (_LAST_TICK[0] or time.monotonic())
+            if idle > tick_timeout:
+                log(GUARD_LOG,
+                    f"guard tick silent for {idle:.0f}s (limit {tick_timeout}s) — "
+                    f"exiting so launchd restarts a working process")
+                os._exit(1)
+            beat = time.monotonic() - (_SENSOR_BEAT[0] or time.monotonic())
+            cur = _SENSOR_LIVE[0]
+            if cur is not None and not cur.is_alive():
+                log(GUARD_LOG, "sensor thread died — restarting it")
+                start_sensor()
+            elif _SENSOR_BEAT[0] and beat > sensor_timeout:
+                # alive but wedged. Restarting it, but never more than once a
+                # minute: the old thread may be sitting inside the same broken
+                # probe, and three sensors hammering a dead socket is a worse
+                # state than one that is merely late.
+                if time.monotonic() - _SENSOR_RESTARTED[0] > 60:
+                    _SENSOR_RESTARTED[0] = time.monotonic()
+                    log(GUARD_LOG, f"sensor silent for {beat:.0f}s — restarting it")
+                    start_sensor()
+        except Exception as exc:
+            log_throttled(GUARD_LOG, "watchdog", f"watchdog error: {exc!r}", every=300)
+        time.sleep(10)
+
+
 def _guard_signalled(signum, frame):
     """Say who ended the guard before it ends.
 
@@ -3596,7 +3651,11 @@ def cmd_guard(args):
         # the sensor owns every network probe. a separate thread on purpose: a
         # dead network can cost the sensor nine seconds and the wall detector
         # will not notice, because it never asked the network anything.
-        threading.Thread(target=sensor_loop, name="sensor", daemon=True).start()
+        start_sensor()
+        _LAST_TICK[0] = time.monotonic()
+        threading.Thread(target=_watchdog,
+                         args=(max(90, TICK * 15), max(120, SENSOR_EVERY * 6)),
+                         name="watchdog", daemon=True).start()
 
         # A SIGKILL leaves no line in any log. It does leave a heartbeat.
         # Recording one per tick and reading it at start means the next
@@ -3666,6 +3725,7 @@ def cmd_guard(args):
                 brain_publish(health=h, reason="tick")
             except Exception as exc:
                 log(GUARD_LOG, f"tick error: {exc!r}")
+            _LAST_TICK[0] = time.monotonic()
             try:
                 jsave(GUARD_BEAT, {"pid": os.getpid(), "ts": now(),
                                    "started": beat_started, "tick": ticks})
@@ -4427,6 +4487,14 @@ def cmd_doctor(args):
         warn(f"proxy: down — ocul lane spawns it")
     pid = guard_pid()
     (ok if pid else warn)(f"guard: {('pid %s' % pid) if pid else 'not running — ocul install'}")
+    guard_beat = jload(GUARD_BEAT, {})
+    if guard_beat.get("ts"):
+        age = now() - int(guard_beat["ts"])
+        lived = int(guard_beat["ts"]) - int(guard_beat.get("started") or guard_beat["ts"])
+        (ok if age <= 30 else warn)(
+            f"guard heartbeat: {age}s old, up {lived}s, tick {guard_beat.get('tick')}"
+            + ("" if age <= 30 else " — a guard that stops beating is hung, not idle")
+        )
 
     # more than one rotator is the root cause of the race that leaves the tunnel
     # down and paints the enrollment page. surface it loudly, never silently.
@@ -4439,6 +4507,17 @@ def cmd_doctor(args):
         print("      fix: run `ouctl consolidate` (removes the duplicates)")
     else:
         ok(f"warp agents: {len(live)} ({', '.join(l for l, _ in live) or 'none'})")
+    # the keeper is the thing that restores a dead tunnel and a dead window. it
+    # runs as a shell loop, so nothing but its own heartbeat can prove it is
+    # still moving; its launchd job only proves a process exists.
+    keeper = jload(OVERLAY_GUARD / "keeper-beat.json", {})
+    if keeper.get("ts"):
+        kage = now() - int(keeper["ts"])
+        (ok if kage <= 150 else warn)(
+            f"keeper heartbeat: {kage}s old, tick {keeper.get('tick')}, "
+            f"probe {'ok' if keeper.get('probe_ok') else 'failing'}"
+            + ("" if kage <= 150 else " — keeper is alive but not ticking")
+        )
     (ok if OPENCODE_LOG.exists() else warn)(
         f"opencode log: {OPENCODE_LOG if OPENCODE_LOG.exists() else 'missing'}"
     )
@@ -4468,7 +4547,12 @@ PLIST = """<?xml version="1.0" encoding="UTF-8"?>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>20</integer>
+  <!-- ten seconds, not twenty: the guard is cheap to start and a restart is a
+       gap in wall detection, which is the one job it has -->
+  <key>ThrottleInterval</key><integer>10</integer>
+  <!-- keep the six-second tick out of App Nap and timer coalescing. a guard
+       that wakes late is indistinguishable from a guard that is not running -->
+  <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>{state}/guard.out</string>
   <key>StandardErrorPath</key><string>{state}/guard.out</string>
   <key>EnvironmentVariables</key>

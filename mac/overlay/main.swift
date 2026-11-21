@@ -1435,6 +1435,12 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
     // ---------------------------------------------------------------- commands
     func runCommand(_ which: String) {
         if busy {
+            // a refusal must still answer the request. The panel sets its own
+            // "a hop is in flight" flag optimistically and clears it on this
+            // event; a toast and nothing else left the button reading ROTATING
+            // with no rotation running, which is the one state a user cannot
+            // distinguish from a hang.
+            push("busy", ["cmd": which, "on": false, "code": -2, "refused": true])
             push("toast", ["text": "busy — \(which) is running"])
             return
         }

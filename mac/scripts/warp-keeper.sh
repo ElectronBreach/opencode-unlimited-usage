@@ -547,6 +547,15 @@ while true; do
 
   if paused; then sleep "$FAST"; continue; fi
 
+  # heartbeat: an alive-but-wedged keeper looks exactly like a healthy one from
+  # outside, because launchd only restarts a *dead* process. this file is the
+  # only thing that can tell the difference, and doctor reads it.
+  beat_now=$(date +%s)
+  printf '{"pid":%s,"ts":%s,"tick":%s,"probe_ok":%s,"leakguard":%s}\n' \
+    "$$" "$beat_now" "$(( ${tickn:-0} + 1 ))" "${probe_ok:-0}" "${LEAKGUARD:-0}" \
+    > "$GUARD_DIR/keeper-beat.json.tmp" 2>/dev/null \
+    && mv -f "$GUARD_DIR/keeper-beat.json.tmp" "$GUARD_DIR/keeper-beat.json" 2>/dev/null
+
   sweep_hosts
 
   # ---- health: DNS first, then egress -------------------------------------
