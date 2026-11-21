@@ -1124,29 +1124,7 @@ function render(d){
   }
   paintBrain(d.brain || {live: false});
 
-  // the HOP button must not offer a rotation that is already running. the
-  // guard owns the lock and a second caller just gets "rotation already in
-  // progress" — so show the attempt instead of inviting the click.
-  (function(){
-    const rot = d.rotation || {};
-    const hop = $("btnHop");
-    if (!hop) return;
-    if (rot.active && !hop.classList.contains("busy")) {
-      window._brainRot = true;
-      hop.disabled = true;
-      hop.classList.add("busy");
-      hop.innerHTML = '<span class="spin" style="display:block"></span>ROTATING';
-      hop.title = "rotation " + (rot.phase || "starting")
-                + (rot.max ? " · attempt " + (rot.attempt || 0) + "/" + rot.max : "")
-                + " — the guard owns the lock";
-    } else if (window._brainRot && !rot.active) {
-      window._brainRot = false;
-      hop.disabled = false;
-      hop.classList.remove("busy");
-      hop.innerHTML = '<span class="dot"></span>HOP';
-      hop.title = "";
-    }
-  })();
+  paintHop();
 
   // project
   const p = d.context || {};
@@ -1360,22 +1338,72 @@ function toast(msg){
   toast._t = setTimeout(() => t.classList.remove("on"), 1600);
 }
 
-function setBusy(cmd, on){
-  const hop = $("btnHop"), doc = $("btnDoctor");
-  hop.disabled = on && cmd !== "hop" ? true : on;
-  doc.disabled = on;
-  if (cmd === "hop") hop.classList.toggle("busy", on);
-  if (cmd === "doctor") { doc.classList.toggle("busy", on); }
-  $("logPanel").classList.toggle("live", on);
-  $("bubble").classList.toggle("busy", on);
-  if (on) { $("btnHop").textContent = ""; }
-  // keep label markup intact
-  hop.innerHTML = on && cmd === "hop"
+/* ---------- the HOP button, one owner ----------
+   Two writers used to paint this button: the native busy event (a command
+   started or exited) and the status snapshot (the rotator owns the lock).
+   They fought, and both losing states were visible to the user:
+
+   - the exit event repainted "HOP" while a rotation was still running, so the
+     button invited a click the engine answered "rotation already in progress";
+   - a rotation the guard started on a wall, not the panel, left the button
+     looking idle for up to two seconds until the next snapshot.
+
+   Now every source feeds paintHop() and only paintHop touches the DOM.
+
+   `_hopping`  this panel asked for a hop the native side has not answered yet.
+   `locked`    the rotator owns the tunnel, whoever started it.
+*/
+function paintHop(){
+  const hop = $("btnHop");
+  if (!hop) return;
+  const rot = (S && S.rotation) || {};
+  const locked = !!rot.active;
+  const mine = !!window._hopping;
+  const busy = mine || locked;
+  // nothing about this is decoration: a disabled HOP that looks enabled is
+  // what produced "the button does nothing when i click it".
+  if (hop.disabled !== busy) hop.disabled = busy;
+  const sig = (busy ? (mine ? "m" : "l") : "i") + "|" + (busy ? (rot.phase || "") : "");
+  if (sig === window._hopSig) return;         // same state: leave the DOM alone
+  window._hopSig = sig;
+  hop.classList.toggle("busy", busy);
+  hop.innerHTML = busy
     ? '<span class="spin" style="display:block"></span>ROTATING'
     : '<span class="dot"></span>HOP';
-  doc.innerHTML = on && cmd === "doctor"
-    ? '<span class="spin" style="display:block"></span>SCANNING'
-    : 'DOCTOR';
+  hop.title = busy
+    ? (mine ? "this panel started a hop — waiting for the engine"
+            : "the rotator owns the tunnel — " + (rot.phase || "starting")
+              + (rot.max ? " · attempt " + (rot.attempt || 0) + "/" + rot.max : ""))
+    : "click: rotate · press and hold: where am i (no rotation)";
+}
+
+function setBusy(cmd, on, code){
+  const doc = $("btnDoctor");
+  $("logPanel").classList.toggle("live", on);
+  $("bubble").classList.toggle("busy", on);
+  if (cmd === "hop") {
+    window._hopping = !!on;
+    if (on) { clearTimeout(window._hopAck); }
+    // a failed hop must not look like a finished one. the log panel carries the
+    // reason; this makes sure the user knows to look at it.
+    if (!on && typeof code === "number" && code !== 0) {
+      // the exit code is the rotator's own verdict, so say it in its words.
+      // "hop failed" for a same-/64 would be a lie: the tunnel is up, the pool
+      // just handed back the block we already had.
+      toast(code === 1 ? "same /64 — cloudflare gave the old block back"
+          : code === 3 ? "rotation deferred — the tunnel is still up"
+          : "hop failed (" + code + ") — see log");
+    }
+    paintHop();
+  } else {
+    doc.disabled = on;
+    doc.innerHTML = on && cmd === "doctor"
+      ? '<span class="spin" style="display:block"></span>SCANNING'
+      : 'DOCTOR';
+    // a doctor run must not leave HOP clickable in the same breath
+    const hop = $("btnHop");
+    if (hop) hop.disabled = on || !!((S && S.rotation) || {}).active;
+  }
 }
 
 /* ---------- native events ---------- */
@@ -1385,10 +1413,16 @@ window.ouc = function(ev){
   else if (ev.type === "brain") {
     // the guard writes every 6s and the push fires only when `seq` moved, so
     // this lands a rotation start in ~0.3s instead of waiting for status.sh.
-    paintBrain(ev.payload || {});
-    if (S && S.brain) S.brain = Object.assign(S.brain, ev.payload || {});
+    const p = ev.payload || {};
+    paintBrain(p);
+    S.brain = Object.assign(S.brain || {}, p);
+    // the rotator's lock arrives on the fast path too. without this the HOP
+    // gate could only ever be as fresh as the 2s status tick, and a rotation
+    // that started in the guard read as an idle button.
+    if (p.rotation) { S.rotation = p.rotation; paintHop(); }
+    else if (typeof p.live === "boolean" && !p.live) { /* fossil: leave state */ }
   }
-  else if (ev.type === "busy") setBusy(ev.payload.cmd, ev.payload.on);
+  else if (ev.type === "busy") setBusy(ev.payload.cmd, ev.payload.on, ev.payload.code);
   else if (ev.type === "toast") toast(ev.payload.text || "");
   else if (ev.type === "snapshot") paintSnapshotState(!!ev.payload.ok, ev.payload.text || "", ev.payload.since || 0);
   else if (ev.type === "window") {
@@ -1480,7 +1514,22 @@ hopBtn.addEventListener("pointerdown", () => {
   hopBtn.addEventListener(ev, () => { if (hopTimer) { clearTimeout(hopTimer); hopTimer = null; } }));
 hopBtn.addEventListener("click", () => {
   if (hopLong) { hopLong = false; return; }
+  // two fast clicks used to queue two native commands; the second earned a
+  // "busy — hop is running" toast and nothing else. one click, one hop.
+  if (hopBtn.disabled || window._hopping) { toast("a rotation is already running"); return; }
+  window._hopping = true;
+  paintHop();
   bridge("hop");
+  // the native side always answers a hop with a busy event — except when it
+  // refuses one because another command owns the panel. that refusal is a
+  // toast, not an event, so without this the button would stay disabled for
+  // the rest of the session. four seconds is longer than an ack needs.
+  clearTimeout(window._hopAck);
+  window._hopAck = setTimeout(() => {
+    if (!window._hopping) return;
+    window._hopping = false;
+    paintHop();
+  }, 4000);
 });
 hopBtn.title = "click: rotate · press and hold: where am i (no rotation)";
 

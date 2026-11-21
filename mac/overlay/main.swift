@@ -1085,8 +1085,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         if fresh { brainSeenAt = Date().timeIntervalSince1970 }
         if fresh != brainLive { brainSig = "" }
         brainLive = fresh
-        let rot = (obj["rotation"] as? [String: Any])?["phase"] as? String ?? ""
-        let sig = "\(seq)|\(rot)|\(fresh)"
+        let rot = (obj["rotation"] as? [String: Any]) ?? [:]
+        let rotPhase = rot["phase"] as? String ?? ""
+        let sig = "\(seq)|\(rotPhase)|\(fresh)"
         if sig == brainSig { return }
         brainSig = sig
         if !fresh { return }
@@ -1098,6 +1099,14 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                 p["advice"] = first["text"] as? String ?? ""
                 p["level"] = first["level"] as? String ?? ""
             }
+            // the HOP button's gate lives on this fast path. the rotation block
+            // is already parsed above; pushing only health forced the button to
+            // wait for the two-second status tick, so a rotation the guard
+            // started looked like an idle button until then.
+            p["rotation"] = ["active": rot["active"] as? Bool ?? false,
+                             "phase": rotPhase,
+                             "attempt": rot["attempt"] as? Int ?? 0,
+                             "max": rot["max"] as? Int ?? 0]
             push("brain", p)
         }
         refresh(force: false)
@@ -1361,7 +1370,19 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe
-        try? p.run()
+        do {
+            try p.run()
+        } catch {
+            // `try?` here was a permanent lockout: a script that could not be
+            // launched never reaches terminationHandler, so `busy` stayed true
+            // and every later HOP answered "busy — hop is running" until the
+            // panel was relaunched. say what happened and release the button.
+            busy = false
+            push("log", ["line": "✗ \(which) could not start: \(error.localizedDescription)"])
+            push("busy", ["cmd": which, "on": false, "code": 127])
+            push("toast", ["text": "\(which) did not start"])
+            return
+        }
 
         // a hop or a doctor that never exits (dead tunnel, a sudo prompt with
         // nowhere to type) would hold `busy` forever and refuse every command
@@ -1371,13 +1392,24 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
         // exactly the work it asked for — 300 plus the exit path.
         let cap: Double = isHopScript ? 360 : 90
         let watchdog = DispatchWorkItem { [weak self] in
-            guard p.isRunning else { return }
-            DispatchQueue.main.async {
-                self?.push("log", ["line": "… \(which) exceeded \(Int(cap))s — stopping it"])
+            guard let self = self else { return }
+            if p.isRunning {
+                self.push("log", ["line": "… \(which) exceeded \(Int(cap))s — stopping it"])
+                p.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                    if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                }
+                return
             }
-            p.terminate()
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
-                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            // the process is gone but the panel still thinks it is running.
+            // that is the same lockout as a failed launch, minus the error:
+            // release it instead of leaving a dead spinner on screen.
+            DispatchQueue.main.async {
+                guard self.busy else { return }
+                self.busy = false
+                self.push("log", ["line": "… \(which) ended without a handler — button released"])
+                self.push("busy", ["cmd": which, "on": false, "code": -1])
+                self.refresh(force: true)
             }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + cap, execute: watchdog)
