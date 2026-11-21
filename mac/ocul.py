@@ -64,6 +64,7 @@ STATE = Path(os.environ.get("OCUL_STATE", HOME / ".local/state/ocu-lane"))
 PROXY_PID = STATE / "proxy.pid"
 PROXY_LOG = STATE / "proxy.log"
 GUARD_LOG = STATE / "guard.log"
+GUARD_BEAT = STATE / "guard-beat.json"
 WALLS = STATE / "walls.jsonl"
 GUARD_STATE = STATE / "guard.json"
 EDGE_STATE = STATE / "edge.json"
@@ -3086,7 +3087,30 @@ def cmd_brain(args=None):
     return 0
 
 
+# one rotation at a time, and never on the tick thread. rotate() is a
+# five-to-ninety-second operation; running it inside the guard tick froze the
+# brain document, the health score and the HUD for exactly as long as the user
+# was watching a wall. The worker owns the rotation, the tick keeps beating.
+_WALL_WORKER = None
+_WALL_WORKER_LOCK = threading.Lock()
+
+
 def on_wall(session_ids=None):
+    """Detect-and-rotate entry point. Hands the work to one background worker."""
+    global _WALL_WORKER
+    with _WALL_WORKER_LOCK:
+        if _WALL_WORKER is not None and _WALL_WORKER.is_alive():
+            log_throttled(GUARD_LOG, "wall-worker",
+                          "wall rotation already running — not starting another",
+                          every=30)
+            return
+        _WALL_WORKER = threading.Thread(
+            target=_on_wall_blocking, args=(session_ids,),
+            name="wall-rotator", daemon=True)
+        _WALL_WORKER.start()
+
+
+def _on_wall_blocking(session_ids=None):
     st = jload(GUARD_STATE, {})
     t = now()
     # the third-party guard tails the same log and stamps last_hop when it
@@ -3485,6 +3509,30 @@ def matched_walls(chunk):
     return out
 
 
+def _guard_signalled(signum, frame):
+    """Say who ended the guard before it ends.
+
+    The log showed 56 `guard up` lines in five days and no exit line at all:
+    death by signal leaves nothing behind, so launchd kept resurrecting a
+    process with no visible reason. Every termination signal now names itself
+    and its sender. SIGKILL still cannot be recorded, so a gap between the last
+    tick and the next `guard up` is itself data.
+    """
+    try:
+        ppid = os.getppid()
+        sender = run(["ps", "-o", "pid=,command=", "-p", str(ppid)],
+                     timeout=4)[1][:120] or "?"
+    except Exception:
+        sender = "?"
+    try:
+        log(GUARD_LOG,
+            f"guard pid={os.getpid()} got {signal.Signals(signum).name} "
+            f"from {sender} — releasing lock and exiting")
+    except Exception:
+        pass
+    raise SystemExit(0)
+
+
 def cmd_guard(args):
     """One guard at a time, for life.
 
@@ -3495,6 +3543,11 @@ def cmd_guard(args):
     when the manual one exits.
     """
     ensure_dirs()
+    for name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"):
+        try:
+            signal.signal(getattr(signal, name), _guard_signalled)
+        except (AttributeError, ValueError, OSError):
+            pass
     port = int(os.environ.get("OCUL_PORT", 40123))
     lock = FileLock(GUARD_LOCK)
     waited = 0
@@ -3522,6 +3575,22 @@ def cmd_guard(args):
         offset = int(st["offset"])
         log(GUARD_LOG,
             f"guard up pid={os.getpid()} tick={TICK}s log={OPENCODE_LOG} offset={offset}")
+        # a guard killed mid-rotation leaves the keeper's pause marker behind.
+        # The keeper checks the pid itself, but clearing it here means the
+        # recovery is explicit and logged rather than implicit in a stranger.
+        try:
+            holder = int(OVERLAY_KEEPER_PAUSE.read_text().strip() or 0)
+        except (OSError, ValueError):
+            holder = 0
+        if holder and holder != os.getpid():
+            alive = True
+            try:
+                os.kill(holder, 0)
+            except OSError:
+                alive = False
+            if not alive:
+                resume_keeper()
+                log(GUARD_LOG, f"cleared stale keeper pause left by dead pid {holder}")
         publish_overlay_state("guard-up")
         brain_publish(reason="guard-up")
         # the sensor owns every network probe. a separate thread on purpose: a
@@ -3529,7 +3598,26 @@ def cmd_guard(args):
         # will not notice, because it never asked the network anything.
         threading.Thread(target=sensor_loop, name="sensor", daemon=True).start()
 
+        # A SIGKILL leaves no line in any log. It does leave a heartbeat.
+        # Recording one per tick and reading it at start means the next
+        # `guard up` can say how long the previous process lived and how long
+        # the gap was — which is the difference between "launchd replaced it"
+        # and "something is killing it every couple of hours".
+        prev_beat = jload(GUARD_BEAT, {})
+        if prev_beat.get("pid") and int(prev_beat.get("pid")) != os.getpid():
+            lived = int(prev_beat.get("ts") or 0) - int(prev_beat.get("started") or 0)
+            gap = now() - int(prev_beat.get("ts") or 0)
+            log(GUARD_LOG,
+                f"previous guard pid={prev_beat.get('pid')} lived {lived}s, "
+                f"silent for {gap}s before this start")
+        beat_started = now()
+
         ticks = 0
+        # Schedule against a deadline, not against "work + sleep". A tick that
+        # spent 4s healing the tunnel used to push every later tick 4s out, so
+        # a slow minute quietly became a two-minute one and the brain went
+        # stale while the process looked healthy.
+        next_tick = time.monotonic()
         while True:
             ticks += 1
             try:
@@ -3578,7 +3666,19 @@ def cmd_guard(args):
                 brain_publish(health=h, reason="tick")
             except Exception as exc:
                 log(GUARD_LOG, f"tick error: {exc!r}")
-            time.sleep(TICK)
+            try:
+                jsave(GUARD_BEAT, {"pid": os.getpid(), "ts": now(),
+                                   "started": beat_started, "tick": ticks})
+            except Exception:
+                pass
+            next_tick += TICK
+            slack = next_tick - time.monotonic()
+            if slack < 0:
+                # a tick that overran its slot: skip the missed ones instead of
+                # sprinting to catch up on work nobody is waiting for
+                next_tick = time.monotonic() + TICK
+                slack = TICK
+            time.sleep(slack)
     finally:
         lock.release()
 
