@@ -662,6 +662,23 @@ body.collapsed #bubble{display:grid}
           <button class="act mini del" id="btnKeyDel" title="delete the active key">DEL</button>
         </div>
       </section>
+
+      <section class="keys">
+        <div class="kh">
+          <span class="kt">WARP+ KEYS</span>
+          <b id="warpKeyCount">0</b>
+          <span class="klive"><i id="warpKeyDot"></i><span id="warpKeyState">pool empty</span></span>
+        </div>
+        <div class="kb">
+          <input id="warpKeyInput" placeholder="copy the keys, then ADD" autocomplete="off" spellcheck="false">
+          <button class="act mini" id="btnWarpKeyAdd">ADD</button>
+        </div>
+        <div class="kr">
+          <button class="act mini ghost2" id="btnWarpKeyList" title="the pool, as the rotator sees it">POOL</button>
+          <button class="act mini key" id="btnWarpKeyNext" title="attach the next key now">USE NEXT &#9654;</button>
+          <button class="act mini ghost3" id="btnWarpKeyAuto" title="attach the next key on every hop">AUTO</button>
+        </div>
+      </section>
     </div>
 
     <div class="pane" data-pane="stats">
@@ -814,6 +831,9 @@ function healthChip(label, state, hint, act){
 // `p` may come from status.sh (the whole snapshot) or from the native brain
 // push (health only), so both shapes land here and nowhere else.
 function paintBrain(p){
+  // the WARP+ pool lives in the same document as the health score, so it is
+  // painted from the same place. it changes on a hop, not on a tick.
+  if (p && p.keys) paintWarpKeys(p.keys);
   const el = document.getElementById("chipBRAIN");
   if (!el) return;
   const live = p.live !== false;
@@ -879,7 +899,15 @@ function snapBarText(){
 }
 
 function render(d){
+  // the two-second status document and the six-second brain document are two
+  // different writers. the status one carries a brain summary without the key
+  // pool, so a plain assignment would erase the pool the fast path had just
+  // delivered. keys change on a hop, not on a tick — carry them across.
+  const prevKeys = (S && S.brain && S.brain.keys) || null;
   S = d;
+  if (prevKeys && !(S.brain && S.brain.keys)) {
+    S.brain = Object.assign({}, S.brain || {}, { keys: prevKeys });
+  }
   window.oucLastUpdate = d.ts || 0;
   const t = d.tokens || {};
   const id = d.identity || {};
@@ -1260,6 +1288,39 @@ function render(d){
   $("bubbleTok").textContent = fmt((t.input || 0) + (t.output || 0));
 }
 
+/* the pool, as one row. every number here comes from the brain document, which
+   ocul writes and the rotator is the only writer of — the panel never counts a
+   key it has not been told about. */
+function paintWarpKeys(k){
+  k = k || (S.brain && S.brain.keys) || {};
+  // no document, no claim. a stale brain must leave the card as it was rather
+  // than assert an empty pool over a pool of five.
+  if (typeof k.total !== "number") return;
+  const n = k.total, bad = k.bad || 0, good = k.good || 0;
+  const count = $("warpKeyCount");
+  if (count) {
+    count.textContent = n ? n + (bad ? " · " + bad + " bad" : "") : "0";
+    count.title = n
+      ? good + " proven, " + bad + " refused, " + (n - good - bad) + " untried"
+      : "no license keys — ADD or copy a block and press ADD";
+  }
+  const state = $("warpKeyState");
+  const dot = $("warpKeyDot");
+  const btn = $("btnWarpKeyAuto");
+  if (state) {
+    state.textContent = !n ? "pool empty"
+      : k.auto ? "auto → " + (k.next || "?")
+      : "manual · next " + (k.next || "?");
+    state.title = (k.applied ? "last attached " + k.applied : "nothing attached yet")
+      + (bad ? " · " + bad + " refused by cloudflare" : "");
+  }
+  if (dot) dot.className = !n ? "warn" : (good ? "" : "warn");
+  if (btn) {
+    btn.textContent = k.auto ? "AUTO ON" : "AUTO";
+    btn.classList.toggle("on", !!k.auto);
+  }
+}
+
 function drawSpark(rows){
   const c = $("spark");
   const ctx = c.getContext("2d");
@@ -1414,12 +1475,16 @@ window.ouc = function(ev){
     // the guard writes every 6s and the push fires only when `seq` moved, so
     // this lands a rotation start in ~0.3s instead of waiting for status.sh.
     const p = ev.payload || {};
-    paintBrain(p);
+    // merge first, paint second. paintWarpKeys reads S.brain when the payload
+    // has no pool of its own, and a painter that runs before the merge reads
+    // last tick's document.
     S.brain = Object.assign(S.brain || {}, p);
+    paintBrain(p);
     // the rotator's lock arrives on the fast path too. without this the HOP
     // gate could only ever be as fresh as the 2s status tick, and a rotation
     // that started in the guard read as an idle button.
     if (p.rotation) { S.rotation = p.rotation; paintHop(); }
+    if (p.keys) paintWarpKeys(p.keys);
     else if (typeof p.live === "boolean" && !p.live) { /* fossil: leave state */ }
   }
   else if (ev.type === "busy") setBusy(ev.payload.cmd, ev.payload.on, ev.payload.code);
@@ -1432,6 +1497,24 @@ window.ouc = function(ev){
     const txt = ev.payload.text || "";
     txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
     toast(ev.payload.ok ? "key pool updated" : "key command failed");
+  }
+  else if (ev.type === "warpKeyOut") {
+    const txt = ev.payload.text || "";
+    txt.split(/\r?\n/).forEach(l => { if (l.trim()) logLine(l); });
+    toast(ev.payload.ok ? "warp key pool updated" : "warp key command failed");
+    if ((ev.payload.arg || "") !== "list") bridge("warpKeyList");
+  }
+  else if (ev.type === "warpKeyBusy") {
+    const on = !!ev.payload.on;
+    ["btnWarpKeyAdd", "btnWarpKeyList", "btnWarpKeyNext", "btnWarpKeyAuto"]
+      .forEach(id => { const e = $(id); if (e) e.disabled = on; });
+    clearTimeout(window.oucWarpKeyUnlock);
+    // the same rule as the api-key card: a dead native side must not leave the
+    // pool controls greyed out for the rest of the session.
+    if (on) window.oucWarpKeyUnlock = setTimeout(() => {
+      ["btnWarpKeyAdd", "btnWarpKeyList", "btnWarpKeyNext", "btnWarpKeyAuto"]
+        .forEach(id => { const e = $(id); if (e) e.disabled = false; });
+    }, 20000);
   }
   else if (ev.type === "keysBusy") {
     const on = !!ev.payload.on;
@@ -1844,6 +1927,26 @@ function keyRotate(dir){
 $("btnKeyPrev").addEventListener("click", () => keyRotate("prev"));
 $("btnKeyNext").addEventListener("click", () => keyRotate("next"));
 $("btnKeyList").addEventListener("click", () => { toast("probing keys…"); bridge("keyList"); });
+
+/* ---- WARP+ licence pool ----
+   these keys are a different thing from the api keys above: they do not
+   authenticate anything, they move the WARP registration onto another consumer
+   account, and the rotator is what attaches one. the panel only asks. */
+$("btnWarpKeyAdd").addEventListener("click", () => {
+  const box = $("warpKeyInput");
+  const v = box.value.trim();
+  box.value = "";
+  bridge("warpKeyAdd", { text: v });
+});
+$("warpKeyInput").addEventListener("keydown", e => {
+  if (e.key === "Enter") $("btnWarpKeyAdd").click();
+});
+$("btnWarpKeyList").addEventListener("click", () => bridge("warpKeyList"));
+$("btnWarpKeyNext").addEventListener("click", () => {
+  toast("attaching the next key — the tunnel reconnects");
+  bridge("warpKeyNext");
+});
+$("btnWarpKeyAuto").addEventListener("click", () => bridge("warpKeyAuto"));
 $("btnKeyPrune").addEventListener("click", () => { toast("cleaning the pool…"); bridge("keyPrune"); });
 
 // deleting is the one irreversible verb in this card, so it arms first and

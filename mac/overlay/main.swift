@@ -1000,6 +1000,12 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
             if let slot = body["slot"] as? String, !slot.isEmpty { keyCmd(["remove", slot]) }
         case "keyAdd":
             if let k = body["key"] as? String, !k.isEmpty { keyCmd(["add", k]) }
+        // ---- WARP+ license pool. the rotator owns the attach; the panel only
+        // asks for it and shows what came back.
+        case "warpKeyList": oculCmd(["keys", "list"], tag: "warpKey")
+        case "warpKeyNext": oculCmd(["keys", "next"], tag: "warpKey", cap: 150)
+        case "warpKeyAuto": oculCmd(["keys", "auto"], tag: "warpKey")
+        case "warpKeyAdd":  warpKeyAdd(body["text"] as? String ?? "")
         // ---- proxy sheet. every one of these runs proxy-pool.sh for real.
         case "proxyList": proxyCmd(["json"], json: true)
         case "proxyAdd":
@@ -1107,6 +1113,10 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
                              "phase": rotPhase,
                              "attempt": rot["attempt"] as? Int ?? 0,
                              "max": rot["max"] as? Int ?? 0]
+            // the key pool rides the same fast path as the rotation lock. it
+            // changes only when a hop attaches one, and a panel that showed a
+            // stale "next" would be telling the user the wrong account.
+            if let k = obj["keys"] as? [String: Any] { p["keys"] = k }
             push("brain", p)
         }
         refresh(force: false)
@@ -1317,6 +1327,86 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavi
 
     func modelCmd(_ args: [String], json: Bool = false) {
         toolCmd("model-levers.sh", args, json: json, tag: "model")
+    }
+
+    // ocul answers the WARP+ key pool. same shape as toolCmd, different
+    // executable: the pool lives in ocul, not in a shell script, because the
+    // rotator is the only thing that may attach a license.
+    func oculCmd(_ args: [String], tag: String, cap: Double = 90) {
+        push("\(tag)Busy", ["on": true])
+        DispatchQueue.global(qos: .userInitiated).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: home
+                .appendingPathComponent(".local/bin/ocul").path)
+            p.arguments = args
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:\(home.path)/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            env["TERM"] = "dumb"
+            p.environment = env
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = pipe
+            do { try p.run() } catch {
+                DispatchQueue.main.async {
+                    self.push("\(tag)Busy", ["on": false])
+                    self.push("toast", ["text": "ocul not installed"])
+                }
+                return
+            }
+            // a license swap waits up to 40s for the tunnel to come back, so the
+            // cap is not the 25s an api-key probe gets.
+            let watchdog = DispatchWorkItem {
+                guard p.isRunning else { return }
+                p.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                    if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + cap, execute: watchdog)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            watchdog.cancel()
+            let out = (String(data: data, encoding: .utf8) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async {
+                self.push("\(tag)Busy", ["on": false])
+                // `arg` is the verb: the panel re-reads the pool after a
+                // mutation and must not re-read it after a read, or POOL would
+                // feed itself for ever.
+                self.push("\(tag)Out", ["text": out,
+                                          "ok": p.terminationStatus == 0,
+                                          "arg": args.count > 1 ? args[1] : ""])
+                self.refresh(force: true)
+            }
+        }
+    }
+
+    // the HUD never parses a key out of a box by hand: paste or copy the block,
+    // and the same shape test ocul uses picks the keys out of it. whatever else
+    // is in the paste — headings, quota figures, emoji — falls on the floor.
+    func warpKeyAdd(_ typed: String) {
+        var blob = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if blob.isEmpty { blob = NSPasteboard.general.string(forType: .string) ?? "" }
+        guard !blob.isEmpty else {
+            push("toast", ["text": "nothing to add — copy the keys first"])
+            return
+        }
+        let ns = blob as NSString
+        var keys: [String] = []
+        if let re = try? NSRegularExpression(pattern: "[A-Za-z0-9]{6,12}(?:-[A-Za-z0-9]{6,12}){2}") {
+            re.enumerateMatches(in: blob, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+                if let m = m { keys.append(ns.substring(with: m.range)) }
+            }
+        }
+        var seen = Set<String>()
+        keys = keys.filter { seen.insert($0.lowercased()).inserted }
+        guard !keys.isEmpty else {
+            push("toast", ["text": "no license key found in that"])
+            push("log", ["line": "warp keys: nothing shaped like a license key in the input"])
+            return
+        }
+        push("toast", ["text": "adding \(keys.count) key\(keys.count == 1 ? "" : "s")…"])
+        oculCmd(["keys", "add"] + keys, tag: "warpKey")
     }
 
     func copySummary() {

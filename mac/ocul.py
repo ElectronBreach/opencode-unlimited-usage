@@ -925,6 +925,46 @@ def _gui_running():
     return rc == 0
 
 
+def gui_windows():
+    """How many windows the WARP front-end actually has; None when unaskable.
+
+    `pgrep` answers a different question than the one that matters. WARP is a
+    UIElement app: it can run for days with zero windows, and every path that
+    read "the process exists" as "the window is there" told itself a window was
+    up while the user was looking at a desktop with none.
+
+    Observed live: one hop ended with the front-end at pid 39964, uptime four
+    minutes, and
+
+        osascript -e 'tell application "System Events" to count windows of
+                      process "Cloudflare WARP"'
+        → 0
+
+    and `open -a` against that process returned 0 and did nothing. The agent was
+    there, the window never was.
+
+    None is "could not ask" (accessibility denied, System Events busy), never
+    "zero windows" — the two must not collapse into each other.
+    """
+    rc, out, _ = run(
+        ["osascript", "-e",
+         'tell application "System Events" to count windows of process "Cloudflare WARP"'],
+        timeout=8,
+    )
+    if rc != 0:
+        return None
+    try:
+        return max(0, int((out or "").strip()))
+    except ValueError:
+        return None
+
+
+def activate_gui():
+    """Bring the WARP window forward. Raises it; never creates it."""
+    run(["osascript", "-e", 'tell application "Cloudflare WARP" to activate'],
+        timeout=10)
+
+
 def pause_gui(need_outage=False):
     """Close the WARP window only when the registration is about to be deleted.
 
@@ -1032,64 +1072,145 @@ def heal_login(force=False):
     return False
 
 
-def resume_gui(was_up):
-    """Put the window back on a tunnel that already works, and prove it opened.
+def ensure_gui_window(hold=0):
+    """Make sure the user has a WARP window, and prove it by counting windows.
 
-    Order is the whole fix. Launching WARP.app while the registration is
-    missing paints "Awaiting external log in"; launching it after the tunnel is
-    up simply shows a connected client. Two things the first version got wrong,
-    and both of them ended with the user clicking the dock icon by hand:
+    Measured, not assumed. On this box `open -a` against a live agent paints a
+    window for about two seconds and the panel hides itself again:
 
-    - `open -a` is not a guarantee. If the previous front-end is still
-      terminating, LaunchServices hands the request to the dying instance and
-      no window appears; if the app is alive with its window closed, only a
-      reopen event brings the window back. So it retries, and it checks that a
-      process exists afterwards instead of trusting the exit code.
-    - a window behind other apps is the same as a window that is not there for
-      anyone who is not looking for it. `activate` brings it forward.
+        open -a  → windows=1 at t+2s → windows=0 at t+4s → 0 for the next 58s
+        activate → windows=1 at t+2s → still 1 at t+16s
 
-    Runs only when the window was actually closed by pause_gui(); a rotate-keys
-    rotation never closes it, which is why most rotations need no click at all.
+    That single difference is why "reopen the window" has always meant "click
+    the dock icon" by hand: the reopen Apple event is not what holds the panel,
+    activation is. So the order here is launch-if-dead, then activate, then
+    count — and the count is what is returned, never a hope.
+
+    `hold` is extra activations a couple of seconds apart, for a window the
+    user asked for by clicking: the panel's own hide-timer lands around two
+    seconds and a single activation can lose that race on a cold launch.
+
+    A front-end that is alive and still has no window after two activations is
+    headless — a reopen event cannot repair that, only a replace can. The
+    replace is safe: the tunnel is a daemon, this thing is a viewer.
     """
-    if not was_up:
+    if not _gui_running():
+        run(["open", "-a", WARP_APP], timeout=15)
+        deadline = time.time() + 10
+        while time.time() < deadline and not _gui_running():
+            time.sleep(0.4)
+
+    n = 0
+    for attempt in range(1, 3):
+        activate_gui()
+        deadline = time.time() + 4
+        while time.time() < deadline:
+            time.sleep(0.5)
+            n = gui_windows()
+            if n is None:
+                # the question cannot be asked. the process is the only signal
+                # left, and an unverified success is stated as one.
+                if _gui_running():
+                    log_throttled(GUARD_LOG, "gui-reopen",
+                                  "WARP window reopened (unverified: window count unavailable)",
+                                  every=120)
+                    n = 1
+                break
+            if n > 0:
+                break
+        if n:
+            break
+        if attempt == 1 and not _gui_running():
+            # activation cannot hold a panel on an app that is not there
+            run(["open", "-a", WARP_APP], timeout=15)
+            time.sleep(2.0)
+
+    if not n and _gui_running():
+        log_throttled(GUARD_LOG, "gui-headless",
+                      "WARP front-end alive with no window after activation — replacing it",
+                      every=120)
+        quit_warp_gui(force=True)
+        time.sleep(1.2)
+        run(["open", "-a", WARP_APP], timeout=15)
+        deadline = time.time() + 8
+        while time.time() < deadline and not _gui_running():
+            time.sleep(0.4)
+        time.sleep(1.0)
+        activate_gui()
+        time.sleep(1.5)
+        n = gui_windows()
+        if n is None and _gui_running():
+            n = 1
+        if n:
+            log_throttled(GUARD_LOG, "gui-reopen",
+                          "WARP window reopened (replaced the headless agent)", every=60)
+
+    if n:
+        # one cheap second look. the panel's hide-timer lands around two
+        # seconds; a single re-activation wins that race without spending four
+        # seconds of a hop that the user is watching. measured: activate alone
+        # holds the window for 16s+, so this is a guard against a cold launch,
+        # not a loop.
+        if hold:
+            time.sleep(1.5)
+            if gui_windows() == 0:
+                activate_gui()
+                time.sleep(0.7)
+
+    if not n:
+        log_throttled(GUARD_LOG, "gui-reopen-fail",
+                      "WARP window would not come back — counted 0 after activation and a replace",
+                      every=600)
+    return bool(n)
+
+
+def resume_gui(want):
+    """Put the window back on a tunnel that already works.
+
+    `want` is the request, not a memory: a clicked hop wants a window even if
+    there was none when it started, and a guard rotation wants one only if there
+    was one. The old signature read it as "was up" and returned early when it
+    was false, so a user hop that took the cheap rotate-keys path — which never
+    touches the window — could end with WARP closed and nothing to reopen it.
+
+    Order is the whole fix. Launching WARP.app while the registration is missing
+    paints "Awaiting external log in"; launching it after the tunnel is up shows
+    a connected client. So the tunnel first, then the window.
+    """
+    if not want:
         return False
-    # the tunnel first: a window on a dead registration is worse than none
     for _ in range(12):
         if warp_connected() and iface_v6(force=True):
             break
         time.sleep(2.5)
     else:
         log_throttled(GUARD_LOG, "gui-reopen-late",
-                      "WARP window: tunnel not up yet — reopening anyway, once",
+                      "WARP window: tunnel not up yet — reopening anyway",
                       every=300)
-    if _gui_running():
-        # the window never went away, so "reopened (try 1)" would be a lie.
-        # raise it and say exactly that.
-        run(["osascript", "-e",
-             'tell application "Cloudflare WARP" to activate'], timeout=10)
-        log_throttled(GUARD_LOG, "gui-already-up",
-                      "WARP window was still up — raised it, nothing to reopen",
-                      every=300)
-        return True
-    for try_no in range(1, 4):
-        rc, _, err = run(["open", "-a", WARP_APP], timeout=15)
-        if rc == 0:
-            for _ in range(16):
-                if _gui_running():
-                    run(["osascript", "-e",
-                         'tell application "Cloudflare WARP" to activate'], timeout=10)
-                    log_throttled(GUARD_LOG, "gui-reopen",
-                                  f"WARP window reopened (try {try_no})", every=60)
-                    return True
-                time.sleep(0.5)
-        time.sleep(1.5 + try_no)
-    log_throttled(GUARD_LOG, "gui-reopen-fail",
-                  f"WARP window would not reopen: {(err or 'no process')[:80]}",
-                  every=600)
-    return False
+    # a hop the user clicked wants the window held through the panel's own
+    # two-second hide-timer; a guard rotation only puts back what it found and
+    # must not steal focus twice.
+    ok = ensure_gui_window(hold=1 if want == "user" else 0)
+    if want == "user" and ok:
+        # measured on this box: WARP's panel paints a window, then hides itself
+        # about six seconds later, and neither `activate` nor `set frontmost`
+        # re-paints one. a second `open -a` does. So the keeper re-opens on a
+        # slow cadence from a detached process while the hop returns at once:
+        # the HUD button releases in under ten seconds and the window the user
+        # is looking for is put back in front of him.
+        try:
+            subprocess.Popen(
+                ["/bin/sh", "-c",
+                 'for i in 1 2 3 4; do sleep 4; '
+                 'open -a "/Applications/Cloudflare WARP.app" >/dev/null 2>&1; done'],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+    return ok
 
 
-def quit_warp_gui():
+def quit_warp_gui(force=False):
     """Close the WARP window without killing it in a loop.
 
     `pkill` in a watchdog is what used to manufacture the stuck dialog: launchd
@@ -1101,17 +1222,27 @@ def quit_warp_gui():
 
     for ever, because that browser flow was invalidated by the surgery. One
     graceful quit, then one plain kill only if the app ignored it, is enough.
-    Nothing reopens it: the tunnel is a daemon, the window is a viewer.
+    Nothing reopens it here: the tunnel is a daemon, the window is a viewer.
+
+    The graceful attempt is a courtesy, not a plan. On this box WARP answers the
+    AppleScript quit with -128 ("User canceled") even with no dialog on screen,
+    so the old six-second wait was six seconds of a rotation the user could see
+    doing nothing. Wait briefly, then kill, and `force` skips the courtesy
+    entirely for an agent that has no window to save.
     """
     if not _gui_running():
         return False
-    run(["osascript", "-e", 'tell application "Cloudflare WARP" to quit'], timeout=12)
-    deadline = time.time() + 6
-    while time.time() < deadline and _gui_running():
-        time.sleep(0.4)
+    if not force:
+        run(["osascript", "-e", 'tell application "Cloudflare WARP" to quit'],
+            timeout=12)
+        grace = time.time() + 2.5
+        while time.time() < grace and _gui_running():
+            time.sleep(0.3)
     if _gui_running():
         run(["pkill", "-f", f"{WARP_APP}/Contents/MacOS/Cloudflare WARP"], timeout=8)
-        time.sleep(1.0)
+        deadline = time.time() + 4
+        while time.time() < deadline and _gui_running():
+            time.sleep(0.2)
     return True
 
 
@@ -1199,11 +1330,33 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True, reason=""):
     # is decided now, because a hop the user clicked is a request for the
     # window and a background rotation only restores what it found.
     gui_was_up = False
-    want_gui = _gui_running() or os.environ.get("OCUL_USER_HOP") == "1"
+    # "user" is a stronger request than True: the panel hides itself about two
+    # seconds after it appears, so a clicked hop asks for the window to be held
+    # through that timer. A guard rotation only restores what it found.
+    want_gui = ("user" if os.environ.get("OCUL_USER_HOP") == "1"
+                else (_gui_running() or gui_windows() not in (None, 0)))
     gui_hold = hold_gui_down()
     try:
         if not ensure_daemon():
             raise RuntimeError("warp daemon is not running")
+
+        # A pooled WARP+ key is an account swap, not a tunnel nudge: the
+        # registration moves to a different consumer account and the edge
+        # re-pins. So it happens before anything is measured — a reading taken
+        # across that move is a coin flip — and the bucket we were on has to be
+        # remembered from state, because there is a moment right after the swap
+        # when the tunnel is not up to ask.
+        prev_pfx = (jload(GUARD_STATE, {}) or {}).get("egress_prefix") or ""
+        if keys_auto():
+            kidx, kentry = keys_pick()
+            if kentry:
+                pool_n = len(keys_load().get("keys") or [])
+                say0 = print if verbose else (lambda *a, **k: None)
+                say0(f"-- key pool: {key_mask(kentry['key'])} (of {pool_n}) --")
+                k_ok, k_msg = keys_apply(kidx, verbose=False)
+                say0(f"   {k_msg}")
+                if not k_ok:
+                    say0("   continuing on the registration we already have")
 
         before_addr = iface_v6(force=True)
         before_pfx = prefix64(before_addr)
@@ -1217,7 +1370,7 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True, reason=""):
         # before_pfx is the utun leg (2606:4700:110:…) — a state address, never
         # an exit — so it is never a candidate for this.
         here = measure_egress(before_addr, force=True) if before_addr else {}
-        old_bucket = here.get("prefix") or st.get("egress_prefix") or ""
+        old_bucket = here.get("prefix") or prev_pfx or st.get("egress_prefix") or ""
         old_from = ("measured" if here.get("prefix")
                     else ("state" if old_bucket else "unknown"))
         if old_bucket:
@@ -1259,6 +1412,17 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True, reason=""):
         # hammers registration/new spends the next forty minutes parked. Burn
         # the device only when the reconnect genuinely handed the same block
         # back.
+        # A clicked hop is a person waiting. Fourteen registration attempts is
+        # the right shape for a wall the guard grinds through on its own time,
+        # and the wrong shape for a button: each attempt is a delete, a new
+        # registration and a settle, so the tail of that loop is minutes of the
+        # HUD saying ROTATING. Six is enough to find a fresh block — the burn
+        # fuse already accepts what it has after a few misses — and the cheap
+        # pass reads the same two numbers.
+        wall_turn = (reason == "wall")
+        attempts = 14 if wall_turn else 4
+        budget = 300 if wall_turn else 50
+
         cheap_probe = probe_enabled(reason)
         if cheap_first and not api_park_left():
             # the phase is published per round, never before the loop binds
@@ -1267,26 +1431,37 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True, reason=""):
             say("-- cheap pass: rotate the tunnel key pair, stay connected --")
             last_key = old_bucket
             api_refused = 0
-            for round_no in range(1, 3):
-                mark_rotation_phase("rotate-keys",
-                                    {"attempt": round_no, "max": 2,
+            # Round 1 is the key-pair swap: one daemon call, tunnel stays up,
+            # nothing throttled. Round 2 is a plain reconnect — the other free
+            # move, and the one that costs nothing at all. Round 3 is the key
+            # swap again. All three are cheaper than a registration burn by an
+            # order of magnitude, so the burn only runs when the edge hands the
+            # same /64 back three times running.
+            for round_no in range(1, 4):
+                reconnect = (round_no == 2)
+                mark_rotation_phase("reconnect" if reconnect else "rotate-keys",
+                                    {"attempt": round_no, "max": 3,
                                      "old": old_bucket})
-                # `tunnel rotate-keys` mints a new key pair on the SAME
-                # registration. The edge hands back a different egress /64,
-                # the tunnel never drops, and no registration is burned — the
-                # one resource Cloudflare throttles. This is the pass that
-                # should clear most walls; measuring proves whether it did.
-                rc, out, err = run([WARP, "--accept-tos", "tunnel", "rotate-keys"],
-                                   timeout=30)
+                if reconnect:
+                    say("-- cheap pass: plain reconnect, still no registration --")
+                    run([WARP, "--accept-tos", "disconnect"], timeout=20)
+                    time.sleep(1.0)
+                    rc, out, err = run([WARP, "--accept-tos", "connect"], timeout=25)
+                else:
+                    # `tunnel rotate-keys` mints a new key pair on the SAME
+                    # registration. The tunnel never drops and no registration
+                    # is burned — the one resource Cloudflare throttles.
+                    rc, out, err = run([WARP, "--accept-tos", "tunnel", "rotate-keys"],
+                                       timeout=30)
                 if rc != 0:
                     msg = (out + " " + err).strip()
                     if api_busy(msg):
                         park_api(25, "tunnel rotate-keys")
                         api_refused += 1
-                    say(f"   key rotation {round_no}/2 refused: {msg[:80] or 'error'}")
-                    time.sleep(3 + round_no)
+                    say(f"   cheap round {round_no}/3 refused: {msg[:80] or 'error'}")
+                    time.sleep(2)
                     continue
-                if not settled(20):
+                if not settled(20 if wall_turn else 6):
                     say("   tunnel did not settle — moving to the device burn")
                     break
                 c_addr, c_pfx, c_egress, c_key = measure()
@@ -1332,7 +1507,7 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True, reason=""):
                         f"  (rotate-keys, no device burn)")
                     return True, before_pfx, c_pfx
                 last_key = c_key or last_key
-                say(f"   key rotation {round_no}/2 kept {last_key or '?'}")
+                say(f"   cheap round {round_no}/3 kept {last_key or '?'}")
             if api_refused >= 2:
                 # the WARP API is throttling us. Burning the device needs the
                 # same API, so it would only delete a working registration and
@@ -1377,20 +1552,19 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True, reason=""):
             burned.add(old_bucket)
 
         accepted, last_err = None, ""
-        attempts = 14          # per wall turn; across turns there is no limit
         burned_hits = 0
         pin_misses = 0
         # a probe costs one free message, so it only runs when asked for, and
         # a cheap pass (rotate-keys) is already the low-risk path — measuring
         # there is the guard's wall rotation, not a manual nudge.
-        probe_now = probe_enabled()
+        probe_now = probe_enabled(reason)
         tried = {old_bucket} if old_bucket else set()
         # one probe per rotation, not per attempt: the answer costs a message.
         if probe_now:
             say("   probe armed — one throwaway turn before accepting a /64")
         started = time.time()
         for attempt in range(1, attempts + 1):
-            if time.time() - started > 300:
+            if time.time() - started > budget:
                 last_err = last_err or "rotation ran past its time budget"
                 break
             if not gui_was_up:
@@ -1558,9 +1732,26 @@ def rotate(verbose=True, lock_timeout=30, cheap_first=True, reason=""):
         return True, before_pfx, after_pfx
     finally:
         release_gui_hold(gui_hold, gui_was_up)
-        # a user hop always leaves the window open and in front. a guard
+        # A user hop always leaves the window open and in front; a guard
         # rotation only puts back the window it found closed.
-        resume_gui(want_gui)
+        #
+        # The user's hop does it from a detached process. Restoring the window
+        # means waiting for WARP.app to launch, activating it and counting
+        # windows — up to ten seconds that the person who clicked HOP spends
+        # watching a spinner for something the tunnel does not need. The rotator
+        # hands the job off and returns; the window arrives a second or two
+        # later, which is the same end state reached sooner.
+        if want_gui == "user":
+            try:
+                subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
+                                  "_window-restore"],
+                                 start_new_session=True,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            except OSError:
+                resume_gui(want_gui)
+        else:
+            resume_gui(want_gui)
         if paused:
             resume_keeper()
         if foreign:
@@ -2782,6 +2973,7 @@ def brain_publish(health=None, reason="tick"):
                      "blacklist": len(bl),
                      "burnt": bool(eg_pfx and eg_pfx in bl)},
         "probe": probe_summary(eg_pfx),
+        "keys": keys_summary(),
     }
     view = dict(brain_read())
     for k, v in sections.items():
@@ -3071,8 +3263,14 @@ def probe_enabled(reason=""):
     if v is not None:
         return v.strip().lower() not in ("", "0", "off", "false", "no")
     ov = jload(OVERLAY_STATE, {}) or {}
-    if "probe" in ov:
-        return bool(ov.get("probe"))
+    if "probe" in ov and bool(ov.get("probe")):
+        # An armed probe is a wall instrument. It measures whether the block
+        # the rotator is about to accept is already burned, which is worth one
+        # message when a wall already cost the quota — and is a tax on every
+        # click when the user is rotating by hand. Measured live: a probed hop
+        # took 56.1 s, an unprobed one 7.4 s. So the flag arms walls only;
+        # a hop opts in by name, through OCUL_PROBE=1, never by accident.
+        return reason == "wall"
     return reason == "wall"
 
 
@@ -3493,12 +3691,332 @@ def cmd_where():
     print(f"tunnel   {st.get('prefix') or prefix64(addr) or 'none'}")
     print(f"device   {registration_id() or 'none'}")
     print(f"warp     {'connected' if warp_connected() else 'down'}")
+    # process and window are two different facts and used to be one. WARP can
+    # run with no window for ever, and "the app is open" was printed on the
+    # strength of a pgrep that only ever proved a process.
+    nw = gui_windows()
+    print("gui      " + ("no process" if not _gui_running()
+                         else "window open" if nw == 1
+                         else f"{nw} windows" if isinstance(nw, int)
+                         else "running, window count unavailable"))
     print(f"burnt    {'yes' if bucket and bucket in bl else 'no'}")
     if bl:
         print("blacklist")
         for b in bl[-14:]:
             print(f"         {b}")
     return 0
+
+
+# ---------------------------------------------------------------- key pool
+#
+# Three different things in this stack are called "rotation", and they cost
+# different resources:
+#
+#   tunnel rotate-keys   a new WireGuard key pair on the SAME registration.
+#                        No API call, tunnel never drops, the edge usually
+#                        hands back a different egress /64. Free, and the first
+#                        thing every hop tries.
+#   registration new     a new device registration. One API call, and the API
+#                        throttles those, so it is the move of last resort: the
+#                        tunnel drops, the window has to be put away.
+#   registration license attach this registration to a different account with a
+#                        WARP+ license key. Consumer only. Same kind of surgery
+#                        as a burn from the tunnel's point of view — the account
+#                        changes, so the edge re-pins — but the quota it draws
+#                        on is the key's, which is the reason to have a pool.
+#
+# The pool is a list, not a secret store: it lives beside the guard state with
+# 0600 and nothing prints a full key.
+
+WARP_KEYS = STATE / "warp-keys.json"
+KEY_RE = re.compile(r"^[A-Za-z0-9]{6,12}(-[A-Za-z0-9]{6,12}){2}$")
+
+
+def key_mask(k):
+    """`e85mKj64-…-345ZS` — enough to tell two keys apart, not enough to use."""
+    k = (k or "").strip()
+    if len(k) <= 14:
+        return k[:4] + "…"
+    return k[:8] + "-…-" + k[-5:]
+
+
+def key_shape_ok(k):
+    """A WARP+ license key is three alphanumeric groups. Anything else is a typo."""
+    return bool(KEY_RE.match((k or "").strip()))
+
+
+def keys_load():
+    doc = jload(WARP_KEYS, {})
+    if not isinstance(doc, dict):
+        doc = {}
+    doc.setdefault("keys", [])
+    doc.setdefault("cursor", 0)
+    doc.setdefault("auto", False)
+    return doc
+
+
+def keys_save(doc):
+    try:
+        WARP_KEYS.parent.mkdir(parents=True, exist_ok=True)
+        tmp = WARP_KEYS.with_suffix(".tmp")
+        tmp.write_text(json.dumps(doc, indent=2, sort_keys=True))
+        os.chmod(tmp, 0o600)
+        tmp.replace(WARP_KEYS)
+    except OSError as exc:
+        return False, str(exc)
+    return True, ""
+
+
+def keys_auto():
+    return bool(keys_load().get("auto"))
+
+
+def keys_add(raw, label=""):
+    """Add one key. Returns (added, message). Duplicates are not an error."""
+    k = (raw or "").strip()
+    if not k:
+        return False, "empty"
+    if not key_shape_ok(k):
+        return False, f"{key_mask(k)} is not a license key shape (8-8-8 alphanumeric)"
+    doc = keys_load()
+    for e in doc["keys"]:
+        if e.get("key", "").lower() == k.lower():
+            return False, f"{key_mask(k)} already in the pool"
+    doc["keys"].append({"key": k, "label": label.strip()[:40],
+                        "added": int(time.time()), "used": 0, "last": 0,
+                        "state": "", "note": ""})
+    ok, err = keys_save(doc)
+    if not ok:
+        return False, err
+    return True, f"{key_mask(k)} added ({len(doc['keys'])} in pool)"
+
+
+def keys_pick(doc=None):
+    """(index, entry) of the next key to try, or (None, None).
+
+    Order is by cursor, and a key marked bad is skipped while a good one exists
+    — a dead key in the pool must not cost a hop every fifth rotation. When
+    every key is bad the pool is honest about it and returns the next anyway,
+    because a stale "bad" from three weeks ago is worth one retry.
+    """
+    doc = doc or keys_load()
+    ks = doc.get("keys") or []
+    if not ks:
+        return None, None
+    cur = int(doc.get("cursor") or 0) % len(ks)
+    for step in range(len(ks)):
+        i = (cur + step) % len(ks)
+        if ks[i].get("state") not in ("bad", "full", "defer"):
+            return i, ks[i]
+    return cur, ks[cur]
+
+
+def keys_apply(idx=None, verbose=True):
+    """Attach the registration to the account behind one pooled key.
+
+    Verified by reading the registration back and comparing the License line,
+    not by trusting an exit code: `warp-cli` reports success for a key it then
+    refuses to attach, and a hop that believed it would measure the same
+    account it was already on.
+
+    Returns (ok, message). Never raises — a license swap is an optimisation, and
+    an optimisation that can end a hop is a bug.
+    """
+    doc = keys_load()
+    ks = doc.get("keys") or []
+    if not ks:
+        return False, "pool is empty"
+    if idx is None:
+        idx, entry = keys_pick(doc)
+    else:
+        idx = int(idx)
+        if not (0 <= idx < len(ks)):
+            return False, f"no key {idx} (pool has {len(ks)})"
+        entry = ks[idx]
+    if not entry:
+        return False, "no key"
+    k = entry["key"]
+    # never a one-way door: the license the registration carries right now goes
+    # in the file before it is replaced, so a pool of dead keys costs nothing.
+    rc0, show0, _ = run([WARP, "registration", "show"], timeout=20)
+    for line in show0.splitlines():
+        if line.lower().startswith("license:"):
+            prev = line.split(":", 1)[1].strip()
+            if prev and prev.lower() != k.lower():
+                doc["previous"] = {"key": prev, "at": int(time.time())}
+            break
+    rc, out, err = run([WARP, "--accept-tos", "registration", "license", k],
+                       timeout=60)
+    msg = (out + " " + err).strip()
+    rc2, show, _ = run([WARP, "registration", "show"], timeout=20)
+    lic = ""
+    acct = ""
+    for line in show.splitlines():
+        if line.lower().startswith("license:"):
+            lic = line.split(":", 1)[1].strip()
+        elif line.lower().startswith("account type:"):
+            acct = line.split(":", 1)[1].strip()
+    if lic.lower() == k.lower():
+        entry.update({"used": int(entry.get("used") or 0) + 1,
+                      "last": int(time.time()), "state": "ok", "note": acct or ""})
+        doc["cursor"] = (idx + 1) % len(ks)
+        doc["applied"] = {"mask": key_mask(k), "at": int(time.time()),
+                          "account": acct}
+        keys_save(doc)
+        # the account moved, so the tunnel did too. bring it back here rather
+        # than leaving every caller to remember: a license swap that ends with
+        # the daemon disconnected is not a feature.
+        run([WARP, "--accept-tos", "connect"], timeout=25)
+        deadline = time.time() + 40
+        while time.time() < deadline:
+            if warp_connected() and iface_v6(force=True):
+                break
+            time.sleep(1.5)
+        up = warp_connected() and bool(iface_v6(force=True))
+        if verbose:
+            print(f"key      {key_mask(k)} attached  ({acct or 'account unknown'})"
+                  f"  tunnel {'up' if up else 'NOT up yet'}")
+        return True, f"{key_mask(k)} attached ({acct or '?'})"
+    # The registration kept its old license. Two very different reasons, and
+    # collapsing them loses a good key: "Too many devices" means the key is
+    # valid and the account behind it already holds its five slots, so the key
+    # is full, not dead — it becomes usable the moment one device is removed.
+    low = (msg or "").lower()
+    if "too many devices" in low or "device limit" in low:
+        state = "full"
+    elif ("failed to communicate" in low or "timed out" in low
+          or "rate limit" in low or "429" in low or "unavailable" in low):
+        # the API did not answer, which says nothing about the key. a refusal
+        # we did not get is not a refusal we can record.
+        state = "defer"
+    else:
+        state = "bad"
+    entry.update({"state": state, "last": int(time.time()),
+                  "note": (msg or "license not attached")[:120]})
+    doc["cursor"] = (idx + 1) % len(ks)
+    keys_save(doc)
+    if verbose:
+        print(f"key      {key_mask(k)} refused — {entry['note'][:70]}")
+        if lic:
+            print(f"         still on {key_mask(lic)}")
+    return False, entry["note"]
+
+
+def keys_summary():
+    doc = keys_load()
+    ks = doc.get("keys") or []
+    i, entry = keys_pick(doc)
+    return {"total": len(ks),
+            "auto": bool(doc.get("auto")),
+            "next": key_mask(entry["key"]) if entry else "",
+            "next_index": int(i or 0),
+            "good": sum(1 for e in ks if e.get("state") == "ok"),
+            "bad": sum(1 for e in ks if e.get("state") == "bad"),
+            "full": sum(1 for e in ks if e.get("state") == "full"),
+            "applied": (doc.get("applied") or {}).get("mask", ""),
+            "applied_at": int((doc.get("applied") or {}).get("at") or 0)}
+
+
+def cmd_keys(args):
+    action = getattr(args, "action", "list") or "list"
+    doc = keys_load()
+    ks = doc.get("keys") or []
+
+    if action == "list":
+        if not ks:
+            print("pool is empty — ocul keys add <key>  (five of them: one line each)")
+            return 0
+        i, _ = keys_pick(doc)
+        print(f"pool     {len(ks)} keys  auto={'on' if doc.get('auto') else 'off'}"
+              f"  next={i}")
+        for n, e in enumerate(ks):
+            flag = "*" if n == i else " "
+            st = e.get("state") or "new"
+            last = (time.strftime("%m-%d %H:%M", time.localtime(e["last"]))
+                    if e.get("last") else "—")
+            print(f" {flag}{n}  {key_mask(e['key']):<24} {st:<4} used={e.get('used', 0):<3}"
+                  f" last={last}" + (f"  {e['note'][:40]}" if e.get("note") else ""))
+        ap = doc.get("applied") or {}
+        if ap:
+            print(f"applied  {ap.get('mask')} at "
+                  f"{time.strftime('%m-%d %H:%M', time.localtime(ap.get('at') or 0))}"
+                  f"  ({ap.get('account') or '?'})")
+        return 0
+
+    if action == "add":
+        for w in (getattr(args, "words", None) or []):
+            ok, msg = keys_add(w)
+            print(("+ " if ok else "· ") + msg)
+        return 0
+
+    if action == "import":
+        for path in (getattr(args, "words", None) or []):
+            # a pasted block is the common shape: licence keys separated by
+            # newlines, propped up with headings and quota figures from whatever
+            # bot they came from. take only the things shaped like keys and let
+            # the rest fall on the floor.
+            try:
+                blob = Path(os.path.expanduser(path)).read_text()
+            except OSError as exc:
+                print(f"· {path}: {exc}")
+                continue
+            found = 0
+            for m in re.finditer(r"[A-Za-z0-9]{6,12}(?:-[A-Za-z0-9]{6,12}){2}", blob):
+                ok, msg = keys_add(m.group(0))
+                if ok:
+                    found += 1
+            known = len(keys_load().get("keys") or [])
+            print(f"· {path}: {found} new, {known} in pool")
+        return 0
+
+    if action == "rm":
+        words = getattr(args, "words", None) or []
+        if not words:
+            print("which one? ocul keys rm <index|key>")
+            return 2
+        gone = 0
+        for w in words:
+            hit = None
+            if w.isdigit() and int(w) < len(ks):
+                hit = int(w)
+            else:
+                for n, e in enumerate(ks):
+                    if e.get("key", "").lower() == w.strip().lower():
+                        hit = n
+                        break
+            if hit is None:
+                print(f"· {w}: not in the pool")
+                continue
+            e = ks.pop(hit)
+            gone += 1
+            print(f"- {key_mask(e['key'])} removed")
+        if gone:
+            doc["cursor"] = 0
+            keys_save(doc)
+        return 0
+
+    if action == "auto":
+        words = getattr(args, "words", None) or []
+        want = (words[0].lower() if words else ("off" if doc.get("auto") else "on"))
+        doc["auto"] = want in ("on", "1", "yes", "true")
+        keys_save(doc)
+        print(f"auto     {'on — every hop attaches the next key' if doc['auto'] else 'off'}")
+        return 0
+
+    if action in ("apply", "use", "next"):
+        if not ks:
+            print("pool is empty — nothing to apply")
+            return 2
+        idx = None
+        if action in ("apply", "use"):
+            words = getattr(args, "words", None) or []
+            if words and words[0].isdigit():
+                idx = int(words[0])
+        ok, msg = keys_apply(idx)
+        return 0 if ok else 1
+
+    print("keys  list | add <key>… | import <file> | rm <n|key> | use <n> | next | auto on|off")
+    return 2
 
 
 def cmd_hop(args):
@@ -3953,6 +4471,14 @@ def main(argv):
     p = sub.add_parser("target", help="pin rotations to a country or a block")
     p.add_argument("spec", nargs="?", default="",
                    help="show | none | loc:DE | prefix:2a09:bac5:491")
+    p = sub.add_parser("keys", help="WARP+ license key pool — rotate the account a hop draws on")
+    p.add_argument("action", nargs="?", default="list",
+                   choices=["list", "add", "import", "rm", "use", "next", "apply", "auto"])
+    p.add_argument("words", nargs="*", default=[],
+                   help="keys, indices, or a file path for import")
+    # hidden: the rotator hands the window restore to a detached copy of
+    # itself so a click does not wait for WARP.app to launch.
+    sub.add_parser("_window-restore", help=argparse.SUPPRESS)
     sub.add_parser("where", help="read-only: what /64 we are on, burnt or not")
     p = sub.add_parser("brain",
                        help="the whole machine in one read: health, advice, phase")
@@ -3986,6 +4512,11 @@ def main(argv):
         return cmd_probe(args)
     if args.cmd == "target":
         return cmd_target(args)
+    if args.cmd == "keys":
+        return cmd_keys(args)
+    if args.cmd == "_window-restore":
+        ok = resume_gui("user")
+        return 0 if ok else 3
     if args.cmd == "brain":
         return cmd_brain(args)
     if args.cmd == "resume":
